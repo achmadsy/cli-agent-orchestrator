@@ -16,6 +16,42 @@ def _patch_fleet(monkeypatch, online_health, sessions_by_machine):
     monkeypatch.setattr(client, "list_sessions", fake_list)
 
 
+def test_routes_use_node_token_and_expected_timeouts(monkeypatch):
+    seen = []
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    def fake_client(timeout, token=None):
+        seen.append((timeout, token))
+        return DummyClient()
+
+    async def fake_health(c, base):
+        return {"status": "ok"}
+
+    async def fake_list(c, base):
+        return []
+
+    async def fake_launch(c, base, *args, **kwargs):
+        return {"id": "term-1"}
+
+    monkeypatch.setattr(config, "NODE_TOKEN", "node-secret")
+    monkeypatch.setattr(client, "async_client", fake_client)
+    monkeypatch.setattr(client, "health", fake_health)
+    monkeypatch.setattr(client, "list_sessions", fake_list)
+    monkeypatch.setattr(client, "launch", fake_launch)
+    tc = TestClient(main.app)
+
+    assert tc.get("/api/fleet").status_code == 200
+    assert tc.post("/api/machines/node-a/launch", json={}).status_code == 200
+    assert (client.TIMEOUT, "node-secret") in seen
+    assert (client.LAUNCH_TIMEOUT, "node-secret") in seen
+
+
 def test_fleet_aggregates_and_isolates_offline(monkeypatch):
     from app import config
     node_a = next(m for m in config.load_machines() if m["name"] == "node-a")
@@ -38,6 +74,40 @@ def test_fleet_aggregates_and_isolates_offline(monkeypatch):
 def test_unknown_machine_404():
     tc = TestClient(main.app)
     assert tc.post("/api/machines/nope/launch", json={}).status_code == 404
+
+
+def test_open_machine_redirects_with_fragment_and_no_store(monkeypatch):
+    monkeypatch.setattr(config, "NODE_TOKEN", "node secret")
+    tc = TestClient(main.app)
+    r = tc.get("/api/machines/node-a/open", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "https://cao-node-a.zlink.my.id/#token=node%20secret"
+    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["pragma"] == "no-cache"
+    assert "?token=" not in r.headers["location"]
+
+
+def test_install_rejects_offline_peer():
+    tc = TestClient(main.app)
+    r = tc.post("/api/admin/machines/install", json={"peer": "missing", "user": "ubuntu"})
+    assert r.status_code == 400
+
+
+def test_job_unknown_404():
+    tc = TestClient(main.app)
+    assert tc.get("/api/admin/jobs/missing").status_code == 404
+
+
+def test_register_rejects_non_tailnet_host():
+    tc = TestClient(main.app)
+    r = tc.post("/api/admin/machines/register", json={"name": "node-d", "host": "8.8.8.8"})
+    assert r.status_code == 400
+
+
+def test_unregister_unknown_machine_404(monkeypatch):
+    monkeypatch.setattr(config, "remove_machine", lambda name: (_ for _ in ()).throw(KeyError(name)))
+    tc = TestClient(main.app)
+    assert tc.delete("/api/admin/machines/nope").status_code == 404
 
 
 def test_screen_proxy_ok(monkeypatch):
@@ -157,7 +227,7 @@ def test_launch_autogenerates_session_name_and_delivers_task(monkeypatch):
     launched = {}
     async def fake_launch(c, base, profile, provider, session_name, wd=None):
         launched.update(profile=profile, provider=provider, session_name=session_name, wd=wd)
-        return {"id": "term-9"}
+        return {"id": "term-9", "session_name": f"cao-{session_name}"}
     sent = {}
     async def fake_send(c, base, tid, msg, sender_id="fleet-panel"):
         sent.update(tid=tid, msg=msg)
@@ -170,9 +240,10 @@ def test_launch_autogenerates_session_name_and_delivers_task(monkeypatch):
     data = r.json()
     assert data["terminal_id"] == "term-9"
     assert data["task_sent"] is True
-    # session name is auto-generated with the renamed prefix (was "cao-panel-")
-    assert data["session_name"].startswith("fleet-panel-")
-    assert launched["session_name"] == data["session_name"]
+    # CAO canonicalizes session names with its "cao-" prefix; the panel must
+    # return that value for later detail and shutdown calls.
+    assert data["session_name"].startswith("cao-fleet-panel-")
+    assert data["session_name"] == f"cao-{launched['session_name']}"
     assert launched["profile"] == "developer" and launched["provider"] == "claude_code"
     assert launched["wd"] == "/w"
     assert sent["tid"] == "term-9" and sent["msg"] == "do X"
@@ -180,7 +251,7 @@ def test_launch_autogenerates_session_name_and_delivers_task(monkeypatch):
 
 def test_launch_uses_provided_session_name_and_skips_task(monkeypatch):
     async def fake_launch(c, base, profile, provider, session_name, wd=None):
-        return {"id": "term-1"}
+        return {"id": "term-1", "session_name": f"cao-{session_name}"}
     def _boom(*a, **k):
         raise AssertionError("send_message must not be called when no task is given")
     monkeypatch.setattr(client, "launch", fake_launch)
@@ -189,7 +260,7 @@ def test_launch_uses_provided_session_name_and_skips_task(monkeypatch):
     r = tc.post("/api/machines/node-a/launch", json={"session_name": "my-sess"})
     assert r.status_code == 200
     body = r.json()
-    assert body["session_name"] == "my-sess"
+    assert body["session_name"] == "cao-my-sess"
     assert body["task_sent"] is False
 
 

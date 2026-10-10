@@ -18,12 +18,17 @@ function setOptions(sel, items) {
 }
 
 const wallEl = $("#wall");
+const machinesEl = $("#machines");
 const statusLine = $("#status-line");
 const tileMap = new Map(); // `${machine}::${session}` -> tile { el, poller, update }
 const emptyMap = new Map(); // machine name -> "no sessions" card element
 let consoleHandle = null;
 let lastFleet = { machines: [] };
 const fleetState = new Map(); // per-machine health debounce (see fleet.js)
+
+function openFullGui(machine) {
+  window.open(`/api/machines/${encodeURIComponent(machine)}/open`, "_blank", "noopener");
+}
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -36,6 +41,35 @@ function onOpen(machine, session) {
   consoleHandle = openConsole({ machine, session, onClosed: () => { consoleHandle = null; } });
 }
 
+function renderMachines(machines) {
+  machinesEl.replaceChildren();
+  for (const machine of machines) {
+    const card = document.createElement("article");
+    card.className = "machine-card";
+    card.dataset.status = machine.online ? "online" : "offline";
+    const info = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = machine.name;
+    const meta = document.createElement("span");
+    meta.textContent = `${machine.label || machine.host} · ${machine.online ? "online" : "offline"}`;
+    info.append(title, meta);
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "ghost";
+    open.textContent = "Open full GUI";
+    open.disabled = !machine.online;
+    open.addEventListener("click", () => openFullGui(machine.name));
+    const launch = document.createElement("button");
+    launch.type = "button";
+    launch.className = "primary";
+    launch.textContent = "Launch";
+    launch.disabled = !machine.online;
+    launch.addEventListener("click", () => openLaunch(machine.name));
+    card.append(info, open, launch);
+    machinesEl.append(card);
+  }
+}
+
 async function refresh() {
   let data;
   try { data = await api("/api/fleet"); }
@@ -44,6 +78,7 @@ async function refresh() {
   // jittery/relayed node doesn't flap offline↔idle every poll.
   const machines = dampFleet(data.machines, fleetState);
   lastFleet = { ...data, machines };
+  renderMachines(machines);
 
   // Reconcile against the live set instead of rebuilding. Existing tiles (and
   // their pollers) are kept streaming, so the wall never flashes "connecting…".
@@ -101,8 +136,30 @@ async function refresh() {
       head.append(dot, t);
       const scr = document.createElement("div");
       scr.className = "tile-screen muted";
-      scr.textContent = "no sessions";
-      el.append(head, scr);
+      scr.textContent = "No active sessions\n\nClick to launch an agent on this machine.";
+      const actions = document.createElement("div");
+      actions.className = "machine-actions";
+      const openButton = document.createElement("button");
+      openButton.className = "ghost";
+      openButton.type = "button";
+      openButton.textContent = "Open full GUI";
+      openButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openFullGui(name);
+      });
+      actions.append(openButton);
+      el.tabIndex = 0;
+      el.setAttribute("role", "button");
+      el.setAttribute("aria-label", `Launch an agent on ${name}`);
+      const launch = () => openLaunch(name);
+      el.addEventListener("click", launch);
+      el.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          launch();
+        }
+      });
+      el.append(head, scr, actions);
       emptyMap.set(name, el);
       changed = true;
     }
@@ -124,6 +181,147 @@ document.addEventListener("visibilitychange", () => {
   else for (const t of tileMap.values()) t.poller.start();
 });
 
+// ---- Fleet administration --------------------------------------------------
+const manageDialog = $("#manage-dialog");
+const registerForm = $("#register-form");
+const registerMsg = $("#register-msg");
+
+$("#manage-btn").addEventListener("click", openManage);
+$("#manage-close").addEventListener("click", () => manageDialog.close());
+
+async function openManage() {
+  registerMsg.textContent = "";
+  await Promise.all([loadPeers(), renderManagedMachines()]);
+  manageDialog.showModal();
+}
+
+async function loadPeers() {
+  const sel = $("#register-peer");
+  try {
+    const data = await api("/api/admin/tailscale-peers");
+    const options = data.peers.map((peer) => ({
+      value: `${peer.name}|${peer.host}`,
+      label: `${peer.name} (${peer.host})`,
+    }));
+    setOptions(sel, options);
+    setOptions($("#install-peer"), options);
+    if (data.peers[0]) {
+      $("#register-name").value = data.peers[0].name;
+      $("#register-label").value = data.peers[0].name;
+      $("#install-name").value = data.peers[0].name;
+    }
+  } catch (error) {
+    setOptions(sel, []);
+    setOptions($("#install-peer"), []);
+    registerMsg.textContent = "Could not load Tailscale peers: " + error.message;
+  }
+}
+
+$("#register-peer").addEventListener("change", (event) => {
+  const [name] = event.target.value.split("|");
+  $("#register-name").value = name;
+  $("#register-label").value = name;
+});
+$("#install-peer").addEventListener("change", (event) => {
+  const [name] = event.target.value.split("|");
+  $("#install-name").value = name;
+});
+
+async function renderManagedMachines() {
+  const root = $("#manage-machines");
+  root.replaceChildren();
+  for (const machine of lastFleet.machines) {
+    const row = document.createElement("div");
+    row.className = "manage-machine";
+    const text = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = machine.name;
+    const meta = document.createElement("small");
+    meta.textContent = `${machine.host} · ${machine.online ? "online" : "offline"}`;
+    text.append(title, meta);
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "ghost";
+    open.textContent = "Open GUI";
+    open.addEventListener("click", () => openFullGui(machine.name));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost danger";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", async () => {
+      const confirmed = prompt(`Type ${machine.name} to remove it from this fleet. CAO is not uninstalled.`);
+      if (confirmed !== machine.name) return;
+      try {
+        await api(`/api/admin/machines/${encodeURIComponent(machine.name)}`, { method: "DELETE" });
+        await refresh();
+        await renderManagedMachines();
+      } catch (error) {
+        registerMsg.textContent = "Remove failed: " + error.message;
+      }
+    });
+    row.append(text, open, remove);
+    root.append(row);
+  }
+}
+
+const installForm = $("#install-form");
+const installMsg = $("#install-msg");
+let installPoll = null;
+
+installForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const [peer] = event.target.peer.value.split("|");
+  installMsg.textContent = `starting installation on ${peer}…`;
+  try {
+    const job = await api("/api/admin/machines/install", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ peer, name: event.target.name.value.trim(), user: event.target.user.value.trim() }),
+    });
+    await pollInstallJob(job.id);
+  } catch (error) {
+    installMsg.textContent = "Install failed: " + error.message;
+  }
+});
+
+async function pollInstallJob(jobId) {
+  clearTimeout(installPoll);
+  try {
+    const job = await api(`/api/admin/jobs/${jobId}`);
+    installMsg.textContent = `${job.status}: ${(job.steps || []).join(" · ")}${job.error ? ` · ${job.error}` : ""}`;
+    if (job.status === "queued" || job.status === "running") {
+      installPoll = setTimeout(() => pollInstallJob(jobId), 1500);
+    } else if (job.status === "installed") {
+      await refresh();
+      await renderManagedMachines();
+    }
+  } catch (error) {
+    installMsg.textContent = "Job status failed: " + error.message;
+  }
+}
+
+registerForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const [peerName, host] = event.target.peer.value.split("|");
+  const body = {
+    name: event.target.name.value.trim(),
+    host,
+    label: event.target.label.value.trim() || peerName,
+    role: event.target.role.value,
+  };
+  registerMsg.textContent = `validating ${host}…`;
+  try {
+    await api("/api/admin/machines/register", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    registerMsg.textContent = `${body.name} registered`;
+    await refresh();
+    await renderManagedMachines();
+  } catch (error) {
+    registerMsg.textContent = "Registration failed: " + error.message;
+  }
+});
+
 // ---- Launch modal (pick node + folder + provider + agent, then cao launch) ----
 const launchDialog = $("#launch-dialog");
 const launchForm = $("#launch-form");
@@ -131,14 +329,16 @@ const launchMsg = $("#launch-msg");
 
 $("#launch-btn").addEventListener("click", openLaunch);
 
-async function openLaunch() {
+async function openLaunch(preselectedNode) {
   const nodeSel = $("#launch-node");
   const online = lastFleet.machines.filter((m) => m.online);
   if (!online.length) { alert("No online nodes to launch on."); return; }
   setOptions(nodeSel, online.map((m) => ({ value: m.name, label: `${m.name} (${m.label || m.host})` })));
   launchForm.reset();
   launchMsg.textContent = "";
-  await loadNodeOptions(online[0].name);
+  const selected = online.some((m) => m.name === preselectedNode) ? preselectedNode : online[0].name;
+  nodeSel.value = selected;
+  await loadNodeOptions(selected);
   launchDialog.showModal();
 }
 

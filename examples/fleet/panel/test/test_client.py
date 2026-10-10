@@ -7,6 +7,16 @@ def _mock(handler):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://x")
 
 
+async def test_async_client_adds_bearer_token():
+    async with client.async_client(client.TIMEOUT, "node-secret") as c:
+        assert c.headers["Authorization"] == "Bearer node-secret"
+
+
+async def test_async_client_omits_bearer_without_token():
+    async with client.async_client(client.TIMEOUT) as c:
+        assert "Authorization" not in c.headers
+
+
 async def test_list_sessions_parses():
     def handler(req):
         assert req.url.path == "/sessions"

@@ -13,6 +13,12 @@ LAUNCH_TIMEOUT = httpx.Timeout(90.0, connect=5.0)
 SENDER_ID = "fleet-panel"
 
 
+def async_client(timeout, token=None):
+    """Create a node client, optionally authenticated with a shared bearer token."""
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    return httpx.AsyncClient(timeout=timeout, headers=headers)
+
+
 async def _get(c, base, path, params=None):
     r = await c.get(f"{base}{path}", params=params)
     r.raise_for_status()

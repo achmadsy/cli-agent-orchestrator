@@ -10,9 +10,56 @@
   <header class="topbar">
     <span class="brand">CAO&nbsp;FLEET</span>
     <span id="status-line" class="status-line">loading…</span>
+    <button id="manage-btn" class="ghost" type="button">Manage Fleet</button>
     <button id="launch-btn" class="primary launch-btn" type="button">＋ Launch</button>
   </header>
-  <main id="wall" class="wall" aria-label="Fleet video wall"></main>
+  <section id="machines" class="machines" aria-label="Fleet machines"></section>
+  <main id="wall" class="wall" aria-label="Fleet session wall"></main>
+
+  <dialog id="manage-dialog">
+    <div class="manage-panel">
+      <div class="manage-head">
+        <div>
+          <h2>Manage Fleet</h2>
+          <p>Register a CAO server already running on your Tailscale network.</p>
+        </div>
+        <button id="manage-close" class="ghost" type="button">Close</button>
+      </div>
+      <form id="register-form" class="manage-form">
+        <label>Tailscale peer
+          <select name="peer" id="register-peer"></select>
+        </label>
+        <label>Fleet name
+          <input name="name" id="register-name" pattern="[a-z0-9][a-z0-9-]{0,62}" required />
+        </label>
+        <label>Label
+          <input name="label" id="register-label" placeholder="worker label" />
+        </label>
+        <label>Role
+          <select name="role"><option value="agent">agent</option><option value="central">central</option></select>
+        </label>
+        <div id="register-msg" class="dialog-msg"></div>
+        <button class="primary" type="submit">Register existing node</button>
+      </form>
+      <p class="manage-note">Registration does not install CAO. Removal never uninstalls CAO or deletes node data.</p>
+      <form id="install-form" class="manage-form">
+        <h3>Install through Tailscale SSH</h3>
+        <label>Tailscale peer
+          <select name="peer" id="install-peer"></select>
+        </label>
+        <label>Fleet name
+          <input name="name" id="install-name" pattern="[a-z0-9][a-z0-9-]{0,62}" required />
+        </label>
+        <label>Remote Linux user
+          <input name="user" id="install-user" placeholder="ubuntu" required />
+        </label>
+        <div id="install-msg" class="dialog-msg"></div>
+        <button class="primary" type="submit">Install and register</button>
+      </form>
+      <div id="install-jobs" class="install-jobs"></div>
+      <div id="manage-machines" class="manage-machines"></div>
+    </div>
+  </dialog>
 
   <dialog id="launch-dialog">
     <form id="launch-form" method="dialog">
