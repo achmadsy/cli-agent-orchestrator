@@ -1,3 +1,4 @@
+import { authFetch, authJson, clearAuthState, setCsrfToken } from "./auth-client.js";
 import { buildTile } from "./wall.js";
 import { openConsole } from "./console.js";
 import { dampFleet } from "./fleet.js";
@@ -20,6 +21,10 @@ function setOptions(sel, items) {
 const wallEl = $("#wall");
 const machinesEl = $("#machines");
 const statusLine = $("#status-line");
+const appShell = $("#app-shell");
+const loginOverlay = $("#login-overlay");
+const loginForm = $("#login-form");
+const loginMsg = $("#login-msg");
 const tileMap = new Map(); // `${machine}::${session}` -> tile { el, poller, update }
 const emptyMap = new Map(); // machine name -> "no sessions" card element
 let consoleHandle = null;
@@ -31,10 +36,58 @@ function openFullGui(machine) {
 }
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
-  return r.json();
+  return authJson(path, opts);
 }
+
+function showLogin(message = "") {
+  clearAuthState();
+  clearTimeout(installPoll);
+  if (consoleHandle) consoleHandle.close();
+  for (const tile of tileMap.values()) tile.poller.stop();
+  loginMsg.textContent = message;
+  appShell.hidden = true;
+  loginOverlay.hidden = false;
+  loginForm.elements.password.value = "";
+  requestAnimationFrame(() => loginForm.elements.username.focus());
+}
+
+function showFleet(session) {
+  setCsrfToken(session.csrf_token);
+  loginForm.elements.password.value = "";
+  $("#session-user").textContent = session.user;
+  loginOverlay.hidden = true;
+  appShell.hidden = false;
+}
+
+window.addEventListener("cao-auth-required", () => showLogin("Session expired. Sign in again."));
+
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = loginForm.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  loginMsg.textContent = "Signing in…";
+  try {
+    const session = await authJson("/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        username: loginForm.elements.username.value.trim(),
+        password: loginForm.elements.password.value,
+      }),
+    });
+    showFleet(session);
+    await refresh();
+  } catch (error) {
+    showLogin(error.message);
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+$("#logout-btn").addEventListener("click", async () => {
+  try { await authFetch("/api/auth/logout", { method: "POST" }); }
+  finally { showLogin("Signed out."); }
+});
 
 function onOpen(machine, session) {
   if (consoleHandle) consoleHandle.close();
@@ -398,5 +451,15 @@ launchForm.addEventListener("submit", async (e) => {
   }
 });
 
-refresh();
-setInterval(refresh, 8000); // re-aggregate topology; screens stream via pollers
+async function boot() {
+  try {
+    const session = await authJson("/api/auth/status");
+    showFleet(session);
+    await refresh();
+  } catch {
+    showLogin();
+  }
+}
+
+boot();
+setInterval(() => { if (!appShell.hidden) refresh(); }, 8000); // screens stream via pollers

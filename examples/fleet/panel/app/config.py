@@ -33,6 +33,15 @@ FLEET_DOMAIN = os.environ.get("CAO_FLEET_DOMAIN", "zlink.my.id")
 FLEET_HOST_PREFIX = os.environ.get("CAO_FLEET_HOST_PREFIX", "cao-")
 SYNC_COMMAND = os.environ.get("CAO_FLEET_SYNC_COMMAND", "/usr/local/sbin/cao-fleet-sync")
 
+if PANEL_PASSWORD and not PANEL_SESSION_SECRET:
+    raise RuntimeError("CAO_PANEL_SESSION_SECRET is required when CAO_PANEL_PASSWORD is set")
+if PANEL_SESSION_SECRET and len(PANEL_SESSION_SECRET.encode("utf-8")) < 32:
+    raise RuntimeError("CAO_PANEL_SESSION_SECRET must be at least 32 bytes")
+if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", PANEL_USER):
+    raise RuntimeError("CAO_PANEL_USER must use only letters, digits, underscores, and hyphens")
+if PANEL_SESSION_TTL <= 0:
+    raise RuntimeError("CAO_PANEL_SESSION_TTL must be greater than zero")
+
 
 def validate_name(name):
     value = str(name or "").strip().lower()

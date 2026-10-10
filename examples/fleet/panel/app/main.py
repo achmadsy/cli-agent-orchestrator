@@ -17,6 +17,7 @@ from . import auth, client, config, installer
 app = FastAPI(title="CAO Fleet Panel")
 _login_throttler = auth.LoginThrottler()
 _AUTH_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache", "Pragma": "no-cache"}
+_STATIC_CACHE_HEADERS = {"Cache-Control": "no-cache"}
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 _STATIC = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
@@ -60,6 +61,11 @@ def _public_path(path):
     return path == "/" or path.startswith("/static/") or path.startswith("/api/auth/")
 
 
+def _cookie_secure(request):
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    return (forwarded_proto or request.url.scheme).lower() == "https"
+
+
 @app.middleware("http")
 async def _require_auth(request: Request, call_next):
     request.state.auth_kind = None
@@ -87,8 +93,10 @@ async def _require_auth(request: Request, call_next):
             return _auth_response("CSRF validation failed", status_code=403)
 
     response = await call_next(request)
-    if request.url.path.startswith("/api/auth/"):
+    if request.url.path.startswith("/api/"):
         response.headers.update(_AUTH_CACHE_HEADERS)
+    elif request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers.update(_STATIC_CACHE_HEADERS)
     return response
 
 
@@ -96,7 +104,8 @@ async def _require_auth(request: Request, call_next):
 async def login(request: Request, body: dict = Body(default_factory=dict)):
     if not config.PANEL_PASSWORD or not config.PANEL_SESSION_SECRET:
         return _auth_response("browser login is not configured", status_code=503)
-    client_ip = request.client.host if request.client else "unknown"
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    client_ip = forwarded or (request.client.host if request.client else "unknown")
     if _login_throttler.is_blocked(client_ip):
         return _auth_response(
             "too many login attempts",
@@ -123,7 +132,7 @@ async def login(request: Request, body: dict = Body(default_factory=dict)):
         raw,
         max_age=config.PANEL_SESSION_TTL,
         path="/",
-        secure=True,
+        secure=_cookie_secure(request),
         httponly=True,
         samesite="strict",
     )
@@ -133,12 +142,17 @@ async def login(request: Request, body: dict = Body(default_factory=dict)):
 @app.get("/api/auth/status")
 async def auth_status(request: Request):
     session = request.state.panel_session
-    if session is None:
-        return _auth_response()
-    return JSONResponse(
-        {"authenticated": True, "user": session.user, "csrf_token": session.csrf},
-        headers=_AUTH_CACHE_HEADERS,
-    )
+    if session is not None:
+        return JSONResponse(
+            {"authenticated": True, "user": session.user, "csrf_token": session.csrf},
+            headers=_AUTH_CACHE_HEADERS,
+        )
+    if not config.PANEL_PASSWORD and not config.PANEL_TOKEN:
+        return JSONResponse(
+            {"authenticated": True, "user": "local", "csrf_token": None},
+            headers=_AUTH_CACHE_HEADERS,
+        )
+    return _auth_response()
 
 
 @app.post("/api/auth/logout")
@@ -149,7 +163,7 @@ async def logout(request: Request):
     response.delete_cookie(
         auth.COOKIE_NAME,
         path="/",
-        secure=True,
+        secure=_cookie_secure(request),
         httponly=True,
         samesite="strict",
     )

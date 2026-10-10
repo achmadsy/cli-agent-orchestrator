@@ -25,20 +25,23 @@ class LoginThrottler:
         self.window_seconds = window_seconds
         self.failures = {}
 
+    def _prune(self, now):
+        for client_ip, timestamps in list(self.failures.items()):
+            active = [ts for ts in timestamps if now - ts < self.window_seconds]
+            if active:
+                self.failures[client_ip] = active
+            else:
+                self.failures.pop(client_ip, None)
+
     def is_blocked(self, client_ip):
         now = time.time()
-        records = [ts for ts in self.failures.get(client_ip, []) if now - ts < self.window_seconds]
-        if records:
-            self.failures[client_ip] = records
-        else:
-            self.failures.pop(client_ip, None)
-        return len(records) >= self.max_failures
+        self._prune(now)
+        return len(self.failures.get(client_ip, [])) >= self.max_failures
 
     def record_failure(self, client_ip):
         now = time.time()
-        records = [ts for ts in self.failures.get(client_ip, []) if now - ts < self.window_seconds]
-        records.append(now)
-        self.failures[client_ip] = records
+        self._prune(now)
+        self.failures.setdefault(client_ip, []).append(now)
 
     def reset(self, client_ip):
         self.failures.pop(client_ip, None)

@@ -82,7 +82,7 @@ def test_open_machine_redirects_with_fragment_and_no_store(monkeypatch):
     r = tc.get("/api/machines/node-a/open", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "https://cao-node-a.zlink.my.id/#token=node%20secret"
-    assert r.headers["cache-control"] == "no-store"
+    assert r.headers["cache-control"] == "no-store, no-cache"
     assert r.headers["pragma"] == "no-cache"
     assert "?token=" not in r.headers["location"]
 
@@ -372,36 +372,42 @@ def test_rejects_unsafe_terminal_id():
     assert tc.get("/api/machines/node-a/terminals/bad;id/screen").status_code == 400
 
 
-# --- opt-in shared-token auth ---------------------------------------------
+# --- panel authentication -------------------------------------------------
 
-def test_open_when_no_token_configured():
-    # default: CAO_PANEL_TOKEN unset → panel is open (fine on loopback)
+def test_open_when_no_auth_configured(monkeypatch):
+    monkeypatch.setattr(config, "PANEL_TOKEN", None)
+    monkeypatch.setattr(config, "PANEL_PASSWORD", None)
     tc = TestClient(main.app)
     assert tc.get("/").status_code == 200
     assert tc.post("/api/machines/nope/launch", json={}).status_code == 404
 
 
-def test_token_required_on_every_route(monkeypatch):
+def test_static_page_stays_public_but_api_requires_auth(monkeypatch):
     monkeypatch.setattr(config, "PANEL_TOKEN", "s3cret")
     tc = TestClient(main.app)
-    # both the page and the API demand credentials
-    for r in (tc.get("/"), tc.post("/api/machines/nope/launch", json={})):
-        assert r.status_code == 401
-        assert r.headers["WWW-Authenticate"].startswith("Basic")
+    assert tc.get("/").status_code == 200
+    response = tc.post("/api/machines/nope/launch", json={})
+    assert response.status_code == 401
+    assert "www-authenticate" not in response.headers
+    assert response.headers["cache-control"] == "no-store, no-cache"
 
 
-def test_token_accepts_basic_and_bearer(monkeypatch):
+def test_bearer_automation_remains_supported(monkeypatch):
     monkeypatch.setattr(config, "PANEL_TOKEN", "s3cret")
     tc = TestClient(main.app)
-    # Basic: any username, password is the token (browser-friendly)
-    assert tc.post("/api/machines/nope/launch", json={}, auth=("panel", "s3cret")).status_code == 404
-    # Bearer: for scripts
-    assert tc.post("/api/machines/nope/launch", json={},
-                   headers={"Authorization": "Bearer s3cret"}).status_code == 404
+    assert tc.post(
+        "/api/machines/nope/launch",
+        json={},
+        headers={"Authorization": "Bearer s3cret"},
+    ).status_code == 404
 
 
-def test_token_rejects_wrong_secret(monkeypatch):
+def test_basic_and_wrong_bearer_are_rejected(monkeypatch):
     monkeypatch.setattr(config, "PANEL_TOKEN", "s3cret")
     tc = TestClient(main.app)
-    assert tc.post("/api/machines/nope/launch", json={}, auth=("panel", "nope")).status_code == 401
-    assert tc.get("/", headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert tc.post("/api/machines/nope/launch", json={}, auth=("panel", "s3cret")).status_code == 401
+    assert tc.post(
+        "/api/machines/nope/launch",
+        json={},
+        headers={"Authorization": "Bearer nope"},
+    ).status_code == 401

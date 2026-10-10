@@ -1,17 +1,14 @@
+import { authJson } from "./auth-client.js";
 import { intervalFor } from "./schedule.js";
 
-async function json(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
-  return r.json();
-}
+const enc = encodeURIComponent;
 
 // Resolve (and cache) the first terminal id of a session.
 const _termCache = new Map(); // key `${machine}::${session}` -> terminal id
 async function resolveTerminal(machine, session) {
   const key = `${machine}::${session}`;
   if (_termCache.has(key)) return _termCache.get(key);
-  const d = await json(`/api/machines/${machine}/sessions/${session}`);
+  const d = await authJson(`/api/machines/${enc(machine)}/sessions/${enc(session)}`);
   const tid = (d.terminals || [])[0]?.id || null;
   if (tid) _termCache.set(key, tid);
   return tid;
@@ -31,7 +28,7 @@ export function createPoller({ machine, session, getState, onFrame, onError }) {
     try {
       const tid = await resolveTerminal(machine, session);
       if (tid) {
-        const res = await json(`/api/machines/${machine}/terminals/${tid}/screen`);
+        const res = await authJson(`/api/machines/${enc(machine)}/terminals/${enc(tid)}/screen`);
         onFrame(res.screen || "", { fallback: !!res.fallback, terminalId: tid });
       }
     } catch (e) {

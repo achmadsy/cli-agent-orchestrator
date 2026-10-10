@@ -1,8 +1,10 @@
+import { authJson } from "./auth-client.js";
 import { renderScreen } from "./screen.js";
 import { createPoller } from "./poller.js";
 
 const CONSOLE_FONT = '13px "JetBrains Mono", ui-monospace, monospace';
 const CONSOLE_LINE_H = 18;
+const enc = encodeURIComponent;
 
 const KEY_MAP = {
   interrupt: "C-c", enter: "Enter", esc: "Escape",
@@ -10,12 +12,10 @@ const KEY_MAP = {
 };
 
 async function post(path, body) {
-  const r = await fetch(path, {
+  return authJson(path, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify(body || {}),
   });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
-  return r.json();
 }
 
 // Open the focused console overlay for one session. Returns { close }.
@@ -69,12 +69,12 @@ export function openConsole({ machine, session, onClosed }) {
   // show "provider · working-dir" in the header
   (async () => {
     try {
-      const d = await fetch(`/api/machines/${machine}/sessions/${session}`).then((r) => r.json());
+      const d = await authJson(`/api/machines/${enc(machine)}/sessions/${enc(session)}`);
       const t = (d.terminals || [])[0] || {};
       let wd = "";
       if (t.id) {
         try {
-          const w = await fetch(`/api/machines/${machine}/terminals/${t.id}/working-directory`).then((r) => r.json());
+          const w = await authJson(`/api/machines/${enc(machine)}/terminals/${enc(t.id)}/working-directory`);
           wd = w.working_directory || "";
         } catch {}
       }
@@ -106,7 +106,7 @@ export function openConsole({ machine, session, onClosed }) {
 
   overlay.querySelector(".shutdown").addEventListener("click", async (e) => {
     e.target.disabled = true;
-    try { await post(`/api/machines/${machine}/sessions/${session}/shutdown`); close(); }
+    try { await post(`/api/machines/${enc(machine)}/sessions/${enc(session)}/shutdown`); close(); }
     catch (err) { alert(`shutdown failed: ${err.message}`); e.target.disabled = false; }
   });
 
@@ -115,7 +115,7 @@ export function openConsole({ machine, session, onClosed }) {
       const key = KEY_MAP[btn.dataset.key];
       try {
         const tid = await resolveTid(machine, session);
-        if (tid) await post(`/api/machines/${machine}/terminals/${tid}/key`, { key });
+        if (tid) await post(`/api/machines/${enc(machine)}/terminals/${enc(tid)}/key`, { key });
       } catch (err) { flash(statusEl, `key failed`); }
     });
   });
@@ -132,7 +132,7 @@ export function openConsole({ machine, session, onClosed }) {
     const send = form.querySelector(".send");
     send.disabled = true;
     try {
-      await post(`/api/machines/${machine}/sessions/${session}/send`, { message: msg });
+      await post(`/api/machines/${enc(machine)}/sessions/${enc(session)}/send`, { message: msg });
       lastSent = msg; textarea.value = "";
       flash(statusEl, "sent");
     } catch (err) { alert(`send failed: ${err.message}`); }
@@ -149,8 +149,7 @@ const _tidCache = new Map();
 async function resolveTid(machine, session) {
   const key = `${machine}::${session}`;
   if (_tidCache.has(key)) return _tidCache.get(key);
-  const r = await fetch(`/api/machines/${machine}/sessions/${session}`);
-  const d = await r.json();
+  const d = await authJson(`/api/machines/${enc(machine)}/sessions/${enc(session)}`);
   const tid = (d.terminals || [])[0]?.id || null;
   if (tid) _tidCache.set(key, tid);
   return tid;

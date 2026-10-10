@@ -1,6 +1,8 @@
 # Your real fleet registry (copy fleet.example.json -> fleet.json and edit it).
 # Kept out of git so node addresses stay local to your machine.
 fleet.json
+fleet.json.lock
+fleet.json.bak.*
 
 # Generated conductor MCP config (built from fleet.json by bin/render-mcp-config.py).
 conductor/.mcp.json

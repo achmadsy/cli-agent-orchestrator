@@ -1,8 +1,10 @@
+import { authJson } from "./auth-client.js";
 import { renderScreen } from "./screen.js";
 import { createPoller } from "./poller.js";
 
 const TILE_FONT = '12px "JetBrains Mono", ui-monospace, monospace';
 const TILE_LINE_H = 16;
+const enc = encodeURIComponent;
 
 // status derives from a session's terminal status when known, else machine state
 export function tileStatus(machineOnline, termStatus) {
@@ -88,12 +90,12 @@ export function buildTile({ machine, machineOnline, session, onOpen }) {
 // so each tile shows which agent runs in which folder.
 async function enrichMeta(machine, session, el) {
   try {
-    const d = await fetch(`/api/machines/${machine}/sessions/${session}`).then((r) => r.json());
+    const d = await authJson(`/api/machines/${enc(machine)}/sessions/${enc(session)}`);
     const t = (d.terminals || [])[0] || {};
     let wd = "";
     if (t.id) {
       try {
-        const w = await fetch(`/api/machines/${machine}/terminals/${t.id}/working-directory`).then((r) => r.json());
+        const w = await authJson(`/api/machines/${enc(machine)}/terminals/${enc(t.id)}/working-directory`);
         wd = w.working_directory || "";
       } catch {}
     }
