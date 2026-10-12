@@ -717,6 +717,10 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db() -> None:
     """Initialize database tables and apply schema migrations."""
     _migrate_project_aliases_schema()
+    # Import optional feature models before create_all so their tables share the
+    # canonical CAO database without repository-local registry files.
+    from cli_agent_orchestrator.services import code_graph_registry  # noqa: F401
+
     Base.metadata.create_all(bind=engine)
     _restrict_db_file_permissions()
     _migrate_terminals_schema()
@@ -1620,6 +1624,11 @@ def _migrate_workflow_run() -> None:
             if "manifest_json" not in columns:
                 conn.execute("ALTER TABLE workflow_run ADD COLUMN manifest_json TEXT DEFAULT NULL")
                 logger.info("Migration: added manifest_json column to workflow_run")
+            if "role_providers_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE workflow_run ADD COLUMN role_providers_json TEXT DEFAULT NULL"
+                )
+                logger.info("Migration: added role_providers_json column to workflow_run")
             if "error" not in columns:
                 conn.execute("ALTER TABLE workflow_run ADD COLUMN error TEXT DEFAULT NULL")
                 logger.info("Migration: added error column to workflow_run")
@@ -1735,6 +1744,11 @@ def _migrate_workflow_run_step() -> None:
                     "ALTER TABLE workflow_run_step ADD COLUMN result_json TEXT DEFAULT NULL"
                 )
                 logger.info("Migration: added result_json column to workflow_run_step")
+            if "effective_provider" not in columns:
+                conn.execute(
+                    "ALTER TABLE workflow_run_step ADD COLUMN effective_provider TEXT DEFAULT NULL"
+                )
+                logger.info("Migration: added effective_provider column to workflow_run_step")
     except Exception as e:  # noqa: BLE001 — derived/recoverable; logged at debug (B4-RD-4)
         logger.debug(f"workflow_run_step migration skipped: {e}")
 

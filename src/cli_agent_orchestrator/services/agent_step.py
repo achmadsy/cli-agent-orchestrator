@@ -24,7 +24,7 @@ retry policy (FR-5.3); the HTTP handler maps it to an ``HTTPException``.
 import asyncio
 import logging
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from cli_agent_orchestrator.clients.database import upsert_handoff_result
 from cli_agent_orchestrator.models.kiro_engine import KiroEngine, parse_kiro_engine
@@ -442,6 +442,7 @@ async def run_agent_step(
     use_worktree: bool = False,
     job_id: Optional[str] = None,
     claim_id: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
 ) -> AgentStepResult:
     """Run one agent step and return its result (success only).
 
@@ -683,6 +684,7 @@ async def run_agent_step(
             model=model,
             use_worktree=use_worktree,
             claim_id=claim_id,
+            metadata=metadata,
         )
         terminal_id = terminal.id
 

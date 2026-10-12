@@ -49,6 +49,7 @@ from cli_agent_orchestrator.models.workflow import (
     WorkflowSpec,
     WorkflowStep,
 )
+from cli_agent_orchestrator.models.provider_policy import RoleProviderPolicy
 from cli_agent_orchestrator.models.workflow_runtime import (
     RunStatus,
     StepOutputRecord,
@@ -58,6 +59,10 @@ from cli_agent_orchestrator.models.workflow_runtime import (
 )
 from cli_agent_orchestrator.providers.base import OutputExtractionError
 from cli_agent_orchestrator.services import workflow_journal
+from cli_agent_orchestrator.services.provider_policy import (
+    parse_stored_policy,
+    resolve_role_provider,
+)
 from cli_agent_orchestrator.services.agent_step import (
     StepCancelledError,
     StepExecutionError,
@@ -161,6 +166,8 @@ class StepRunState:
     output: Optional[StepOutputRecord] = None
     terminal_id: Optional[str] = None
     error: Optional[str] = None
+    # Provider frozen for this run. Restored from the durable step row on resume.
+    effective_provider: Optional[str] = None
     # In-memory carrier for the step's ``v2`` call fingerprint (issue #583, unit
     # ``settlement-rewire``, BR-2/TD-3). ``run_agent_step`` COMPUTES the value in the one
     # window BR-5 permits — after working-directory resolution, before terminal creation —
@@ -192,6 +199,7 @@ class RunRecord:
     step_states: Dict[str, StepRunState] = field(default_factory=dict)
     started_at: str = ""
     finished_at: Optional[str] = None
+    role_providers: Dict[str, str] = field(default_factory=dict)
     # Per-run event sequence counter (U2, issue #504). Additive in-memory-only
     # field — NOT journaled directly as a column; it is the allocator for the
     # ``workflow_run_event.seq`` ordering key. Advanced by ``_next_event_seq`` at
@@ -288,11 +296,21 @@ def _journal_insert_run(record: RunRecord) -> None:
             inputs_json=json.dumps(record.inputs),
             state=record.state.value,
             started_at=record.started_at,
+            role_providers_json=(
+                json.dumps(record.role_providers, sort_keys=True)
+                if record.role_providers
+                else None
+            ),
         )
         workflow_journal.insert_steps(
             record.run_id,
             [(step.id, StepState.PENDING.value) for step in record.spec.steps],
             _now(),
+            {
+                step_id: state.effective_provider
+                for step_id, state in record.step_states.items()
+                if state.effective_provider is not None
+            },
         )
     except (
         Exception
@@ -639,7 +657,9 @@ def _topological_order(spec: WorkflowSpec) -> List[WorkflowStep]:
     return [by_id[sid] for sid in order]
 
 
-async def _collect_structured_output(record: RunRecord, step: WorkflowStep) -> StepState:
+async def _collect_structured_output(
+    record: RunRecord, step: WorkflowStep, effective_provider: Optional[str] = None
+) -> StepState:
     """Collect the structured return for a COMPLETED step; reprompt once (§3).
 
     - No ``output_schema`` -> free-form, trivially ``COMPLETED``.
@@ -651,6 +671,7 @@ async def _collect_structured_output(record: RunRecord, step: WorkflowStep) -> S
       (missing == invalid, decision note D1).
     """
     st = record.step_states[step.id]
+    provider = effective_provider or step.provider
 
     if step.output_schema is None:
         return StepState.COMPLETED
@@ -669,7 +690,7 @@ async def _collect_structured_output(record: RunRecord, step: WorkflowStep) -> S
             "step.reprompted",
             step_id=step.id,
             terminal_id=st.terminal_id,
-            provider=step.provider,
+            provider=provider,
             agent_profile=step.agent,
             reason="invalid_or_missing_output",
         )
@@ -677,7 +698,7 @@ async def _collect_structured_output(record: RunRecord, step: WorkflowStep) -> S
         # run-failure: let the StepExecutionError propagate so the OUTER loop
         # consumes an attempt (Q6=A / Trace C).
         result = await run_agent_step(
-            provider=step.provider,
+            provider=provider,
             agent=step.agent,
             prompt=_reprompt_prompt(step),
             teardown=True,
@@ -701,6 +722,16 @@ async def _collect_structured_output(record: RunRecord, step: WorkflowStep) -> S
     return StepState.COMPLETED_UNVALIDATED
 
 
+def _effective_step_provider(record: RunRecord, step: WorkflowStep) -> str:
+    """Return provider frozen for this run, resolving it once when absent."""
+    state = record.step_states[step.id]
+    if state.effective_provider is None:
+        state.effective_provider = resolve_role_provider(
+            step.agent, step.provider, record.role_providers
+        )
+    return state.effective_provider
+
+
 async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
     """Run one step through the two nested recovery loops (§2/§2a).
 
@@ -714,6 +745,22 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
     decides whether the run halts (``record.state = FAILED``) or continues.
     """
     n_retries = step.retries if step.retries is not None else WORKFLOW_DEFAULT_STEP_RETRIES
+    effective_provider = _effective_step_provider(record, step)
+    try:
+        effective_provider = await asyncio.to_thread(
+            workflow_journal.set_step_effective_provider,
+            record.run_id,
+            step.id,
+            effective_provider,
+        )
+        record.step_states[step.id].effective_provider = effective_provider
+    except Exception as exc:  # noqa: BLE001 - journal remains best-effort for live runs
+        logger.debug(
+            "journal: effective provider freeze '%s/%s' failed: %s",
+            record.run_id,
+            step.id,
+            exc,
+        )
     record.current_step_id = step.id
     st = record.step_states[step.id]
     st.state = StepState.RUNNING
@@ -727,7 +774,7 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
         "step.started",
         step_id=step.id,
         state=st.state.value,
-        provider=step.provider,
+        provider=effective_provider,
         agent_profile=step.agent,
     )
 
@@ -747,13 +794,13 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
             "step.attempt.started",
             step_id=step.id,
             attempt=attempt,
-            provider=step.provider,
+            provider=effective_provider,
             agent_profile=step.agent,
         )
         prompt = _substitute(step.prompt, record)  # §4 templating
         try:
             result = await run_agent_step(
-                provider=step.provider,
+                provider=effective_provider,
                 agent=step.agent,
                 prompt=prompt,
                 teardown=True,
@@ -764,6 +811,11 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
                     "CAO_WORKFLOW_STEP_ID": step.id,
                 },
                 cancel_event=record.cancel_event,
+                metadata=(
+                    {"role_providers": record.role_providers}
+                    if record.role_providers
+                    else None
+                ),
             )
             st.terminal_id = result.terminal_id
             # U2 emission: a terminal exists for this step (after the id is bound).
@@ -773,13 +825,13 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
                 step_id=step.id,
                 attempt=attempt,
                 terminal_id=result.terminal_id,
-                provider=step.provider,
+                provider=effective_provider,
                 agent_profile=step.agent,
             )
             # Resolve the structured return INSIDE the try so a crash during the
             # reprompt (§3 re-raises StepExecutionError) is caught below and
             # consumes an attempt (Q6=A, Trace C).
-            outcome = await _collect_structured_output(record, step)
+            outcome = await _collect_structured_output(record, step, effective_provider)
         except StepCancelledError as exc:
             # An in-flight cancel (#409b) is NOT a run-failure: do NOT consume the
             # rest of the retry budget and do NOT mark the step FAILED. Settle the
@@ -828,7 +880,7 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
                 state=st.state.value,
                 error_kind=exc.kind,
                 terminal_id=exc.terminal_id,
-                provider=step.provider,
+                provider=effective_provider,
                 agent_profile=step.agent,
             )
             continue  # consume an attempt, retry the same prompt
@@ -872,7 +924,7 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
             attempt=attempt,
             state=st.state.value,
             terminal_id=st.terminal_id,
-            provider=step.provider,
+            provider=effective_provider,
             agent_profile=step.agent,
         )
         return
@@ -891,7 +943,7 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
         state=st.state.value,
         error_kind=last_error_kind,
         terminal_id=st.terminal_id,
-        provider=step.provider,
+        provider=effective_provider,
         agent_profile=step.agent,
     )
     if (step.on_failure or "halt") == "halt":
@@ -1083,7 +1135,12 @@ def _check_run_id_available(run_id: str) -> None:
 # ---------------------------------------------------------------------------
 # §1 — start_run entry point
 # ---------------------------------------------------------------------------
-async def start_run(spec: WorkflowSpec, inputs: Dict[str, Any], run_id: str) -> WorkflowRunResult:
+async def start_run(
+    spec: WorkflowSpec,
+    inputs: Dict[str, Any],
+    run_id: str,
+    role_providers: Optional[RoleProviderPolicy] = None,
+) -> WorkflowRunResult:
     """Run a validated workflow spec to completion, awaited inline (§1, Q1=A).
 
     Steps: validate the run_id key (B3-BR-1, shared validator) and the inputs
@@ -1113,6 +1170,7 @@ async def start_run(spec: WorkflowSpec, inputs: Dict[str, Any], run_id: str) -> 
         _dispatch_reserved_mode(spec)
 
     # 3. Build the RunRecord.
+    compact_policy = role_providers.compact() if role_providers else {}
     record = RunRecord(
         run_id=run_id,
         workflow_name=spec.name,
@@ -1121,8 +1179,17 @@ async def start_run(spec: WorkflowSpec, inputs: Dict[str, Any], run_id: str) -> 
         state=RunState.RUNNING,
         current_step_id=None,
         cancelled=False,
-        step_states={step.id: StepRunState(step_id=step.id) for step in spec.steps},
+        step_states={
+            step.id: StepRunState(
+                step_id=step.id,
+                effective_provider=resolve_role_provider(
+                    step.agent, step.provider, compact_policy
+                ),
+            )
+            for step in spec.steps
+        },
         started_at=_now(),
+        role_providers=compact_policy,
     )
     # 4. Register (in-memory floor) + mark the drive live + journal the run +
     # seed every step (§1). The ``finally`` guarantees the liveness mark is
@@ -1291,6 +1358,9 @@ def _rebuild_record_from_journal(run_id: str) -> Optional[RunRecord]:
     try:
         spec = WorkflowSpec.model_validate_json(row.spec_snapshot)
         inputs = json.loads(row.inputs_json)
+        # Additive policy parses fail-open: corrupt value degrades to {},
+        # never to run-absent (unlike corrupt spec/inputs below).
+        role_providers = parse_stored_policy(row.role_providers_json)
         if not isinstance(inputs, dict):
             # "null" / arrays parse fine but leave record.inputs non-dict, which
             # would later escape _drive as an unmapped TypeError. Corrupt -> absent.
@@ -1304,6 +1374,7 @@ def _rebuild_record_from_journal(run_id: str) -> Optional[RunRecord]:
             current_step_id=row.current_step_id,
             started_at=row.started_at,
             finished_at=row.finished_at,
+            role_providers=role_providers,
         )
     except (ValidationError, ValueError, TypeError) as e:
         # ValidationError subclasses ValueError (pydantic v2) but is named for clarity;
@@ -1338,6 +1409,7 @@ def _rebuild_record_from_journal(run_id: str) -> Optional[RunRecord]:
                 attempts=srow.attempts,
                 output=_record_from_json(srow.output_json),
                 error=srow.error,
+                effective_provider=srow.effective_provider,
             )
         except ValueError as e:
             # Unknown ``state`` value etc. — one bad row must never abort the

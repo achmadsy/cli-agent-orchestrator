@@ -8,6 +8,10 @@ import {
   RunInspection,
   WorkflowEvent,
   GapMarker,
+  WorkflowSpecSummary,
+  WorkflowSource,
+  RoleProviderPolicy,
+  WorkflowRunSubmitResponse,
 } from './api'
 
 // Only trigger React re-renders when data actually changed
@@ -30,7 +34,13 @@ interface Store {
 
   fetchSessions: () => Promise<void>
   selectSession: (name: string | null) => Promise<void>
-  createSession: (provider: string, agentProfile: string, workingDirectory?: string, sessionName?: string) => Promise<void>
+  createSession: (
+    provider: string,
+    agentProfile: string,
+    workingDirectory?: string,
+    sessionName?: string,
+    roleProviders?: RoleProviderPolicy,
+  ) => Promise<void>
   deleteSession: (name: string) => Promise<void>
   showSnackbar: (snackbar: Snackbar) => void
   hideSnackbar: () => void
@@ -46,6 +56,20 @@ interface Store {
   setConnected: (connected: boolean) => void
   setTerminalStatus: (id: string, status: string) => void
   clearTerminalStatuses: (ids: string[]) => void
+
+  // Workflow source authoring/execution.
+  workflowSpecs: WorkflowSpecSummary[]
+  workflowSpecsLoading: boolean
+  workflowSpecsError: string | null
+  fetchWorkflowSpecs: () => Promise<void>
+  saveWorkflowSource: (source: WorkflowSource, create: boolean) => Promise<void>
+  deleteWorkflowSpec: (name: string) => Promise<void>
+  submitWorkflowRun: (
+    name: string,
+    inputs: Record<string, unknown>,
+    runId?: string,
+    roleProviders?: RoleProviderPolicy,
+  ) => Promise<WorkflowRunSubmitResponse>
 
   // ── Workflow run journal slice (Issue #504 / U8) ──────────────────────
   // Additive. The Workflows surface's run-list + selected-run playback state.
@@ -88,6 +112,9 @@ export const useStore = create<Store>((set, get) => ({
   navLockCount: 0,
   terminalStatuses: {},
 
+  workflowSpecs: [],
+  workflowSpecsLoading: false,
+  workflowSpecsError: null,
   workflowRuns: [],
   selectedRun: null,
   selectedRunId: null,
@@ -130,9 +157,15 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
-  createSession: async (provider, agentProfile, workingDirectory, sessionName) => {
+  createSession: async (provider, agentProfile, workingDirectory, sessionName, roleProviders) => {
     try {
-      await api.createSession(provider, agentProfile, sessionName, workingDirectory)
+      await api.createSession(
+        provider,
+        agentProfile,
+        sessionName,
+        workingDirectory,
+        roleProviders,
+      )
       get().showSnackbar({ type: 'success', message: 'Session created' })
       await get().fetchSessions()
     } catch (e: any) {
@@ -176,6 +209,42 @@ export const useStore = create<Store>((set, get) => ({
       if (Object.keys(next).length === Object.keys(state.terminalStatuses).length) return state
       return { terminalStatuses: next }
     }),
+
+  fetchWorkflowSpecs: async () => {
+    set({ workflowSpecsLoading: true, workflowSpecsError: null })
+    try {
+      const specs = await api.listWorkflows()
+      set({ workflowSpecs: specs, workflowSpecsLoading: false })
+    } catch (e: any) {
+      const message = e?.detail || e?.message || 'Failed to load workflows'
+      set({ workflowSpecsLoading: false, workflowSpecsError: message })
+      get().showSnackbar({ type: 'error', message })
+    }
+  },
+
+  saveWorkflowSource: async (source, create) => {
+    if (create) await api.createWorkflow(source)
+    else await api.replaceWorkflow(source.name, { tier: source.tier, content: source.content })
+    get().showSnackbar({
+      type: 'success',
+      message: create ? `Created ${source.name}` : `Saved ${source.name}`,
+    })
+    await get().fetchWorkflowSpecs()
+  },
+
+  deleteWorkflowSpec: async (name) => {
+    await api.deleteWorkflow(name)
+    get().showSnackbar({ type: 'success', message: `Deleted workflow ${name}` })
+    await get().fetchWorkflowSpecs()
+  },
+
+  submitWorkflowRun: async (name, inputs, runId, roleProviders) => {
+    const result = await api.submitWorkflowRun(name, inputs, runId, roleProviders)
+    get().showSnackbar({ type: 'success', message: `Started run ${result.run_id}` })
+    await get().fetchWorkflowRuns()
+    await get().selectWorkflowRun(result.run_id)
+    return result
+  },
 
   // ── Workflow run journal actions (Issue #504 / U8) ────────────────────
   fetchWorkflowRuns: async () => {

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { api, AgentProfileInfo, ProviderInfo } from '../api'
+import { api, AgentProfileInfo, ProviderInfo, ProviderRole, RoleProviderPolicy } from '../api'
 import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Tag, Search, Mail, Plus, LogOut, Send, FileText, X } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
@@ -64,6 +64,10 @@ export function AgentPanel() {
   const { showSnackbar } = useStore()
   const [outputTerminalId, setOutputTerminalId] = useState<string | null>(null)
   const [showSpawnModal, setShowSpawnModal] = useState(false)
+  const [selectedProfileRole, setSelectedProfileRole] = useState<string | undefined>()
+  const [delegatedMode, setDelegatedMode] = useState<'defaults' | 'same' | 'roles'>('defaults')
+  const [delegatedProvider, setDelegatedProvider] = useState('')
+  const [delegatedRoles, setDelegatedRoles] = useState<RoleProviderPolicy>({})
 
   const handleDeleteTerminal = async () => {
     if (!pendingClose) return
@@ -120,6 +124,18 @@ export function AgentPanel() {
   }, [])
 
   useEffect(() => {
+    if (!profile) {
+      setSelectedProfileRole(undefined)
+      return
+    }
+    let cancelled = false
+    api.getProfile(profile)
+      .then(detail => { if (!cancelled) setSelectedProfileRole(detail.role) })
+      .catch(() => { if (!cancelled) setSelectedProfileRole(undefined) })
+    return () => { cancelled = true }
+  }, [profile])
+
+  useEffect(() => {
     if (activeSession) {
       selectSession(activeSession)
       const interval = setInterval(() => selectSession(activeSession), 5000)
@@ -148,7 +164,25 @@ export function AgentPanel() {
     creatingRef.current = true
     setCreating(true)
     try {
-      await createSession(provider, profile.trim(), workingDirectory.trim() || undefined, sessionName.trim() || undefined)
+      let roleProviders: RoleProviderPolicy | undefined
+      if (delegatedMode === 'same' && delegatedProvider) {
+        roleProviders = {
+          supervisor: delegatedProvider,
+          developer: delegatedProvider,
+          reviewer: delegatedProvider,
+        }
+      } else if (delegatedMode === 'roles') {
+        roleProviders = Object.fromEntries(
+          Object.entries(delegatedRoles).filter(([, value]) => Boolean(value)),
+        ) as RoleProviderPolicy
+      }
+      await createSession(
+        provider,
+        profile.trim(),
+        workingDirectory.trim() || undefined,
+        sessionName.trim() || undefined,
+        roleProviders,
+      )
       setShowSpawnModal(false)
       setProfile('')
       setWorkingDirectory('')
@@ -606,6 +640,47 @@ export function AgentPanel() {
                   />
                 </div>
               </div>
+
+              {(selectedProfileRole === 'supervisor' || profile === 'code_supervisor') && (
+                <details className="rounded-lg border border-gray-700/50 bg-gray-900/50 p-3">
+                  <summary className="cursor-pointer text-xs font-medium text-gray-300">Delegated agent CLIs</summary>
+                  <p className="mt-2 text-xs text-gray-500">Automatically route Developer and Reviewer agents without relying on supervisor prompts.</p>
+                  <div className="mt-3 space-y-2">
+                    {([
+                      ['defaults', 'Inherit/profile defaults'],
+                      ['same', 'Same CLI for all roles'],
+                      ['roles', 'Customize by role'],
+                    ] as const).map(([value, label]) => (
+                      <label key={value} className="flex items-center gap-2 text-xs text-gray-300">
+                        <input type="radio" name="delegated-mode" checked={delegatedMode === value} onChange={() => setDelegatedMode(value)} />{label}
+                      </label>
+                    ))}
+                    {delegatedMode === 'same' && (
+                      <CustomSelect
+                        value={delegatedProvider}
+                        onChange={setDelegatedProvider}
+                        placeholder="Select installed CLI"
+                        options={providers.map(p => ({ value: p.name, label: p.name.replace(/_/g, ' '), disabled: !p.installed, sublabel: !p.installed ? 'Not installed' : undefined }))}
+                      />
+                    )}
+                    {delegatedMode === 'roles' && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {(['supervisor', 'developer', 'reviewer'] as ProviderRole[]).map(role => (
+                          <div key={role}>
+                            <label className="block mb-1 text-[11px] capitalize text-gray-500">{role}</label>
+                            <CustomSelect
+                              value={delegatedRoles[role] ?? ''}
+                              onChange={value => setDelegatedRoles(current => ({ ...current, [role]: value || undefined }))}
+                              placeholder="Default"
+                              options={[{ value: '', label: 'Default' }, ...providers.map(p => ({ value: p.name, label: p.name.replace(/_/g, ' '), disabled: !p.installed }))]}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </details>
+              )}
 
               {/* Quick-pick profiles */}
               {profiles.length > 0 && (

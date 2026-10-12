@@ -89,6 +89,71 @@ class TestValidateEndpoint:
         assert resp.json()["status"] == "fail"
 
 
+class TestSourceAuthoringEndpoints:
+    def test_validate_content_is_read_only(self, client, spec_dir):
+        resp = client.post(
+            "/workflows/validate-content",
+            json={
+                "name": "draft",
+                "tier": "yaml",
+                "content": _GOOD_SPEC.format(name="draft"),
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "pass"
+        assert list(spec_dir.iterdir()) == []
+
+    def test_create_source_get_and_update(self, client, isolated_db, spec_dir):
+        original = _GOOD_SPEC.format(name="editable") + "# original\n"
+        created = client.post(
+            "/workflows",
+            json={"name": "editable", "tier": "yaml", "content": original},
+        )
+        assert created.status_code == 201
+
+        source = client.get("/workflows/editable/source")
+        assert source.status_code == 200
+        assert source.json() == {
+            "name": "editable",
+            "tier": "yaml",
+            "content": original,
+        }
+
+        updated_content = original.replace("a workflow", "updated workflow")
+        updated = client.put(
+            "/workflows/editable",
+            json={"tier": "yaml", "content": updated_content},
+        )
+        assert updated.status_code == 200
+        assert client.get("/workflows/editable/source").json()["content"] == updated_content
+
+    def test_create_conflict_and_update_missing(self, client, isolated_db, spec_dir):
+        payload = {
+            "name": "taken",
+            "tier": "yaml",
+            "content": _GOOD_SPEC.format(name="taken"),
+        }
+        assert client.post("/workflows", json=payload).status_code == 201
+        assert client.post("/workflows", json=payload).status_code == 409
+        missing = client.put(
+            "/workflows/missing",
+            json={"tier": "yaml", "content": _GOOD_SPEC.format(name="missing")},
+        )
+        assert missing.status_code == 404
+
+    def test_yaml_storage_name_mismatch_is_400(self, client, isolated_db, spec_dir):
+        resp = client.post(
+            "/workflows",
+            json={
+                "name": "wanted",
+                "tier": "yaml",
+                "content": _GOOD_SPEC.format(name="other"),
+            },
+        )
+        assert resp.status_code == 400
+        assert "does not match storage name" in resp.json()["detail"]
+
+
 class TestListEndpoint:
     def test_list_returns_rows(self, client, isolated_db, spec_dir):
         _write(spec_dir, "alpha")

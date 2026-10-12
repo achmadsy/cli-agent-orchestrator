@@ -105,13 +105,20 @@ def agent():
     "--model", default=None, help="Model override for the worker (not honored by every provider)."
 )
 @click.option(
+    "--provider",
+    default=None,
+    help="Explicit provider override; wins over terminal role policy and profile defaults.",
+)
+@click.option(
     "--use-worktree",
     is_flag=True,
     default=False,
     help="Give the worker its own git worktree instead of sharing the caller's checkout.",
 )
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit the result as JSON.")
-def assign_cmd(agent_profile, message, working_directory, engine, model, use_worktree, as_json):
+def assign_cmd(
+    agent_profile, message, working_directory, engine, model, provider, use_worktree, as_json
+):
     """Assign a task to a new worker terminal without blocking.
 
     Equivalent to the MCP `assign` tool. Must run from inside a CAO terminal
@@ -125,14 +132,14 @@ def assign_cmd(agent_profile, message, working_directory, engine, model, use_wor
 
     Requires a running cao-server.
     """
-    result = _assign_impl(
-        agent_profile,
-        message,
-        working_directory,
-        engine=engine,
-        model=model,
-        use_worktree=use_worktree,
-    )
+    kwargs = {
+        "engine": engine,
+        "model": model,
+        "use_worktree": use_worktree,
+    }
+    if provider is not None:
+        kwargs["provider"] = provider
+    result = _assign_impl(agent_profile, message, working_directory, **kwargs)
     if not _emit(result, as_json):
         raise click.exceptions.Exit(1)
 
@@ -157,6 +164,11 @@ def assign_cmd(agent_profile, message, working_directory, engine, model, use_wor
     "--model", default=None, help="Model override for the worker (not honored by every provider)."
 )
 @click.option(
+    "--provider",
+    default=None,
+    help="Explicit provider override; wins over terminal role policy and profile defaults.",
+)
+@click.option(
     "--use-worktree",
     is_flag=True,
     default=False,
@@ -177,6 +189,7 @@ def handoff_cmd(
     working_directory,
     engine,
     model,
+    provider,
     use_worktree,
     no_wait,
     as_json,
@@ -223,17 +236,22 @@ def handoff_cmd(
         heartbeat_thread.start()
 
     try:
+        kwargs = {
+            "engine": engine,
+            "model": model,
+            "use_worktree": use_worktree,
+            "on_terminal_id": _report_terminal_id,
+            "wait": not no_wait,
+        }
+        if provider is not None:
+            kwargs["provider"] = provider
         result = asyncio.run(
             _handoff_impl(
                 agent_profile,
                 message,
                 timeout,
                 working_directory,
-                engine=engine,
-                model=model,
-                use_worktree=use_worktree,
-                on_terminal_id=_report_terminal_id,
-                wait=not no_wait,
+                **kwargs,
             )
         )
     except KeyboardInterrupt:

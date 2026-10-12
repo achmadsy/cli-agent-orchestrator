@@ -201,6 +201,71 @@ class TestLoadAndValidate:
         assert captured["size"] == WORKFLOW_MAX_SPEC_BYTES + 1
 
 
+class TestContentAuthoring:
+    def test_validate_content_does_not_write(self, spec_dir):
+        result = svc.validate_content("draft", "yaml", _GOOD_SPEC.format(name="draft"))
+        assert result.status == "pass"
+        assert list(spec_dir.iterdir()) == []
+
+    def test_yaml_name_must_match_storage_name(self):
+        result = svc.validate_content("wanted", "yaml", _GOOD_SPEC.format(name="other"))
+        assert result.status == "fail"
+        assert "does not match storage name" in result.errors[0]
+
+    def test_create_and_lossless_source_read(self, isolated_db, spec_dir):
+        content = _GOOD_SPEC.format(name="created") + "# trailing comment\n"
+        spec = svc.write_workflow(
+            "created", "yaml", content, create=True, scan_dir=str(spec_dir)
+        )
+        assert spec.name == "created"
+        source = svc.get_workflow_source("created", scan_dir=str(spec_dir))
+        assert source == {"name": "created", "tier": "yaml", "content": content}
+
+    def test_create_refuses_clobber(self, isolated_db, spec_dir):
+        content = _GOOD_SPEC.format(name="existing")
+        svc.write_workflow("existing", "yaml", content, create=True, scan_dir=str(spec_dir))
+        with pytest.raises(FileExistsError):
+            svc.write_workflow("existing", "yaml", content, create=True, scan_dir=str(spec_dir))
+
+    def test_update_requires_existing_target(self, isolated_db, spec_dir):
+        with pytest.raises(FileNotFoundError):
+            svc.write_workflow(
+                "missing",
+                "yaml",
+                _GOOD_SPEC.format(name="missing"),
+                create=False,
+                scan_dir=str(spec_dir),
+            )
+
+    def test_cross_tier_collision_rejected(self, isolated_db, spec_dir):
+        _write_spec(spec_dir, "collision")
+        with pytest.raises(svc.TierCollisionError):
+            svc.write_workflow(
+                "collision",
+                "python",
+                "from cao_workflow import emit_output\nemit_output({})\n",
+                create=True,
+                scan_dir=str(spec_dir),
+            )
+
+    def test_python_validation_never_executes_source(self, monkeypatch):
+        called = False
+
+        def forbidden(*args, **kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("source executed")
+
+        monkeypatch.setattr("builtins.exec", forbidden)
+        result = svc.validate_content(
+            "safe-script",
+            "python",
+            "raise RuntimeError('must not execute')\n",
+        )
+        assert result.status in ("pass", "fail")
+        assert called is False
+
+
 class TestValidateOnly:
     def test_pass(self, spec_dir):
         path = _write_spec(spec_dir, "ok")

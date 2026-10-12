@@ -110,6 +110,17 @@ export function RunDetail({ run, allRuns }: RunDetailProps) {
 
       <FailureDetail run={run} />
 
+      {run.role_providers && Object.keys(run.role_providers).length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-700/50 bg-gray-900/40 px-3 py-2 text-xs">
+          <span className="text-gray-500">Requested role policy</span>
+          {Object.entries(run.role_providers).map(([role, provider]) => (
+            <span key={role} className="rounded bg-emerald-950/50 px-2 py-1 font-mono text-emerald-300">
+              {role}: {provider}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Steps */}
       <div className="rounded-lg border border-gray-700/50 bg-gray-900/40 p-3">
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Steps</h3>

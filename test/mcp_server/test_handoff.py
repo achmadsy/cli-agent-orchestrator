@@ -12,10 +12,11 @@ contract; the caller is deliberately rewritten.)
 
 import asyncio
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from cli_agent_orchestrator.mcp_server.models import HandoffResult
 from cli_agent_orchestrator.utils.orchestration import (
     _HANDOFF_CREATE_TIMEOUT_S,
     HandoffContext,
@@ -508,6 +509,81 @@ class TestResolveHandoffProvider:
         assert ctx.caller_id == "c0ffee01"
         assert ctx.allowed_tools == ["fs_read", "fs_write"]
 
+    @patch("cli_agent_orchestrator.utils.orchestration._resolve_child_allowed_tools")
+    @patch("cli_agent_orchestrator.utils.orchestration.resolve_provider")
+    def test_terminal_role_policy_overrides_profile_provider(
+        self, mock_resolve, mock_child_tools
+    ):
+        from cli_agent_orchestrator.utils.orchestration import _resolve_handoff_provider
+
+        mock_resolve.return_value = "claude_code"
+        mock_child_tools.return_value = None
+        meta = MagicMock()
+        meta.json.return_value = {
+            "provider": "claude_code",
+            "session_name": "cao-sup",
+            "allowed_tools": None,
+            "metadata": {"role_providers": {"developer": "codex"}},
+        }
+        meta.raise_for_status.return_value = None
+
+        with patch.dict(os.environ, {"CAO_TERMINAL_ID": "c0ffee01"}):
+            with patch("cli_agent_orchestrator.utils.orchestration.requests") as requests:
+                requests.get.return_value = meta
+                ctx = _resolve_handoff_provider("developer")
+
+        assert ctx.provider == "codex"
+
+    @patch("cli_agent_orchestrator.utils.orchestration._resolve_child_allowed_tools")
+    @patch("cli_agent_orchestrator.utils.orchestration.resolve_provider")
+    def test_explicit_provider_overrides_terminal_policy(
+        self, mock_resolve, mock_child_tools
+    ):
+        from cli_agent_orchestrator.utils.orchestration import _resolve_handoff_provider
+
+        mock_resolve.return_value = "claude_code"
+        mock_child_tools.return_value = None
+        meta = MagicMock()
+        meta.json.return_value = {
+            "provider": "claude_code",
+            "session_name": "cao-sup",
+            "allowed_tools": None,
+            "metadata": {"role_providers": {"developer": "codex"}},
+        }
+        meta.raise_for_status.return_value = None
+
+        with patch.dict(os.environ, {"CAO_TERMINAL_ID": "c0ffee01"}):
+            with patch("cli_agent_orchestrator.utils.orchestration.requests") as requests:
+                requests.get.return_value = meta
+                ctx = _resolve_handoff_provider("developer", "kiro_cli")
+
+        assert ctx.provider == "kiro_cli"
+
+    @patch("cli_agent_orchestrator.utils.orchestration._resolve_child_allowed_tools")
+    @patch("cli_agent_orchestrator.utils.orchestration.resolve_provider")
+    def test_unmapped_custom_agent_keeps_profile_provider(
+        self, mock_resolve, mock_child_tools
+    ):
+        from cli_agent_orchestrator.utils.orchestration import _resolve_handoff_provider
+
+        mock_resolve.return_value = "opencode_cli"
+        mock_child_tools.return_value = None
+        meta = MagicMock()
+        meta.json.return_value = {
+            "provider": "claude_code",
+            "session_name": "cao-sup",
+            "allowed_tools": None,
+            "metadata": {"role_providers": {"developer": "codex"}},
+        }
+        meta.raise_for_status.return_value = None
+
+        with patch.dict(os.environ, {"CAO_TERMINAL_ID": "c0ffee01"}):
+            with patch("cli_agent_orchestrator.utils.orchestration.requests") as requests:
+                requests.get.return_value = meta
+                ctx = _resolve_handoff_provider("custom_agent")
+
+        assert ctx.provider == "opencode_cli"
+
     @patch("cli_agent_orchestrator.utils.orchestration.resolve_provider")
     def test_outside_cao_terminal_yields_empty_context(self, mock_resolve):
         from cli_agent_orchestrator.utils.orchestration import _resolve_handoff_provider
@@ -520,6 +596,33 @@ class TestResolveHandoffProvider:
         assert ctx.session_name is None
         assert ctx.caller_id is None
         assert ctx.allowed_tools is None
+
+
+class TestRemoteHandoffProviderPolicy:
+    @patch("cli_agent_orchestrator.utils.orchestration._run_step_and_build_result", new_callable=AsyncMock)
+    @patch("cli_agent_orchestrator.utils.orchestration._resolve_remote_provider")
+    def test_remote_handoff_forwards_terminal_role_policy(self, remote_profile, run_step):
+        from cli_agent_orchestrator.utils.orchestration import _handoff_impl
+
+        remote_profile.return_value = "claude_code"
+        run_step.return_value = HandoffResult(success=True, message="ok")
+        metadata = MagicMock()
+        metadata.json.return_value = {
+            "provider": "claude_code",
+            "session_name": "cao-sup",
+            "metadata": {"role_providers": {"developer": "codex"}},
+        }
+        metadata.raise_for_status.return_value = None
+        with patch.dict(os.environ, {"CAO_TERMINAL_ID": "c0ffee01"}):
+            with patch("cli_agent_orchestrator.utils.orchestration.requests.get", return_value=metadata):
+                asyncio.run(
+                    _handoff_impl(
+                        "developer", "task", target_host="worker.internal"
+                    )
+                )
+
+        assert run_step.await_args.args[2] == "codex"
+        remote_profile.assert_not_called()
 
 
 class TestHandoffEarlyTerminalId:

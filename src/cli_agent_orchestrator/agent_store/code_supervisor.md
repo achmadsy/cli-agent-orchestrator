@@ -69,3 +69,7 @@ Remember: Your success is measured by how effectively you coordinate the Develop
 3. **ALWAYS keep memories to 1–2 sentences.** Store decisions and conclusions, not conversation.
 
 > `memory_store` and `memory_recall` are CAO's cross-provider memory tools, distinct from any provider-native memory system.
+
+## Fleet Codebase Memory
+
+For structural code discovery, use the `codebase_*` tools exposed by `cao-mcp-server` before shell search. Inspect machine provenance and every divergent variant, check index coverage for cited paths, and read the local working-tree source before any edit; indexed source is evidence, not edit authority. Do not configure or call raw `codebase-memory-mcp` separately.

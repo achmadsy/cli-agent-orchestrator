@@ -89,6 +89,7 @@ _REQUIRED_RUN_COLUMNS = frozenset(
         # ``test_workflow_journal_connection_posture.py::test_the_required_column_sets_match_what_the_migrators_produce``
         # exists to catch.
         "manifest_json",
+        "role_providers_json",
         "error",
     }
 )
@@ -106,6 +107,7 @@ _REQUIRED_STEP_COLUMNS = frozenset(
         "reprompted",
         "error_kind",
         "result_json",
+        "effective_provider",
     }
 )
 
@@ -130,6 +132,7 @@ class RunRow:
     # same shape ``StepRow``'s docstring describes for U1's nullable fields: a row written before this
     # (or by a YAML run, which never freezes) reads back observably identical to its previous shape.
     manifest_json: Optional[str] = None
+    role_providers_json: Optional[str] = None
     # Issue #753: redacted, bounded script-level failure diagnostic.
     error: Optional[str] = None
 
@@ -167,6 +170,7 @@ class StepRow:
     # agree. #504 is published on main, so its order is preserved and ``result_json``
     # takes the new last slot — which also honours this field's own append-only rule.
     result_json: Optional[str] = None
+    effective_provider: Optional[str] = None
 
 
 @dataclass
@@ -380,6 +384,7 @@ def insert_run(
     tier: str = "yaml",
     generation: str = "1",
     manifest_json: Optional[str] = None,
+    role_providers_json: Optional[str] = None,
 ) -> None:
     """INSERT the ``workflow_run`` row at ``start_run`` (lifecycle table, E1).
 
@@ -400,8 +405,9 @@ def insert_run(
         conn.execute(
             "INSERT INTO workflow_run "
             "(run_id, workflow_name, spec_snapshot, inputs_json, state, "
-            " current_step_id, started_at, finished_at, tier, generation, manifest_json) "
-            "VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?)",
+            " current_step_id, started_at, finished_at, tier, generation, manifest_json, "
+            " role_providers_json) "
+            "VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)",
             (
                 run_id,
                 workflow_name,
@@ -412,6 +418,7 @@ def insert_run(
                 tier,
                 generation,
                 manifest_json,
+                role_providers_json,
             ),
         )
 
@@ -428,6 +435,8 @@ def insert_run_with_steps(
     tier: str = "yaml",
     generation: str = "1",
     manifest_json: Optional[str] = None,
+    role_providers_json: Optional[str] = None,
+    effective_providers: Optional[Mapping[str, str]] = None,
 ) -> None:
     """Atomically INSERT the run row AND seed its step rows in ONE transaction (U2, TR-1).
 
@@ -457,8 +466,9 @@ def insert_run_with_steps(
         conn.execute(
             "INSERT INTO workflow_run "
             "(run_id, workflow_name, spec_snapshot, inputs_json, state, "
-            " current_step_id, started_at, finished_at, tier, generation, manifest_json) "
-            "VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?)",
+            " current_step_id, started_at, finished_at, tier, generation, manifest_json, "
+            " role_providers_json) "
+            "VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)",
             (
                 run_id,
                 workflow_name,
@@ -469,13 +479,19 @@ def insert_run_with_steps(
                 tier,
                 generation,
                 manifest_json,
+                role_providers_json,
             ),
         )
+        providers = effective_providers or {}
         conn.executemany(
             "INSERT OR REPLACE INTO workflow_run_step "
-            "(run_id, step_id, state, attempts, output_json, error, updated_at) "
-            "VALUES (?, ?, ?, 0, NULL, NULL, ?)",
-            [(run_id, step_id, step_state, updated_at) for step_id, step_state in steps],
+            "(run_id, step_id, state, attempts, output_json, error, updated_at, "
+            " effective_provider) "
+            "VALUES (?, ?, ?, 0, NULL, NULL, ?, ?)",
+            [
+                (run_id, step_id, step_state, updated_at, providers.get(step_id))
+                for step_id, step_state in steps
+            ],
         )
 
 
@@ -496,18 +512,24 @@ def compare_and_set_run_manifest(
         return cursor.rowcount == 1
 
 
-def insert_steps(run_id: str, steps: Sequence[Tuple[str, str]], updated_at: str) -> None:
-    """INSERT one ``workflow_run_step`` row per ``(step_id, state)`` (E2).
-
-    Called once at ``start_run`` to seed every spec step (typically ``pending``).
-    ``INSERT OR REPLACE`` so a re-seed is idempotent.
-    """
+def insert_steps(
+    run_id: str,
+    steps: Sequence[Tuple[str, str]],
+    updated_at: str,
+    effective_providers: Optional[Mapping[str, str]] = None,
+) -> None:
+    """Seed step rows, including providers frozen at run admission."""
+    providers = effective_providers or {}
     with _connect() as conn:
         conn.executemany(
             "INSERT OR REPLACE INTO workflow_run_step "
-            "(run_id, step_id, state, attempts, output_json, error, updated_at) "
-            "VALUES (?, ?, ?, 0, NULL, NULL, ?)",
-            [(run_id, step_id, state, updated_at) for step_id, state in steps],
+            "(run_id, step_id, state, attempts, output_json, error, updated_at, "
+            " effective_provider) "
+            "VALUES (?, ?, ?, 0, NULL, NULL, ?, ?)",
+            [
+                (run_id, step_id, state, updated_at, providers.get(step_id))
+                for step_id, state in steps
+            ],
         )
 
 
@@ -538,6 +560,44 @@ def update_step(
             "WHERE run_id = ? AND step_id = ?",
             (state, attempts, output_json, error, error_kind, updated_at, run_id, step_id),
         )
+
+
+def set_step_effective_provider(run_id: str, step_id: str, provider: str) -> str:
+    """Freeze provider once and return durable value.
+
+    YAML rows are seeded at admission. Script rows may not exist until the first
+    dynamic step call, so this helper inserts a minimal row when needed and only
+    fills a NULL provider on conflict. Existing non-NULL values always win.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT effective_provider FROM workflow_run_step "
+            "WHERE run_id = ? AND step_id = ?",
+            (run_id, step_id),
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            return str(row[0])
+        if row is None:
+            conn.execute(
+                "INSERT INTO workflow_run_step "
+                "(run_id, step_id, state, attempts, output_json, error, updated_at, "
+                " effective_provider) VALUES (?, ?, 'pending', 0, NULL, NULL, '', ?)",
+                (run_id, step_id, provider),
+            )
+        else:
+            conn.execute(
+                "UPDATE workflow_run_step SET effective_provider = ? "
+                "WHERE run_id = ? AND step_id = ? AND effective_provider IS NULL",
+                (provider, run_id, step_id),
+            )
+        row = conn.execute(
+            "SELECT effective_provider FROM workflow_run_step "
+            "WHERE run_id = ? AND step_id = ?",
+            (run_id, step_id),
+        ).fetchone()
+    if row is None or row[0] is None:  # pragma: no cover - same transaction guarantees row
+        raise RuntimeError(f"failed to freeze provider for step '{run_id}/{step_id}'")
+    return str(row[0])
 
 
 def update_run_current_step(run_id: str, current_step_id: Optional[str]) -> None:
@@ -874,7 +934,8 @@ def get_run(run_id: str) -> Optional[RunRow]:
     with _connect() as conn:
         row = conn.execute(
             "SELECT run_id, workflow_name, spec_snapshot, inputs_json, state, "
-            "current_step_id, started_at, finished_at, tier, generation, manifest_json, error "
+            "current_step_id, started_at, finished_at, tier, generation, manifest_json, "
+            "role_providers_json, error "
             "FROM workflow_run WHERE run_id = ?",
             (run_id,),
         ).fetchone()
@@ -894,7 +955,8 @@ def get_run(run_id: str) -> Optional[RunRow]:
         # issue #583 Bolt 2, ``approval-gate``: NULL for every YAML run and for any run whose freeze
         # failed. Both read back as None, which the resume gate refuses when enforcement is on.
         manifest_json=row[10],
-        error=row[11],
+        role_providers_json=row[11],
+        error=row[12],
     )
 
 
@@ -911,7 +973,8 @@ def get_steps(run_id: str) -> List[StepRow]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT run_id, step_id, state, attempts, output_json, error, updated_at, "
-            "call_fingerprint, terminal_id, reprompted, error_kind, result_json "
+            "call_fingerprint, terminal_id, reprompted, error_kind, result_json, "
+            "effective_provider "
             "FROM workflow_run_step WHERE run_id = ?",
             (run_id,),
         ).fetchall()
@@ -929,6 +992,7 @@ def get_steps(run_id: str) -> List[StepRow]:
             reprompted=r[9],
             error_kind=r[10],
             result_json=r[11],
+            effective_provider=r[12],
         )
         for r in rows
     ]
@@ -952,7 +1016,8 @@ def get_step(run_id: str, step_id: str) -> Optional[StepRow]:
     with _connect() as conn:
         row = conn.execute(
             "SELECT run_id, step_id, state, attempts, output_json, error, updated_at, "
-            "call_fingerprint, terminal_id, reprompted, error_kind, result_json "
+            "call_fingerprint, terminal_id, reprompted, error_kind, result_json, "
+            "effective_provider "
             "FROM workflow_run_step WHERE run_id = ? AND step_id = ?",
             (run_id, step_id),
         ).fetchone()
@@ -971,6 +1036,7 @@ def get_step(run_id: str, step_id: str) -> Optional[StepRow]:
         reprompted=row[9],
         error_kind=row[10],
         result_json=row[11],
+        effective_provider=row[12],
     )
 
 

@@ -106,6 +106,7 @@ from cli_agent_orchestrator.models.memory import (
     MemoryScopeId,
     MemoryType,
 )
+from cli_agent_orchestrator.models.provider_policy import RoleProviderPolicy
 from cli_agent_orchestrator.models.terminal import Terminal, TerminalId, TerminalLimitError
 from cli_agent_orchestrator.models.workflow import RecoveryPolicy
 from cli_agent_orchestrator.plugins import PluginRegistry
@@ -134,6 +135,7 @@ from cli_agent_orchestrator.services import (
     flow_service,
     manifest_freeze,
     secret_gate,
+    workflow_journal,
     session_service,
     terminal_service,
 )
@@ -155,6 +157,10 @@ from cli_agent_orchestrator.services.fifo_reader import fifo_manager
 from cli_agent_orchestrator.services.herdr_inbox_registry import set_herdr_inbox_service
 from cli_agent_orchestrator.services.herdr_inbox_service import HerdrInboxService
 from cli_agent_orchestrator.services.inbox_service import inbox_service
+from cli_agent_orchestrator.services.provider_policy import (
+    parse_stored_policy,
+    resolve_role_provider,
+)
 from cli_agent_orchestrator.services.install_service import (
     InstallResult,
     KiroAgentPathError,
@@ -674,6 +680,21 @@ class WorkflowValidateRequest(BaseModel):
     path: str = Field(description="Filesystem path to the workflow spec YAML file")
 
 
+class WorkflowSourceRequest(BaseModel):
+    """Workflow source create/update and draft-validation payload."""
+
+    name: str = Field(description="Bare workflow name")
+    tier: Literal["yaml", "python"] = Field(description="Workflow source tier")
+    content: str = Field(description="UTF-8 workflow source")
+
+
+class WorkflowSourceUpdateRequest(BaseModel):
+    """Workflow source update payload; path identity comes from the route."""
+
+    tier: Literal["yaml", "python"] = Field(description="Workflow source tier")
+    content: str = Field(description="UTF-8 workflow source")
+
+
 class StepOutputRequest(BaseModel):
     """Request body for the structured-return endpoint (Bolt 2, N4, C5).
 
@@ -698,6 +719,12 @@ class WorkflowRunRequest(BaseModel):
     run_id: Optional[str] = Field(
         default=None,
         description="Optional run id (matches WORKFLOW_NAME_RE); auto-generated if omitted",
+    )
+    role_providers: Optional["RoleProviderPolicy"] = Field(
+        default=None,
+        description=(
+            "Optional provider overrides for recognized supervisor, developer, and reviewer roles"
+        ),
     )
 
 
@@ -802,6 +829,7 @@ class StepInspection(BaseModel):
     terminal_id: Optional[str] = None
     reprompted: Optional[int] = None
     call_fingerprint: Optional[str] = None
+    effective_provider: Optional[str] = None
 
 
 class RunInspection(BaseModel):
@@ -823,6 +851,7 @@ class RunInspection(BaseModel):
     started_at: str
     finished_at: Optional[str] = None
     tier: str
+    role_providers: Dict[str, str] = Field(default_factory=dict)
     steps: List[StepInspection] = Field(default_factory=list)
 
 
@@ -1351,6 +1380,15 @@ async def lifespan(app: FastAPI):
     # degrade to a 0-run no-op) and bounds are read from settings.
     asyncio.create_task(asyncio.to_thread(_sweep_workflow_runs_at_startup))
 
+    # Publish local Codebase Memory metadata and keep worker heartbeats fresh.
+    code_graph_task: Optional[asyncio.Task] = None
+    from cli_agent_orchestrator.services.code_graph_service import code_graph_enabled
+
+    if code_graph_enabled():
+        from cli_agent_orchestrator.services.code_graph_runtime import code_graph_heartbeat_loop
+
+        code_graph_task = asyncio.create_task(code_graph_heartbeat_loop())
+
     # Start flow daemon as background task
     daemon_task = asyncio.create_task(flow_daemon())
 
@@ -1417,6 +1455,13 @@ async def lifespan(app: FastAPI):
         logger.info("Herdr inbox service started")
 
     yield
+
+    if code_graph_task is not None:
+        code_graph_task.cancel()
+        try:
+            await code_graph_task
+        except asyncio.CancelledError:
+            pass
 
     # Stop herdr inbox service on shutdown
     if herdr_inbox_task is not None:
@@ -4392,6 +4437,15 @@ async def run_step(
     env_vars = body.env_vars or {}
     fence_run_id = env_vars.get("CAO_WORKFLOW_RUN_ID")
     fence_generation = env_vars.get("CAO_WORKFLOW_GENERATION")
+    run_role_providers: Dict[str, str] = {}
+    if fence_run_id is not None:
+        policy_row = await asyncio.to_thread(workflow_journal.get_run, fence_run_id)
+        if policy_row is not None:
+            run_role_providers = parse_stored_policy(policy_row.role_providers_json)
+
+    effective_step_provider = resolve_role_provider(
+        body.agent, body.provider, run_role_providers
+    )
     if fence_run_id is not None and fence_generation is not None:
         try:
             workflow_service.check_generation(fence_run_id, fence_generation)
@@ -4402,6 +4456,16 @@ async def run_step(
             )
         except KeyError as e:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+    step_id_for_provider = env_vars.get("CAO_WORKFLOW_STEP_ID")
+    if fence_run_id is not None and step_id_for_provider is not None:
+        # Read-only before replay decision: a replay must perform no write, and
+        # creating a row here would make a brand-new step look interrupted.
+        frozen_step = await asyncio.to_thread(
+            workflow_journal.get_step, fence_run_id, step_id_for_provider
+        )
+        if frozen_step is not None and frozen_step.effective_provider:
+            effective_step_provider = frozen_step.effective_provider
 
     # Mark the job as in-progress before the long-running substrate starts.
     # This is best-effort; a failure here must not block execution. Placed
@@ -4449,7 +4513,7 @@ async def run_step(
             replay_step_id,
             compute(
                 StepCallFields(
-                    provider=body.provider,
+                    provider=effective_step_provider,
                     agent=body.agent,
                     prompt=body.prompt,
                     model=body.model,
@@ -4564,8 +4628,18 @@ async def run_step(
                 )
             # EXECUTE falls through — the step runs normally.
 
+        if fence_run_id is not None and step_id_for_provider is not None:
+            # Freeze only after replay gate authorizes execution. This preserves
+            # replay's no-write invariant and avoids manufacturing an interrupted row.
+            effective_step_provider = await asyncio.to_thread(
+                workflow_journal.set_step_effective_provider,
+                fence_run_id,
+                step_id_for_provider,
+                effective_step_provider,
+            )
+
         result = await run_agent_step(
-            provider=body.provider,
+            provider=effective_step_provider,
             agent=body.agent,
             prompt=body.prompt,
             session_name=body.session_name,
@@ -4588,6 +4662,11 @@ async def run_step(
             use_worktree=body.use_worktree,
             job_id=job_id,
             claim_id=body.claim_id,
+            metadata=(
+                {"role_providers": run_role_providers}
+                if run_role_providers
+                else None
+            ),
         )
         # Success -> transition the script step RUNNING->COMPLETED (no-op for
         # non-script callers). Before building the response so a settle failure
@@ -4806,6 +4885,42 @@ async def validate_workflow_endpoint(
     )
 
 
+@app.post("/workflows/validate-content")
+async def validate_workflow_content_endpoint(
+    body: WorkflowSourceRequest,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    """Validate unsaved YAML or Python workflow source without writing it."""
+    from cli_agent_orchestrator.services import workflow_spec_service
+
+    try:
+        return workflow_spec_service.validate_content(
+            body.name, body.tier, body.content
+        ).model_dump()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.post("/workflows", status_code=status.HTTP_201_CREATED)
+async def create_workflow_endpoint(
+    body: WorkflowSourceRequest,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    """Create validated workflow source without clobbering an existing name."""
+    from cli_agent_orchestrator.models.workflow import TierCollisionError
+    from cli_agent_orchestrator.services import workflow_spec_service
+
+    try:
+        spec = workflow_spec_service.write_workflow(
+            body.name, body.tier, body.content, create=True
+        )
+    except (FileExistsError, TierCollisionError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return spec.model_dump()
+
+
 @app.get("/workflows")
 async def list_workflows_endpoint(
     dir: Optional[str] = Query(default=None),
@@ -4879,6 +4994,49 @@ async def list_workflow_runs_endpoint(
             detail=f"failed to list runs: {e}",
         )
     return [asdict(row) for row in rows]
+
+
+@app.get("/workflows/{name}/source")
+async def get_workflow_source_endpoint(
+    name: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    """Return lossless source for workflow editor use."""
+    from cli_agent_orchestrator.services import workflow_spec_service
+
+    try:
+        return workflow_spec_service.get_workflow_source(name)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown workflow '{name}'"
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.put("/workflows/{name}")
+async def update_workflow_endpoint(
+    name: str,
+    body: WorkflowSourceUpdateRequest,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    """Replace one existing validated workflow source file."""
+    from cli_agent_orchestrator.models.workflow import TierCollisionError
+    from cli_agent_orchestrator.services import workflow_spec_service
+
+    try:
+        spec = workflow_spec_service.write_workflow(
+            name, body.tier, body.content, create=False
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except TierCollisionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return spec.model_dump()
 
 
 @app.get("/workflows/{name}")
@@ -5371,7 +5529,12 @@ async def start_workflow_run_endpoint(
         return result.model_dump()
 
     try:
-        result = await workflow_service.start_run(spec, body.inputs, run_id)
+        if body.role_providers is None:
+            result = await workflow_service.start_run(spec, body.inputs, run_id)
+        else:
+            result = await workflow_service.start_run(
+                spec, body.inputs, run_id, body.role_providers
+            )
     except NotBuiltYetError as e:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e))
     except KeyError as e:
@@ -5602,12 +5765,18 @@ async def submit_workflow_run_endpoint(
                 workflow_service._dispatch_reserved_mode(spec)
             except NotBuiltYetError as e:
                 raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e))
+        # Freeze every YAML step provider before durable admission. Resume uses
+        # these per-step values rather than re-resolving against later profile changes.
+        compact_policy = body.role_providers.compact() if body.role_providers else {}
+        effective_providers = {
+            step.id: resolve_role_provider(step.agent, step.provider, compact_policy)
+            for step in spec.steps
+        }
         # Step 5 — the awaited HARD ATOMIC durable insert (INV-1, TR-1): the run row
         # AND its seeded step rows commit in ONE transaction, so a failure leaves
         # NEITHER (no phantom RUNNING row). Its failure aborts with 500 + NO 202.
         try:
-            await asyncio.to_thread(
-                workflow_journal.insert_run_with_steps,
+            insert_args = (
                 run_id,
                 spec.name,
                 spec.model_dump_json(),
@@ -5616,9 +5785,22 @@ async def submit_workflow_run_endpoint(
                 started_at,
                 [(step.id, StepState.PENDING.value) for step in spec.steps],
                 started_at,
-                "yaml",
-                "1",
             )
+            if compact_policy:
+                await asyncio.to_thread(
+                    workflow_journal.insert_run_with_steps,
+                    *insert_args,
+                    "yaml",
+                    "1",
+                    None,
+                    json.dumps(compact_policy, sort_keys=True),
+                    effective_providers,
+                )
+            else:
+                # Exact legacy call shape when policy is omitted.
+                await asyncio.to_thread(
+                    workflow_journal.insert_run_with_steps, *insert_args
+                )
         except sqlite3.IntegrityError:
             # Same TOCTOU → 409 mapping as the script arm above; ordered before the
             # generic sqlite3.Error arm because IntegrityError subclasses it.
@@ -5641,9 +5823,14 @@ async def submit_workflow_run_endpoint(
             current_step_id=None,
             cancelled=False,
             step_states={
-                step.id: workflow_service.StepRunState(step_id=step.id) for step in spec.steps
+                step.id: workflow_service.StepRunState(
+                    step_id=step.id,
+                    effective_provider=effective_providers[step.id],
+                )
+                for step in spec.steps
             },
             started_at=started_at,
+            role_providers=compact_policy,
         )
         tier = "yaml"
 
@@ -5778,6 +5965,7 @@ async def get_workflow_run_endpoint(
                 terminal_id=srow.terminal_id if srow else None,
                 reprompted=srow.reprompted if srow else None,
                 call_fingerprint=srow.call_fingerprint if srow else None,
+                effective_provider=srow.effective_provider if srow else None,
             )
         )
         seen.add(st.id)
@@ -5795,6 +5983,7 @@ async def get_workflow_run_endpoint(
                 terminal_id=srow.terminal_id,
                 reprompted=srow.reprompted,
                 call_fingerprint=srow.call_fingerprint,
+                effective_provider=srow.effective_provider,
             )
         )
 
@@ -5823,6 +6012,11 @@ async def get_workflow_run_endpoint(
         started_at=started_at,
         finished_at=finished_at,
         tier=tier,
+        role_providers=(
+            parse_stored_policy(run_row.role_providers_json)
+            if run_row is not None
+            else getattr(workflow_service.run_registry.get(run_id), "role_providers", {})
+        ),
         steps=steps,
     )
 
@@ -7795,6 +7989,125 @@ async def run_flow(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to execute flow: {str(e)}",
         )
+
+
+# ── Fleet Codebase Memory endpoints ──────────────────────────────────
+
+
+def _require_code_graph_enabled() -> None:
+    from cli_agent_orchestrator.services.code_graph_service import code_graph_enabled
+
+    if not code_graph_enabled():
+        raise HTTPException(status_code=404, detail="Fleet Codebase Memory is disabled")
+
+
+def _require_private_code_graph_peer(request: Request) -> str:
+    """Allow direct loopback/Tailscale traffic, never a public reverse-proxy hop."""
+    import ipaddress
+
+    host = request.client.host if request.client else ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="Code graph route requires private peer") from exc
+    tailnet = ipaddress.ip_network("100.64.0.0/10")
+    # Reject browser-facing nginx/Cloudflare routing before accepting the proxy's
+    # own private source address. Internal CAO calls use direct IP/loopback Hosts.
+    request_host = request.headers.get("host", "").split(":", 1)[0].lower()
+    if request_host.endswith(".zlink.my.id") or any(
+        request.headers.get(name)
+        for name in ("cf-connecting-ip", "cf-ray", "x-forwarded-host", "x-forwarded-proto")
+    ):
+        raise HTTPException(status_code=403, detail="Code graph route requires private peer")
+    # nginx/Cloudflare may also carry the original address explicitly.
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        try:
+            original = ipaddress.ip_address(forwarded.split(",", 1)[0].strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="Code graph route requires private peer") from exc
+        if not (original.is_loopback or original in tailnet):
+            raise HTTPException(status_code=403, detail="Code graph route requires private peer")
+    if not (address.is_loopback or address in tailnet):
+        raise HTTPException(status_code=403, detail="Code graph route requires private peer")
+    return host
+
+
+@app.get("/internal/code-graph/local/status")
+async def internal_code_graph_local_status(
+    request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    _require_code_graph_enabled()
+    _require_private_code_graph_peer(request)
+    from cli_agent_orchestrator.services.code_graph_service import (
+        binary_version,
+        discover_local_projects,
+        node_id,
+    )
+
+    return {
+        "source_node": node_id(),
+        "cbm_version": await binary_version(),
+        "projects": [item.model_dump(mode="json") for item in await discover_local_projects()],
+    }
+
+
+@app.post("/internal/code-graph/local/query")
+async def internal_code_graph_local_query(
+    body: Dict[str, Any],
+    request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    _require_code_graph_enabled()
+    _require_private_code_graph_peer(request)
+    from cli_agent_orchestrator.models.code_graph import CodeGraphQuery
+    from cli_agent_orchestrator.services.code_graph_service import local_query
+
+    return (await local_query(CodeGraphQuery.model_validate(body))).model_dump(mode="json")
+
+
+@app.post("/internal/code-graph/heartbeat")
+async def internal_code_graph_heartbeat(
+    body: Dict[str, Any],
+    request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    _require_code_graph_enabled()
+    peer = _require_private_code_graph_peer(request)
+    from cli_agent_orchestrator.models.code_graph import CodeGraphHeartbeat
+    from cli_agent_orchestrator.services.code_graph_registry import upsert_heartbeat
+
+    heartbeat = CodeGraphHeartbeat.model_validate(body)
+    # Base URL is derived from authenticated TCP peer, never caller-controlled.
+    await asyncio.to_thread(upsert_heartbeat, heartbeat, f"http://{peer}:{SERVER_PORT}")
+    return {"accepted": True, "node_id": heartbeat.node_id}
+
+
+@app.post("/internal/code-graph/query")
+async def internal_code_graph_query(
+    body: Dict[str, Any],
+    request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    _require_code_graph_enabled()
+    _require_private_code_graph_peer(request)
+    from cli_agent_orchestrator.models.code_graph import CodeGraphQuery
+    from cli_agent_orchestrator.services.code_graph_gateway import query_code_graph
+
+    return await query_code_graph(CodeGraphQuery.model_validate(body))
+
+
+@app.get("/internal/code-graph/projects")
+async def internal_code_graph_projects(
+    request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    _require_code_graph_enabled()
+    _require_private_code_graph_peer(request)
+    from cli_agent_orchestrator.services.code_graph_gateway import list_code_graph_projects
+
+    return await list_code_graph_projects()
 
 
 # ── Memory endpoints ─────────────────────────────────────────────────

@@ -268,6 +268,29 @@ def test_rebuild_skips_bad_state_and_ghost_step_rows(_patched_journal):
     assert record.step_states["s2"].state == StepState.PENDING  # seeded default kept
 
 
+def test_corrupt_role_policy_does_not_hide_run(_patched_journal):
+    spec = _spec()
+    workflow_journal.insert_run(
+        "run-policy-corrupt",
+        spec.name,
+        spec.model_dump_json(),
+        "{}",
+        RunState.RUNNING.value,
+        "2026-01-01T00:00:00Z",
+        role_providers_json='["not-an-object"]',
+    )
+    workflow_journal.insert_steps(
+        "run-policy-corrupt",
+        [("s1", StepState.PENDING.value)],
+        "2026-01-01T00:00:00Z",
+    )
+
+    record = ws._rebuild_record_from_journal("run-policy-corrupt")
+
+    assert record is not None
+    assert record.role_providers == {}
+
+
 # ---------------------------------------------------------------------------
 # §3/§4 — resume
 # ---------------------------------------------------------------------------
@@ -322,6 +345,57 @@ async def test_resume_kill_after_step2_demo(monkeypatch, _patched_journal):
     row = workflow_journal.get_run("runK")
     assert row.state == RunState.COMPLETED.value
     assert row.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_resume_uses_frozen_provider_after_profile_resolution_changes(
+    monkeypatch, _patched_journal
+):
+    spec = WorkflowSpec(
+        name="wf",
+        mode="sequential",
+        steps=[
+            WorkflowStep(
+                id="s1",
+                provider="claude_code",
+                agent="developer",
+                prompt="go",
+            )
+        ],
+    )
+    workflow_journal.insert_run(
+        "run-provider-resume",
+        spec.name,
+        spec.model_dump_json(),
+        "{}",
+        RunState.FAILED.value,
+        "2026-01-01T00:00:00Z",
+        role_providers_json='{"developer":"codex"}',
+    )
+    workflow_journal.insert_steps(
+        "run-provider-resume",
+        [("s1", StepState.FAILED.value)],
+        "2026-01-01T00:00:00Z",
+        {"s1": "codex"},
+    )
+    # Simulate later role/profile behavior changing. Resume must use journaled
+    # effective_provider rather than resolving this new value.
+    monkeypatch.setattr(ws, "resolve_role_provider", lambda *_args: "kiro_cli")
+    seen: List[str] = []
+
+    async def _side(**kwargs):
+        seen.append(kwargs["provider"])
+        return _ok()
+
+    monkeypatch.setattr(ws, "run_agent_step", AsyncMock(side_effect=_side))
+
+    result = await ws.resume_from_last_completed("run-provider-resume")
+
+    assert result.state == RunState.COMPLETED
+    assert seen == ["codex"]
+    assert workflow_journal.get_step(
+        "run-provider-resume", "s1"
+    ).effective_provider == "codex"
 
 
 @pytest.mark.asyncio

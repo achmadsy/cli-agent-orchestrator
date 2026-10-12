@@ -296,6 +296,13 @@ if ENABLE_WORKING_DIRECTORY:
             default=None, description="Explicit Kiro engine for the worker (v2 or kas)"
         ),
         model: Optional[str] = Field(default=None, description=_model_field_desc),
+        provider: Optional[str] = Field(
+            default=None,
+            description=(
+                "Explicit provider override for this worker. Takes precedence over "
+                "the supervisor terminal's role-provider policy and profile defaults."
+            ),
+        ),
         use_worktree: bool = Field(
             default=False,
             description=(
@@ -374,15 +381,16 @@ if ENABLE_WORKING_DIRECTORY:
         denied = _tool_denied_reason("handoff")
         if denied:
             return HandoffResult(success=False, message=denied, output=None, terminal_id=None)
+        kwargs = {
+            "engine": engine,
+            "model": model,
+            "use_worktree": use_worktree,
+            "target_host": target_host,
+        }
+        if provider is not None:
+            kwargs["provider"] = provider
         return await _handoff_impl(
-            agent_profile,
-            message,
-            timeout,
-            working_directory,
-            engine=engine,
-            model=model,
-            use_worktree=use_worktree,
-            target_host=target_host,
+            agent_profile, message, timeout, working_directory, **kwargs
         )
 
 else:
@@ -403,6 +411,13 @@ else:
             default=None, description="Explicit Kiro engine for the worker (v2 or kas)"
         ),
         model: Optional[str] = Field(default=None, description=_model_field_desc),
+        provider: Optional[str] = Field(
+            default=None,
+            description=(
+                "Explicit provider override for this worker. Takes precedence over "
+                "the supervisor terminal's role-provider policy and profile defaults."
+            ),
+        ),
         use_worktree: bool = Field(
             default=False,
             description=(
@@ -468,16 +483,15 @@ else:
         denied = _tool_denied_reason("handoff")
         if denied:
             return HandoffResult(success=False, message=denied, output=None, terminal_id=None)
-        return await _handoff_impl(
-            agent_profile,
-            message,
-            timeout,
-            None,
-            engine=engine,
-            model=model,
-            use_worktree=use_worktree,
-            target_host=target_host,
-        )
+        kwargs = {
+            "engine": engine,
+            "model": model,
+            "use_worktree": use_worktree,
+            "target_host": target_host,
+        }
+        if provider is not None:
+            kwargs["provider"] = provider
+        return await _handoff_impl(agent_profile, message, timeout, None, **kwargs)
 
 
 def _build_assign_description(enable_sender_id: bool, enable_workdir: bool) -> str:
@@ -542,6 +556,7 @@ Args:
 
     desc += """
     model: Optional model override for the worker (not honored by every provider)
+    provider: Optional explicit provider override; wins over terminal role policy and profile defaults
     use_worktree: If true, isolate this worker in its own git worktree
     target_host: Optional remote CAO node to place the worker on (one-agent-per-pod
         topologies). The worker is created on that node in a fresh session; results
@@ -578,6 +593,13 @@ if ENABLE_WORKING_DIRECTORY:
             default=None, description="Explicit Kiro engine for the worker (v2 or kas)"
         ),
         model: Optional[str] = Field(default=None, description=_model_field_desc),
+        provider: Optional[str] = Field(
+            default=None,
+            description=(
+                "Explicit provider override for this worker. Takes precedence over "
+                "the supervisor terminal's role-provider policy and profile defaults."
+            ),
+        ),
         use_worktree: bool = Field(
             default=False,
             description=(
@@ -594,15 +616,15 @@ if ENABLE_WORKING_DIRECTORY:
         denied = _tool_denied_reason("assign")
         if denied:
             return {"success": False, "error": denied}
-        return _assign_impl(
-            agent_profile,
-            message,
-            working_directory,
-            engine=engine,
-            model=model,
-            use_worktree=use_worktree,
-            target_host=target_host,
-        )
+        kwargs = {
+            "engine": engine,
+            "model": model,
+            "use_worktree": use_worktree,
+            "target_host": target_host,
+        }
+        if provider is not None:
+            kwargs["provider"] = provider
+        return _assign_impl(agent_profile, message, working_directory, **kwargs)
 
 else:
 
@@ -616,6 +638,13 @@ else:
             default=None, description="Explicit Kiro engine for the worker (v2 or kas)"
         ),
         model: Optional[str] = Field(default=None, description=_model_field_desc),
+        provider: Optional[str] = Field(
+            default=None,
+            description=(
+                "Explicit provider override for this worker. Takes precedence over "
+                "the supervisor terminal's role-provider policy and profile defaults."
+            ),
+        ),
         use_worktree: bool = Field(
             default=False,
             description=(
@@ -632,15 +661,15 @@ else:
         denied = _tool_denied_reason("assign")
         if denied:
             return {"success": False, "error": denied}
-        return _assign_impl(
-            agent_profile,
-            message,
-            None,
-            engine=engine,
-            model=model,
-            use_worktree=use_worktree,
-            target_host=target_host,
-        )
+        kwargs = {
+            "engine": engine,
+            "model": model,
+            "use_worktree": use_worktree,
+            "target_host": target_host,
+        }
+        if provider is not None:
+            kwargs["provider"] = provider
+        return _assign_impl(agent_profile, message, None, **kwargs)
 
 
 def _elastic_broker_config() -> Tuple[str, str]:
@@ -806,6 +835,8 @@ async def assign_elastic(
             ready_wait_seconds=_elastic_ready_wait(),
             callback_url=os.environ.get(ELASTIC_CALLBACK_URL_ENV) or None,
             remote_session_name=str(lease["session_name"]),
+            provider=(provider.strip() if isinstance(provider, str) and provider.strip() else None),
+            use_terminal_role_policy=False,
         )
         result["worker_id"] = worker_id
         result["elastic"] = True
@@ -1964,6 +1995,123 @@ async def memory_forget(
         return {"success": False, "disabled": True, "error": str(e)}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+async def _codebase_tool(tool: str, project: Optional[str], arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Call fleet Codebase Memory through FastAPI; never touch its DB directly."""
+    try:
+        terminal_context = _get_terminal_context_from_env() or {}
+        body = {
+            "tool": tool,
+            "project": project,
+            "arguments": arguments,
+            "working_directory": terminal_context.get("cwd"),
+        }
+        return mcp_utils.post_body_json("/internal/code-graph/query", body, timeout=40)
+    except requests.HTTPError as exc:
+        return {"success": False, "error": _extract_error_detail(exc.response, str(exc))}
+    except requests.RequestException as exc:
+        return {"success": False, "error": f"Fleet Codebase Memory unavailable: {exc}"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+@mcp.tool()
+async def codebase_projects() -> Dict[str, Any]:
+    """List all indexed repositories in the combined fleet Codebase Memory view."""
+    try:
+        return mcp_utils.get_json("/internal/code-graph/projects", timeout=40)
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+@mcp.tool()
+async def codebase_status(project: Optional[str] = None) -> Dict[str, Any]:
+    """Return per-machine index status and provenance for a logical project."""
+    return await _codebase_tool("index_status", project, {})
+
+
+@mcp.tool()
+async def codebase_get_graph_schema(project: str) -> Dict[str, Any]:
+    """Return graph schema variants from every fleet node indexing the project."""
+    return await _codebase_tool("get_graph_schema", project, {})
+
+
+@mcp.tool()
+async def codebase_get_architecture(project: str, path: str = "", aspects: str = "") -> Dict[str, Any]:
+    """Return combined architecture views with node provenance."""
+    args: Dict[str, Any] = {"path": path, "aspects": [v for v in aspects.split(",") if v]}
+    return await _codebase_tool("get_architecture", project, args)
+
+
+@mcp.tool()
+async def codebase_search_graph(project: str, query: str, limit: int = 50) -> Dict[str, Any]:
+    """Search symbols fleet-wide, preserving same-symbol machine variants."""
+    return await _codebase_tool(
+        "search_graph", project, {"query": query, "limit": limit, "format": "json"}
+    )
+
+
+@mcp.tool()
+async def codebase_search_code(project: str, pattern: str, limit: int = 20) -> Dict[str, Any]:
+    """Search indexed source fleet-wide with machine provenance."""
+    return await _codebase_tool(
+        "search_code",
+        project,
+        {"pattern": pattern, "limit": limit, "mode": "compact", "format": "json"},
+    )
+
+
+@mcp.tool()
+async def codebase_trace_path(
+    project: str, function_name: str, direction: str = "both", depth: int = 3
+) -> Dict[str, Any]:
+    """Trace callers/callees across each machine's indexed graph."""
+    return await _codebase_tool(
+        "trace_path",
+        project,
+        {
+            "function_name": function_name,
+            "direction": direction,
+            "depth": depth,
+            "format": "json",
+        },
+    )
+
+
+@mcp.tool()
+async def codebase_get_code_snippet(
+    project: str, qualified_name: str, source_node: Optional[str] = None
+) -> Dict[str, Any]:
+    """Read indexed snippet variants; local working-tree source remains authoritative."""
+    args: Dict[str, Any] = {"qualified_name": qualified_name, "include_neighbors": True}
+    if source_node:
+        args["source_node"] = source_node
+    return await _codebase_tool("get_code_snippet", project, args)
+
+
+@mcp.tool()
+async def codebase_check_index_coverage(project: str, paths: List[str]) -> Dict[str, Any]:
+    """Check best-effort index coverage for repository-relative paths."""
+    return await _codebase_tool("check_index_coverage", project, {"paths": paths, "scopes": []})
+
+
+@mcp.tool()
+async def codebase_detect_changes(
+    project: str, base_branch: str = "main", depth: int = 2
+) -> Dict[str, Any]:
+    """Map local Git changes to each node's indexed blast radius."""
+    return await _codebase_tool(
+        "detect_changes", project, {"base_branch": base_branch, "depth": depth, "scope": "impact"}
+    )
+
+
+@mcp.tool()
+async def codebase_query_graph(project: str, query: str, max_rows: int = 200) -> Dict[str, Any]:
+    """Run a bounded read-only Cypher query on each project variant."""
+    return await _codebase_tool(
+        "query_graph", project, {"query": query, "graph": "code", "max_rows": max_rows}
+    )
 
 
 def _outcome_tool_error(

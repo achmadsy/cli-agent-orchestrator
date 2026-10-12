@@ -27,7 +27,7 @@ import os
 import re
 import time
 import uuid
-from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, NamedTuple, Optional, Tuple
 
 import requests
 
@@ -44,6 +44,10 @@ from cli_agent_orchestrator.models.provider import ProviderType
 from cli_agent_orchestrator.security.auth import get_local_bearer
 from cli_agent_orchestrator.services.elastic_worker_gateway import (
     elastic_worker_gateway_headers,
+)
+from cli_agent_orchestrator.services.provider_policy import (
+    parse_role_policy_mapping,
+    resolve_role_provider,
 )
 from cli_agent_orchestrator.services.settings_service import get_server_settings
 from cli_agent_orchestrator.utils.agent_profiles import resolve_provider
@@ -460,6 +464,7 @@ def _create_terminal(
     use_worktree: bool = False,
     create_timeout: Optional[float] = None,
     idempotency_key: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Create a new terminal with the specified agent profile.
 
@@ -518,7 +523,8 @@ def _create_terminal(
     """
     _refuse_ephemeral_target_without_claim(agent_profile)
 
-    provider = DEFAULT_PROVIDER
+    explicit_provider = provider
+    provider = explicit_provider or DEFAULT_PROVIDER
     parent_allowed_tools = None
 
     # Get current terminal ID from environment
@@ -533,8 +539,16 @@ def _create_terminal(
         response.raise_for_status()
         terminal_metadata = response.json()
 
-        # Treat the supervisor provider as a fallback, not an explicit override.
-        provider = resolve_provider(agent_profile, fallback_provider=terminal_metadata["provider"])
+        # Precedence: explicit call override, matching terminal role policy,
+        # child profile provider, then supervisor provider.
+        profile_provider = resolve_provider(
+            agent_profile, fallback_provider=terminal_metadata["provider"]
+        )
+        metadata = terminal_metadata.get("metadata") or {}
+        role_policy = parse_role_policy_mapping(metadata.get("role_providers"))
+        provider = explicit_provider or resolve_role_provider(
+            agent_profile, profile_provider, role_policy
+        )
         session_name = terminal_metadata["session_name"]
         parent_allowed_tools = terminal_metadata.get("allowed_tools")
 
@@ -636,7 +650,9 @@ def _create_terminal(
             if idempotency_key
             else generate_session_name()
         )
-        provider = resolve_provider(agent_profile, fallback_provider=provider)
+        provider = explicit_provider or resolve_provider(
+            agent_profile, fallback_provider=DEFAULT_PROVIDER
+        )
         params = {
             "provider": provider,
             "agent_profile": agent_profile,
@@ -748,6 +764,16 @@ def _send_direct_input_handoff(terminal_id: str, provider: str, message: str) ->
     _send_direct_input(terminal_id, handoff_message, OrchestrationType.HANDOFF)
 
 
+def _terminal_role_provider(
+    agent_profile: str, terminal_metadata: Mapping[str, Any]
+) -> Optional[str]:
+    """Return matching provider from terminal policy, without profile fallback."""
+    metadata = terminal_metadata.get("metadata") or {}
+    role_policy = parse_role_policy_mapping(metadata.get("role_providers"))
+    resolved = resolve_role_provider(agent_profile, "", role_policy)
+    return resolved or None
+
+
 class HandoffContext(NamedTuple):
     """Supervisor-derived context for a handoff, resolved WITHOUT creating a terminal.
 
@@ -763,7 +789,9 @@ class HandoffContext(NamedTuple):
     allowed_tools: Optional[list]
 
 
-def _resolve_handoff_provider(agent_profile: str) -> HandoffContext:
+def _resolve_handoff_provider(
+    agent_profile: str, explicit_provider: Optional[str] = None
+) -> HandoffContext:
     """Resolve the handoff context for a worker WITHOUT creating a terminal.
 
     Mirrors the resolution branch of the former ``_create_terminal``: a worker
@@ -782,7 +810,8 @@ def _resolve_handoff_provider(agent_profile: str) -> HandoffContext:
     current_terminal_id = _current_terminal_id()
     if not current_terminal_id:
         return HandoffContext(
-            provider=resolve_provider(agent_profile, fallback_provider=DEFAULT_PROVIDER),
+            provider=explicit_provider
+            or resolve_provider(agent_profile, fallback_provider=DEFAULT_PROVIDER),
             session_name=None,
             caller_id=None,
             allowed_tools=None,
@@ -796,7 +825,14 @@ def _resolve_handoff_provider(agent_profile: str) -> HandoffContext:
     response.raise_for_status()
     terminal_metadata = response.json()
 
-    provider = resolve_provider(agent_profile, fallback_provider=terminal_metadata["provider"])
+    profile_provider = resolve_provider(
+        agent_profile, fallback_provider=terminal_metadata["provider"]
+    )
+    metadata = terminal_metadata.get("metadata") or {}
+    role_policy = parse_role_policy_mapping(metadata.get("role_providers"))
+    provider = explicit_provider or resolve_role_provider(
+        agent_profile, profile_provider, role_policy
+    )
     # Resolve the child's allowed-tools via the same inheritance the old path
     # used; _resolve_child_allowed_tools returns a comma-separated string (or
     # None for unrestricted), which we split into the list the payload expects.
@@ -1134,6 +1170,7 @@ async def _handoff_impl(
     wait: bool = True,
     idempotency_key: Optional[str] = None,
     target_host: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> HandoffResult:
     """Implementation of handoff logic.
 
@@ -1272,14 +1309,23 @@ async def _handoff_impl(
 
     try:
         if target_host:
-            # Remote placement: the worker runs on target_host's node in a
-            # fresh session there. The supervisor's session/caller_id/allowed
-            # -tools context is local-node state and is deliberately NOT sent
-            # (the remote DB has no row for the supervisor's terminal); the
-            # provider comes from the remote node's own profile store.
+            # Remote placement keeps session/tool context local, but a matching
+            # role policy is portable provider intent and must follow the call.
+            selected_provider = provider
+            current_terminal_id = _current_terminal_id()
+            if selected_provider is None and current_terminal_id:
+                metadata_response = requests.get(
+                    f"{API_BASE_URL}/terminals/{current_terminal_id}",
+                    headers=_auth_headers() or None,
+                    timeout=_mcp_timeout(),
+                )
+                metadata_response.raise_for_status()
+                selected_provider = _terminal_role_provider(
+                    agent_profile, metadata_response.json()
+                )
             base_url = _resolve_target_base_url(target_host)
             ctx = HandoffContext(
-                provider=_resolve_remote_provider(base_url, agent_profile),
+                provider=selected_provider or _resolve_remote_provider(base_url, agent_profile),
                 session_name=None,
                 caller_id=None,
                 allowed_tools=None,
@@ -1289,7 +1335,7 @@ async def _handoff_impl(
             # codex fast-fail (which needs CAO_TERMINAL_ID) can run before any
             # terminal exists, on every path below.
             base_url = API_BASE_URL
-            ctx = _resolve_handoff_provider(agent_profile)
+            ctx = _resolve_handoff_provider(agent_profile, provider)
         provider = ctx.provider
 
         # Fail fast for codex: its handoff banner requires CAO_TERMINAL_ID. We
@@ -1374,6 +1420,7 @@ async def _handoff_impl(
             use_worktree=use_worktree,
             create_timeout=_HANDOFF_CREATE_TIMEOUT_S,
             idempotency_key=idempotency_key,
+            provider=provider,
         )
         if on_terminal_id is not None:
             try:
@@ -1470,6 +1517,7 @@ def _assign_remote(
     engine: Optional[str],
     model: Optional[str],
     use_worktree: bool,
+    provider: Optional[str] = None,
     ready_wait_seconds: float = 0.0,
     callback_url: Optional[str] = None,
     remote_session_name: Optional[str] = None,
@@ -1529,6 +1577,8 @@ def _assign_remote(
     if ready_wait_seconds > 0:
         _wait_remote_ready(base_url, ready_wait_seconds)
     params: Dict[str, Any] = {"agent_profile": agent_profile}
+    if provider is not None:
+        params["provider"] = provider
     if remote_session_name:
         params["session_name"] = remote_session_name
     if working_directory:
@@ -1622,6 +1672,8 @@ def _assign_impl(
     ready_wait_seconds: float = 0.0,
     callback_url: Optional[str] = None,
     remote_session_name: Optional[str] = None,
+    provider: Optional[str] = None,
+    use_terminal_role_policy: bool = True,
 ) -> Dict[str, Any]:
     """Implementation of assign logic.
 
@@ -1674,6 +1726,8 @@ def _assign_impl(
         # suffix depends on ``CAO_TERMINAL_ID``, which lives in the calling
         # process's env (the supervisor-owned MCP subprocess, or a ``cao
         # agent assign`` shell), not on the cao-server side.
+        selected_provider = provider
+
         if ENABLE_SENDER_ID_INJECTION:
             worker_message = (
                 message
@@ -1684,6 +1738,16 @@ def _assign_impl(
             worker_message = message
 
         if target_host:
+            if provider is None and use_terminal_role_policy:
+                metadata_response = requests.get(
+                    f"{API_BASE_URL}/terminals/{current_terminal_id}",
+                    headers=_auth_headers() or None,
+                    timeout=_mcp_timeout(),
+                )
+                metadata_response.raise_for_status()
+                selected_provider = _terminal_role_provider(
+                    agent_profile, metadata_response.json()
+                )
             return _assign_remote(
                 agent_profile=agent_profile,
                 worker_message=worker_message,
@@ -1693,6 +1757,7 @@ def _assign_impl(
                 engine=engine,
                 model=model,
                 use_worktree=use_worktree,
+                provider=selected_provider,
                 ready_wait_seconds=ready_wait_seconds,
                 callback_url=callback_url,
                 remote_session_name=remote_session_name,
@@ -1712,6 +1777,7 @@ def _assign_impl(
             initial_message_orchestration_type=OrchestrationType.ASSIGN,
             model=model,
             use_worktree=use_worktree,
+            provider=selected_provider,
         )
 
         return {

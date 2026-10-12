@@ -89,6 +89,15 @@ guide](../../../docs/fleet-coordinator.md#transport-and-security)).
 [`systemd/fleet-panel.service.example`](systemd/fleet-panel.service.example) is a
 ready-to-edit unit for running the panel on the coordinator.
 
+## Guided Node Installation
+
+When installing an Ubuntu or WSL2 machine through the Fleet panel over Tailscale SSH:
+- The coordinator probes remote CPU architecture (`x86_64` / `aarch64`).
+- It verifies and bundles the official pinned `codebase-memory-mcp 0.10.8` portable archive (`~/.cache/cao-fleet-cbm`, override via `CAO_CBM_CACHE_DIR`).
+- Target nodes verify archive SHA-256 before extracting `~/.local/bin/codebase-memory-mcp`.
+- Target nodes configure `CAO_CODEBASE_ENABLED=true`, `CAO_FLEET_NODE_ID`, `CAO_CODEBASE_API_URL`, and `CAO_MEMORY_API_URL`.
+- Agents access Codebase Memory and shared CAO memory exclusively through `cao-mcp-server` tools. No raw `codebase-memory-mcp` registration is added to Claude Code.
+
 ## Tests
 
 Hermetic — a fixture registry, mocked `cao-server` calls, no network or tmux:

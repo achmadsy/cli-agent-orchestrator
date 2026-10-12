@@ -5,6 +5,7 @@ describe('Workflow API methods (#504 / U8)', () => {
   const mockFetch = vi.fn()
 
   beforeEach(() => {
+    mockFetch.mockReset()
     vi.stubGlobal('fetch', mockFetch)
   })
   afterEach(() => {
@@ -20,6 +21,36 @@ describe('Workflow API methods (#504 / U8)', () => {
       text: () => Promise.resolve(JSON.stringify(data)),
     })
   }
+
+  it('creates workflow source without starting a run', async () => {
+    mockResponse({ name: 'demo', mode: 'sequential' }, 201)
+    await api.createWorkflow({ name: 'demo', tier: 'yaml', content: 'name: demo' })
+    expect(mockFetch).toHaveBeenCalledWith('/workflows', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ name: 'demo', tier: 'yaml', content: 'name: demo' }),
+    }))
+  })
+
+  it('submits role provider policy only when configured', async () => {
+    mockResponse({ run_id: 'r1', state: 'running' }, 202)
+    await api.submitWorkflowRun('demo', { task: 'x' }, 'r1', {
+      developer: 'codex', reviewer: 'kiro_cli',
+    })
+    const options = mockFetch.mock.calls[0][1]
+    expect(JSON.parse(options.body)).toEqual({
+      name_or_path: 'demo',
+      inputs: { task: 'x' },
+      run_id: 'r1',
+      role_providers: { developer: 'codex', reviewer: 'kiro_cli' },
+    })
+  })
+
+  it('omits empty role policy to preserve workflow defaults', async () => {
+    mockResponse({ run_id: 'r1', state: 'running' }, 202)
+    await api.submitWorkflowRun('demo', {}, undefined, {})
+    const options = mockFetch.mock.calls[0][1]
+    expect(JSON.parse(options.body)).toEqual({ name_or_path: 'demo', inputs: {} })
+  })
 
   it('listWorkflowRuns fetches /workflows/runs (consumes #505 RunSummaryRow)', async () => {
     const rows = [

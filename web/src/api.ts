@@ -366,6 +366,67 @@ export interface GapMarker {
 }
 
 /** One step's durable projection inside a RunInspection (server StepInspection). */
+export type WorkflowTier = 'yaml' | 'python'
+export type ProviderRole = 'supervisor' | 'developer' | 'reviewer'
+export type RoleProviderPolicy = Partial<Record<ProviderRole, string>>
+
+export interface WorkflowInputDecl {
+  type: 'string' | 'int' | 'float' | 'bool'
+  required?: boolean
+  default?: string | number | boolean | null
+  description?: string | null
+}
+
+export interface WorkflowStepSpec {
+  id: string
+  provider: string
+  agent: string
+  prompt?: string
+}
+
+export interface WorkflowSpecSummary {
+  name: string
+  description?: string | null
+  tier?: WorkflowTier
+  mode?: string
+  step_count?: number | null
+  indexed_at?: string
+  inputs?: Record<string, WorkflowInputDecl>
+  steps?: WorkflowStepSpec[]
+}
+
+export interface WorkflowSource {
+  name: string
+  tier: WorkflowTier
+  content: string
+}
+
+export interface WorkflowValidationFinding {
+  line?: number | null
+  column?: number | null
+  message: string
+  severity?: 'error' | 'warning'
+}
+
+export interface WorkflowLintFinding {
+  line?: number | null
+  column?: number | null
+  message: string
+  rule_id?: string | null
+}
+
+export interface WorkflowValidationResponse {
+  status: 'pass' | 'pass_reserved' | 'fail'
+  errors: string[]
+  findings?: WorkflowLintFinding[]
+}
+
+export interface WorkflowRunSubmitResponse {
+  run_id: string
+  state: string
+  links?: Record<string, string>
+}
+
 export interface StepInspection {
   id: string
   state: string
@@ -376,6 +437,7 @@ export interface StepInspection {
   terminal_id?: string | null
   reprompted?: number | null
   call_fingerprint?: string | null
+  effective_provider?: string | null
 }
 
 /** Enriched single-run inspection (server RunInspection, FR-5.1). */
@@ -387,6 +449,7 @@ export interface RunInspection {
   started_at: string
   finished_at?: string | null
   tier: string
+  role_providers?: RoleProviderPolicy
   steps: StepInspection[]
 }
 
@@ -659,8 +722,25 @@ export const api = {
   // Sessions
   listSessions: () => fetchJSON<Session[]>('/sessions'),
   getSession: (name: string) => fetchJSON<SessionDetail>(`/sessions/${name}`),
-  createSession: (provider: string, agentProfile: string, sessionName?: string, workingDirectory?: string) =>
-    fetchJSON<Terminal>(`/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`, { method: 'POST', timeoutMs: 90000 }),
+  createSession: (
+    provider: string,
+    agentProfile: string,
+    sessionName?: string,
+    workingDirectory?: string,
+    roleProviders?: RoleProviderPolicy,
+  ) => fetchJSON<Terminal>(
+    `/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        roleProviders && Object.keys(roleProviders).length > 0
+          ? { metadata: { role_providers: roleProviders } }
+          : {},
+      ),
+      timeoutMs: 90000,
+    },
+  ),
   deleteSession: async (name: string) => {
     const result = await fetchJSON<{ success: boolean; deleted: string[]; errors: any[] }>(`/sessions/${name}`, { method: 'DELETE' })
     if (!result?.success || (result.errors && result.errors.length > 0)) {
@@ -769,10 +849,55 @@ export const api = {
     )
   },
 
-  // ── Workflow run journal (Issue #504 / U8) — read + delete over the
-  // already-built durable-journal APIs. All additive; no server code here.
+  // Workflow authoring + execution.
+  listWorkflows: () => fetchJSON<WorkflowSpecSummary[]>('/workflows'),
+  getWorkflow: (name: string) =>
+    fetchJSON<WorkflowSpecSummary>(`/workflows/${encodeURIComponent(name)}`),
+  getWorkflowSource: (name: string) =>
+    fetchJSON<WorkflowSource>(`/workflows/${encodeURIComponent(name)}/source`),
+  validateWorkflowContent: (source: WorkflowSource) =>
+    fetchJSON<WorkflowValidationResponse>('/workflows/validate-content', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(source),
+      timeoutMs: 30000,
+    }),
+  createWorkflow: (source: WorkflowSource) =>
+    fetchJSON<WorkflowSpecSummary>('/workflows', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(source),
+      timeoutMs: 30000,
+    }),
+  replaceWorkflow: (name: string, source: Omit<WorkflowSource, 'name'>) =>
+    fetchJSON<WorkflowSpecSummary>(`/workflows/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(source),
+      timeoutMs: 30000,
+    }),
+  deleteWorkflow: (name: string) =>
+    fetchJSON<void>(`/workflows/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  submitWorkflowRun: (
+    name: string,
+    inputs: Record<string, unknown>,
+    runId?: string,
+    roleProviders?: RoleProviderPolicy,
+  ) => fetchJSON<WorkflowRunSubmitResponse>('/workflows/runs:submit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name_or_path: name,
+      inputs,
+      ...(runId ? { run_id: runId } : {}),
+      ...(roleProviders && Object.keys(roleProviders).length > 0
+        ? { role_providers: roleProviders }
+        : {}),
+    }),
+    timeoutMs: 30000,
+  }),
 
-  // #505's run list (FINAL RunSummaryRow shape). Consumed, not built.
+  // ── Workflow run journal (Issue #504 / U8) — read + delete.
   listWorkflowRuns: () => fetchJSON<RunSummaryRow[]>('/workflows/runs'),
 
   // U3 inspect — enriched single-run projection (journal-authoritative).

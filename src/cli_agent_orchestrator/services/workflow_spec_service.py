@@ -31,7 +31,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Union, cast
+from typing import Dict, List, Literal, Optional, Union, cast
 
 import yaml
 
@@ -54,6 +54,7 @@ from cli_agent_orchestrator.models.workflow import (
 )
 from cli_agent_orchestrator.models.workflow import validate_only as _model_validate_only
 from cli_agent_orchestrator.services.script_lint import lint_script
+from cli_agent_orchestrator.utils.atomic_file import locked_atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +291,131 @@ def load_and_validate(path: str, base_dir: Optional[str] = None) -> WorkflowSpec
     # WorkflowSpec construction re-runs grammar validation; it cannot fail here
     # because validate_only already passed, but the typed model is the contract.
     return WorkflowSpec(**data)
+
+
+def validate_content(
+    name: str, tier: Literal["yaml", "python"], content: str
+) -> Union[ValidationResult, "ScriptValidationResult"]:
+    """Validate unsaved workflow source without touching the filesystem.
+
+    ``name`` remains the storage identity. YAML source must declare the same
+    internal name; Python script identity comes from its eventual filename stem.
+    Source is never imported or executed.
+    """
+    from cli_agent_orchestrator.models.workflow import ScriptValidationResult
+
+    validated_name = _validate_name(name)
+    if tier not in ("yaml", "python"):
+        raise ValueError("workflow tier must be 'yaml' or 'python'")
+    if not isinstance(content, str):
+        raise ValueError("workflow content must be UTF-8 text")
+    if len(content.encode("utf-8")) > WORKFLOW_MAX_SPEC_BYTES:
+        if tier == "python":
+            return ScriptValidationResult(
+                status="fail",
+                errors=[f"spec exceeds {WORKFLOW_MAX_SPEC_BYTES} bytes (max)"],
+            )
+        return ValidationResult(
+            status="fail",
+            errors=[f"spec exceeds {WORKFLOW_MAX_SPEC_BYTES} bytes (max)"],
+        )
+
+    if tier == "python":
+        result = lint_script(content, f"{validated_name}.py")
+        if result.status != "fail":
+            try:
+                _extract_inputs(content)
+            except ValueError as exc:
+                return ScriptValidationResult(status="fail", errors=[str(exc)])
+        return result
+
+    result = _model_validate_only(content)
+    if result.status == "fail":
+        return result
+    try:
+        data = yaml.safe_load(content)
+    except yaml.YAMLError as exc:  # pragma: no cover - model validation already catches this
+        return ValidationResult(status="fail", errors=[f"invalid YAML: {exc}"])
+    declared_name = data.get("name") if isinstance(data, dict) else None
+    if declared_name != validated_name:
+        return ValidationResult(
+            status="fail",
+            errors=[
+                f"workflow source name {declared_name!r} does not match storage name "
+                f"'{validated_name}'"
+            ],
+        )
+    return result
+
+
+def _authoring_target(
+    name: str, tier: Literal["yaml", "python"], scan_dir: Optional[str] = None
+) -> tuple[str, str]:
+    """Return validated authoring root and contained tier-specific target path."""
+    validated_name = _validate_name(name)
+    if tier not in ("yaml", "python"):
+        raise ValueError("workflow tier must be 'yaml' or 'python'")
+    safe_dir = _safe_dir(scan_dir)
+    extension = ".yaml" if tier == "yaml" else ".py"
+    target = _safe_spec_path(f"{validated_name}{extension}", base_dir=safe_dir)
+    return safe_dir, target
+
+
+def write_workflow(
+    name: str,
+    tier: Literal["yaml", "python"],
+    content: str,
+    *,
+    create: bool,
+    scan_dir: Optional[str] = None,
+) -> Union[WorkflowSpec, ScriptSpec]:
+    """Create or update workflow source under the configured workflow root.
+
+    Validation completes before publication. Create refuses every same-stem
+    sibling. Update requires the selected tier file to exist and also refuses a
+    cross-tier collision. Publication uses the shared inter-process lock and
+    atomic replace helper.
+    """
+    safe_dir, target = _authoring_target(name, tier, scan_dir)
+    result = validate_content(name, tier, content)
+    if result.status == "fail":
+        raise ValueError("; ".join(result.errors) or "workflow source failed validation")
+
+    stem = _validate_name(name)
+    yaml_candidates = [
+        _safe_spec_path(f"{stem}.yaml", base_dir=safe_dir),
+        _safe_spec_path(f"{stem}.yml", base_dir=safe_dir),
+    ]
+    python_candidate = _safe_spec_path(f"{stem}.py", base_dir=safe_dir)
+    if tier == "python":
+        opposite_exists = any(os.path.isfile(path) for path in yaml_candidates)
+    else:
+        opposite_exists = os.path.isfile(python_candidate)
+    if opposite_exists:
+        raise TierCollisionError(stem)
+
+    locked_atomic_write(
+        Path(target),
+        content,
+        overwrite=not create,
+        must_exist=not create,
+    )
+    spec = _load_by_extension(target, safe_dir)
+    upsert_index(spec, target)
+    return spec
+
+
+def get_workflow_source(name: str, scan_dir: Optional[str] = None) -> Dict[str, str]:
+    """Read lossless source and tier metadata for one indexed workflow."""
+    source_path = _resolve_source_path(name, scan_dir)
+    real_path, raw = _read_contained_spec_bytes(source_path, scan_dir)
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"spec is not valid UTF-8: {exc}") from exc
+    ext = os.path.splitext(real_path)[1].lower()
+    tier = "python" if ext == ".py" else "yaml"
+    return {"name": _validate_name(name), "tier": tier, "content": content}
 
 
 def validate_only(path: str, base_dir: Optional[str] = None) -> ValidationResult:

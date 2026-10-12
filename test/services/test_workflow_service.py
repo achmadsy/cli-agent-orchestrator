@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from cli_agent_orchestrator.models.provider_policy import RoleProviderPolicy
 from cli_agent_orchestrator.models.terminal import AgentStepResult, TerminalStatus
 from cli_agent_orchestrator.models.workflow import (
     NotBuiltYetError,
@@ -133,6 +134,41 @@ async def test_trace_a_clean_run(monkeypatch):
     assert res.steps[0].attempts == 1
     assert res.steps[0].output == {"answer": "42"}
     assert mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_role_provider_policy_overrides_recognized_step(monkeypatch):
+    seen = {}
+
+    async def fake_step(**kwargs):
+        seen.update(kwargs)
+        return AgentStepResult(
+            terminal_id="term-policy",
+            last_message="ok",
+            status=TerminalStatus.COMPLETED,
+        )
+
+    monkeypatch.setattr(ws, "run_agent_step", fake_step)
+    spec = WorkflowSpec(
+        name="policy",
+        steps=[
+            WorkflowStep(
+                id="build",
+                provider="claude_code",
+                agent="developer",
+                prompt="go",
+            )
+        ],
+    )
+    result = await ws.start_run(
+        spec,
+        {},
+        "run-policy",
+        RoleProviderPolicy(developer="codex"),
+    )
+    assert result.state == RunState.COMPLETED
+    assert seen["provider"] == "codex"
+    assert seen["metadata"] == {"role_providers": {"developer": "codex"}}
 
 
 @pytest.mark.asyncio
