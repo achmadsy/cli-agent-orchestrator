@@ -106,7 +106,15 @@ from cli_agent_orchestrator.models.memory import (
     MemoryScopeId,
     MemoryType,
 )
-from cli_agent_orchestrator.models.provider_policy import RoleProviderPolicy
+from cli_agent_orchestrator.models.provider_policy import (
+    RoleProviderPolicy,
+    RoleProviderProfilePolicy,
+)
+from cli_agent_orchestrator.models.provider_profile import (
+    ProviderProfile,
+    ProviderProfileCreate,
+    ProviderProfileUpdate,
+)
 from cli_agent_orchestrator.models.terminal import Terminal, TerminalId, TerminalLimitError
 from cli_agent_orchestrator.models.workflow import RecoveryPolicy
 from cli_agent_orchestrator.plugins import PluginRegistry
@@ -725,6 +733,10 @@ class WorkflowRunRequest(BaseModel):
         description=(
             "Optional provider overrides for recognized supervisor, developer, and reviewer roles"
         ),
+    )
+    role_provider_profiles: Optional["RoleProviderProfilePolicy"] = Field(
+        default=None,
+        description="Optional provider-account profile overrides for recognized roles",
     )
 
 
@@ -2968,6 +2980,217 @@ async def list_providers_endpoint(
     return result
 
 
+@app.get("/agents/provider-profiles/capabilities")
+async def provider_profile_capabilities_endpoint(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Dict[str, Any]]:
+    from cli_agent_orchestrator.services.provider_profile_registry import public_capabilities
+
+    return public_capabilities()
+
+
+@app.get("/agents/provider-profiles", response_model=List[ProviderProfile])
+async def list_provider_profiles_endpoint(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> List[ProviderProfile]:
+    from cli_agent_orchestrator.services.provider_profile_store import list_provider_profiles
+
+    return list_provider_profiles()
+
+
+@app.post(
+    "/agents/provider-profiles",
+    response_model=ProviderProfile,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_provider_profile_endpoint(
+    body: ProviderProfileCreate,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> ProviderProfile:
+    from cli_agent_orchestrator.services.provider_profile_store import (
+        ProviderProfileError,
+        create_provider_profile,
+    )
+
+    try:
+        return create_provider_profile(body)
+    except ProviderProfileError as exc:
+        if exc.__class__.__name__ == "ProviderProfileExistsError":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.get("/agents/provider-profiles/quota/overview")
+async def provider_profile_quota_overview_endpoint(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> List[Dict[str, Any]]:
+    from cli_agent_orchestrator.services.provider_profile_store import list_provider_profiles
+    from cli_agent_orchestrator.services.provider_quota import get_provider_quota
+
+    results = []
+    for profile in list_provider_profiles():
+        try:
+            results.append(await get_provider_quota(profile.id))
+        except ValueError:
+            results.append(
+                {
+                    "profile_id": profile.id,
+                    "provider": profile.provider.value,
+                    "status": "reauth_required",
+                    "quotas": [],
+                    "stale": False,
+                }
+            )
+    return results
+
+
+@app.get("/agents/provider-profiles/{profile_id}", response_model=ProviderProfile)
+async def get_provider_profile_endpoint(
+    profile_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> ProviderProfile:
+    from cli_agent_orchestrator.services.provider_profile_store import (
+        ProviderProfileNotFoundError,
+        get_provider_profile,
+    )
+
+    try:
+        return get_provider_profile(profile_id)
+    except ProviderProfileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@app.put("/agents/provider-profiles/{profile_id}", response_model=ProviderProfile)
+async def update_provider_profile_endpoint(
+    profile_id: str,
+    body: ProviderProfileUpdate,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> ProviderProfile:
+    from cli_agent_orchestrator.services.provider_profile_store import (
+        ProviderProfileError,
+        ProviderProfileNotFoundError,
+        update_provider_profile,
+    )
+
+    try:
+        return update_provider_profile(profile_id, body)
+    except ProviderProfileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ProviderProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.delete("/agents/provider-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_provider_profile_endpoint(
+    profile_id: str,
+    delete_home: bool = False,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_ADMIN)),
+) -> Response:
+    from cli_agent_orchestrator.services.provider_profile_store import (
+        ProviderProfileError,
+        ProviderProfileNotFoundError,
+        delete_provider_profile,
+    )
+
+    try:
+        delete_provider_profile(profile_id, delete_home=delete_home)
+    except ProviderProfileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ProviderProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/agents/provider-profiles/{profile_id}/auth/login", response_model=Terminal)
+async def provider_profile_login_endpoint(
+    request: Request,
+    profile_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_ADMIN)),
+) -> Terminal:
+    from cli_agent_orchestrator.services.provider_profile_registry import capabilities_for
+    from cli_agent_orchestrator.services.provider_profile_store import (
+        ProviderProfileError,
+        ProviderProfileNotFoundError,
+        get_provider_profile,
+    )
+
+    try:
+        profile = get_provider_profile(profile_id)
+    except ProviderProfileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ProviderProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    if not capabilities_for(profile.provider.value).auth_lifecycle:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported provider")
+    return await terminal_service.create_terminal(
+        provider="claude_code",
+        provider_profile=profile_id,
+        agent_profile="developer",
+        new_session=True,
+        registry=get_plugin_registry(request),
+        metadata={"maintenance_kind": "provider_auth", "provider_profile": profile_id},
+        provider_action="auth_login",
+    )
+
+
+@app.post("/agents/provider-profiles/{profile_id}/auth/status")
+async def provider_profile_auth_status_endpoint(
+    profile_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    from cli_agent_orchestrator.services.provider_profile_auth import check_auth_status
+    from cli_agent_orchestrator.services.provider_profile_store import (
+        ProviderProfileError,
+        ProviderProfileNotFoundError,
+    )
+
+    try:
+        return await asyncio.to_thread(check_auth_status, profile_id)
+    except ProviderProfileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ProviderProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.post("/agents/provider-profiles/{profile_id}/auth/logout")
+async def provider_profile_logout_endpoint(
+    profile_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    from cli_agent_orchestrator.services.provider_profile_auth import logout
+    from cli_agent_orchestrator.services.provider_profile_store import (
+        ProviderProfileError,
+        ProviderProfileNotFoundError,
+    )
+
+    try:
+        return await asyncio.to_thread(logout, profile_id)
+    except ProviderProfileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ProviderProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@app.get("/agents/provider-profiles/{profile_id}/quota")
+async def provider_profile_quota_endpoint(
+    profile_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    from cli_agent_orchestrator.services.provider_profile_store import (
+        ProviderProfileError,
+        ProviderProfileNotFoundError,
+    )
+
+    from cli_agent_orchestrator.services.provider_quota import get_provider_quota
+
+    try:
+        return await get_provider_quota(profile_id)
+    except ProviderProfileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ProviderProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
 @app.get("/settings/agent-dirs")
 async def get_agent_dirs_endpoint(
     _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
@@ -3371,6 +3594,7 @@ async def create_session(
     background_tasks: BackgroundTasks,
     agent_profile: str,
     provider: Optional[str] = None,
+    provider_profile: Optional[str] = None,
     session_name: Optional[str] = None,
     working_directory: Optional[str] = None,
     allowed_tools: Optional[str] = None,
@@ -3479,6 +3703,7 @@ async def create_session(
 
         result = await session_service.create_session(
             provider=provider,
+            provider_profile=provider_profile,
             agent_profile=agent_profile,
             session_name=session_name,
             working_directory=working_directory,
@@ -3675,6 +3900,7 @@ async def create_terminal_in_session(
     session_name: str,
     agent_profile: str,
     provider: Optional[str] = None,
+    provider_profile: Optional[str] = None,
     working_directory: Optional[str] = None,
     allowed_tools: Optional[str] = None,
     engine: Optional[KiroEngine] = None,
@@ -3784,6 +4010,7 @@ async def create_terminal_in_session(
 
         result = await terminal_service.create_terminal(
             provider=resolved_provider,
+            provider_profile=provider_profile,
             agent_profile=agent_profile,
             session_name=session_name,
             new_session=False,
@@ -5529,12 +5756,20 @@ async def start_workflow_run_endpoint(
         return result.model_dump()
 
     try:
-        if body.role_providers is None:
-            result = await workflow_service.start_run(spec, body.inputs, run_id)
-        else:
+        if body.role_provider_profiles is not None:
+            result = await workflow_service.start_run(
+                spec,
+                body.inputs,
+                run_id,
+                body.role_providers,
+                body.role_provider_profiles,
+            )
+        elif body.role_providers is not None:
             result = await workflow_service.start_run(
                 spec, body.inputs, run_id, body.role_providers
             )
+        else:
+            result = await workflow_service.start_run(spec, body.inputs, run_id)
     except NotBuiltYetError as e:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e))
     except KeyError as e:
@@ -5772,6 +6007,25 @@ async def submit_workflow_run_endpoint(
             step.id: resolve_role_provider(step.agent, step.provider, compact_policy)
             for step in spec.steps
         }
+        compact_profile_policy = (
+            body.role_provider_profiles.compact()
+            if body.role_provider_profiles
+            else {}
+        )
+        from cli_agent_orchestrator.services.provider_policy import (
+            resolve_role_provider_profile,
+        )
+
+        effective_provider_profiles = {
+            step.id: profile_id
+            for step in spec.steps
+            if (
+                profile_id := resolve_role_provider_profile(
+                    step.agent, None, compact_profile_policy
+                )
+            )
+            is not None
+        }
         # Step 5 — the awaited HARD ATOMIC durable insert (INV-1, TR-1): the run row
         # AND its seeded step rows commit in ONE transaction, so a failure leaves
         # NEITHER (no phantom RUNNING row). Its failure aborts with 500 + NO 202.
@@ -5786,15 +6040,21 @@ async def submit_workflow_run_endpoint(
                 [(step.id, StepState.PENDING.value) for step in spec.steps],
                 started_at,
             )
-            if compact_policy:
+            if compact_policy or compact_profile_policy:
                 await asyncio.to_thread(
                     workflow_journal.insert_run_with_steps,
                     *insert_args,
                     "yaml",
                     "1",
                     None,
-                    json.dumps(compact_policy, sort_keys=True),
+                    json.dumps(compact_policy, sort_keys=True) if compact_policy else None,
+                    (
+                        json.dumps(compact_profile_policy, sort_keys=True)
+                        if compact_profile_policy
+                        else None
+                    ),
                     effective_providers,
+                    effective_provider_profiles,
                 )
             else:
                 # Exact legacy call shape when policy is omitted.
@@ -5826,11 +6086,13 @@ async def submit_workflow_run_endpoint(
                 step.id: workflow_service.StepRunState(
                     step_id=step.id,
                     effective_provider=effective_providers[step.id],
+                    effective_provider_profile=effective_provider_profiles.get(step.id),
                 )
                 for step in spec.steps
             },
             started_at=started_at,
             role_providers=compact_policy,
+            role_provider_profiles=compact_profile_policy,
         )
         tier = "yaml"
 

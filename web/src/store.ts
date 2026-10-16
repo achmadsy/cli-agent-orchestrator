@@ -40,6 +40,7 @@ interface Store {
     workingDirectory?: string,
     sessionName?: string,
     roleProviders?: RoleProviderPolicy,
+    providerProfile?: string,
   ) => Promise<void>
   deleteSession: (name: string) => Promise<void>
   showSnackbar: (snackbar: Snackbar) => void
@@ -157,7 +158,7 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
-  createSession: async (provider, agentProfile, workingDirectory, sessionName, roleProviders) => {
+  createSession: async (provider, agentProfile, workingDirectory, sessionName, roleProviders, providerProfile) => {
     try {
       await api.createSession(
         provider,
@@ -165,6 +166,7 @@ export const useStore = create<Store>((set, get) => ({
         sessionName,
         workingDirectory,
         roleProviders,
+        providerProfile,
       )
       get().showSnackbar({ type: 'success', message: 'Session created' })
       await get().fetchSessions()

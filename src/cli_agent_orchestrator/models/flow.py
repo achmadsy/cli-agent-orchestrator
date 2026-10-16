@@ -16,7 +16,10 @@ class Flow(BaseModel):
     file_path: str = Field(..., description="Path to flow definition file")
     schedule: str = Field(..., description="Cron expression")
     agent_profile: str = Field(..., description="Agent profile to use")
-    provider: str = Field(default=DEFAULT_PROVIDER, description="Provider to use")
+    provider: str = Field(default=DEFAULT_PROVIDER, description="Canonical provider to use")
+    provider_profile: Optional[str] = Field(
+        default=None, description="Named provider-account profile to use"
+    )
     engine: Optional[KiroEngine] = Field(default=None, description="Optional Kiro engine")
     script: str = Field("", description="Path to poll script (optional)")
     last_run: Optional[datetime] = Field(None, description="Last execution time")

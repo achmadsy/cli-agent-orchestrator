@@ -1960,6 +1960,7 @@ def test_failure_envelope_adds_no_persisted_column(client, read_surface_db):
         "error_kind",
         "result_json",  # issue #583, result-envelope (BR-7) — not U9's
         "effective_provider",
+        "effective_provider_profile",
     }
 
 

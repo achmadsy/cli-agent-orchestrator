@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { api, AgentProfileInfo, ProviderInfo, ProviderRole, RoleProviderPolicy } from '../api'
+import { api, AgentProfileInfo, ProviderInfo, ProviderProfile, ProviderRole, RoleProviderPolicy } from '../api'
 import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Tag, Search, Mail, Plus, LogOut, Send, FileText, X } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
@@ -33,6 +33,13 @@ export function AgentPanel() {
   const [profiles, setProfiles] = useState<AgentProfileInfo[]>([])
   const [loadingProfiles, setLoadingProfiles] = useState(true)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [providerProfiles, setProviderProfiles] = useState<ProviderProfile[]>([])
+  const [providerProfile, setProviderProfile] = useState('')
+  const [addProviderProfile, setAddProviderProfile] = useState('')
+
+  useEffect(() => {
+    setProviderProfile('')
+  }, [provider])
 
   useEffect(() => {
     api.listProviders()
@@ -43,6 +50,7 @@ export function AgentPanel() {
         if (firstInstalled) setProvider(firstInstalled.name)
       })
       .catch(() => {})
+    api.listProviderProfiles().then(setProviderProfiles).catch(() => {})
   }, [])
   const [pendingClose, setPendingClose] = useState<TerminalMeta | null>(null)
   const [closingTerminal, setClosingTerminal] = useState<string | null>(null)
@@ -54,6 +62,10 @@ export function AgentPanel() {
   const [showAddAgent, setShowAddAgent] = useState(false)
   const [addProvider, setAddProvider] = useState('kiro_cli')
   const [addProfile, setAddProfile] = useState('')
+
+  useEffect(() => {
+    setAddProviderProfile('')
+  }, [addProvider])
   const [addWorkDir, setAddWorkDir] = useState('')
   const [addingAgent, setAddingAgent] = useState(false)
   const [pendingExit, setPendingExit] = useState<TerminalMeta | null>(null)
@@ -182,6 +194,7 @@ export function AgentPanel() {
         workingDirectory.trim() || undefined,
         sessionName.trim() || undefined,
         roleProviders,
+        providerProfile || undefined,
       )
       setShowSpawnModal(false)
       setProfile('')
@@ -213,7 +226,7 @@ export function AgentPanel() {
     if (!addProfile.trim() || !activeSession) return
     setAddingAgent(true)
     try {
-      await api.addTerminalToSession(activeSession, addProvider, addProfile.trim(), addWorkDir.trim() || undefined)
+      await api.addTerminalToSession(activeSession, addProvider, addProfile.trim(), addWorkDir.trim() || undefined, addProviderProfile || undefined)
       showSnackbar({ type: 'success', message: 'Agent added to session' })
       setShowAddAgent(false)
       setAddProfile('')
@@ -339,6 +352,7 @@ export function AgentPanel() {
                     }))}
                   />
                 </div>
+                {providerProfiles.some(p => p.provider === addProvider) && <div className="min-w-[180px]"><label className="block text-xs text-gray-500 mb-1">Provider Account</label><CustomSelect value={addProviderProfile} onChange={setAddProviderProfile} placeholder="Default config" options={[{ value: '', label: 'Default config' }, ...providerProfiles.filter(p => p.provider === addProvider).map(p => ({ value: p.id, label: p.label, sublabel: p.id, disabled: p.auth_state !== 'authenticated' }))]} /></div>}
                 <div className="flex-1 min-w-[180px]">
                   <label className="block text-xs text-gray-500 mb-1">Agent Profile</label>
                   {profiles.length > 0 ? (
@@ -583,6 +597,8 @@ export function AgentPanel() {
                   }))}
                 />
               </div>
+
+              {providerProfiles.some(p => p.provider === provider) && <div><label className="block text-xs text-gray-500 mb-1">Provider Account</label><CustomSelect value={providerProfile} onChange={setProviderProfile} placeholder="Default config" options={[{ value: '', label: 'Default config' }, ...providerProfiles.filter(p => p.provider === provider).map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]} /></div>}
 
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Agent Profile</label>

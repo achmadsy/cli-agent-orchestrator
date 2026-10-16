@@ -258,6 +258,12 @@ NEW_TUI_BOX_SPINNER_PATTERN = re.compile(r"^[ \t]*[✶✢✽✻✳·*][ \t]+\w*i
 class ClaudeCodeProvider(BaseProvider):
     """Provider for Claude Code CLI tool integration."""
 
+    supports_profiles = True
+    profile_mode = "isolated_home"
+    supports_auth_lifecycle = True
+    supports_resume = True
+    supports_quota = True
+
     @classmethod
     def honors_model(
         cls,
@@ -279,11 +285,28 @@ class ClaudeCodeProvider(BaseProvider):
         skill_prompt: Optional[str] = None,
         model: Optional[str] = None,
         resume_session_id: Optional[str] = None,
+        provider_profile: Optional[str] = None,
+        provider_action: Optional[str] = None,
     ):
         """Initialize provider state."""
         super().__init__(terminal_id, session_name, window_name, allowed_tools, skill_prompt)
         self._initialized = False
         self._agent_profile = agent_profile
+        self._provider_profile = provider_profile
+        self._provider_action = provider_action
+        self._config_dir: Optional[Path] = None
+        if provider_profile:
+            from cli_agent_orchestrator.services.provider_profile_store import (
+                get_provider_profile,
+                profile_home,
+            )
+
+            account = get_provider_profile(provider_profile)
+            if account.provider.value != "claude_code":
+                raise ProviderError(
+                    f"Provider profile '{provider_profile}' is not a Claude Code profile"
+                )
+            self._config_dir = profile_home("claude_code", provider_profile, create=True)
         # When set, the launched claude process resumes this Claude Code
         # session id (--resume <sid>) instead of starting a fresh
         # conversation. Used to re-open a supervisor conversation inside a
@@ -384,6 +407,24 @@ class ClaudeCodeProvider(BaseProvider):
 
         if profile is _UNSET:
             profile = self._load_profile()
+
+        if self._provider_action == "auth_login":
+            claude_cmd = shlex.join(["claude", "auth", "login", "--claudeai"])
+            if self._config_dir is None:
+                return claude_cmd
+            # Same env hygiene as the normal launch path below: inherited
+            # CLAUDE*-session vars would outrank the isolated config home and
+            # bind the login to the server's ambient account.
+            unset_cmd = (
+                "unset $(env | sed -n 's/^\\(CLAUDE[A-Z_]*\\)=.*/\\1/p'"
+                " | grep -v -E 'CLAUDE_CODE_USE_(BEDROCK|VERTEX|FOUNDRY)"
+                "|CLAUDE_CODE_SKIP_(BEDROCK|VERTEX|FOUNDRY)_AUTH"
+                "|CLAUDE_CODE_EFFORT_LEVEL"
+                "|CLAUDE_CONFIG_DIR'"
+                ") 2>/dev/null"
+            )
+            config_cmd = f"export CLAUDE_CONFIG_DIR={shlex.quote(str(self._config_dir))}; "
+            return f"{unset_cmd}; {config_cmd}{claude_cmd}"
 
         # Determine permission mode for the base command.
         # Priority: explicit permissionMode > yolo/root detection > default yolo.
@@ -537,13 +578,19 @@ class ClaudeCodeProvider(BaseProvider):
             "unset $(env | sed -n 's/^\\(CLAUDE[A-Z_]*\\)=.*/\\1/p'"
             " | grep -v -E 'CLAUDE_CODE_USE_(BEDROCK|VERTEX|FOUNDRY)"
             "|CLAUDE_CODE_SKIP_(BEDROCK|VERTEX|FOUNDRY)_AUTH"
-            "|CLAUDE_CODE_EFFORT_LEVEL'"
+            "|CLAUDE_CODE_EFFORT_LEVEL"
+            "|CLAUDE_CONFIG_DIR'"
             ") 2>/dev/null"
         )
-        return f"{unset_cmd}; {claude_cmd}"
+        config_cmd = (
+            f"export CLAUDE_CONFIG_DIR={shlex.quote(str(self._config_dir))}; "
+            if self._config_dir is not None
+            else ""
+        )
+        return f"{unset_cmd}; {config_cmd}{claude_cmd}"
 
     @staticmethod
-    def _ensure_skip_bypass_prompt_setting() -> None:
+    def _ensure_skip_bypass_prompt_setting(config_dir: Optional[Path] = None) -> None:
         """Ensure ``skipDangerousModePermissionPrompt`` is set in settings.
 
         Claude Code (v2.1.41+) shows a bypass permissions confirmation dialog
@@ -559,7 +606,8 @@ class ClaudeCodeProvider(BaseProvider):
         still a last-writer-wins lost update); ``os.replace`` only guarantees
         no torn reads for anything outside CAO.
         """
-        settings_path = Path.home() / ".claude" / "settings.json"
+        settings_root = config_dir or (Path.home() / ".claude")
+        settings_path = settings_root / "settings.json"
         with _SETTINGS_WRITE_LOCK:
             settings: dict = {}
             existing_mode: Optional[int] = None
@@ -596,7 +644,7 @@ class ClaudeCodeProvider(BaseProvider):
                 # the tmp file indefinitely.
                 tmp_path.unlink(missing_ok=True)
                 raise
-        logger.info("Set skipDangerousModePermissionPrompt in ~/.claude/settings.json")
+        logger.info("Set skipDangerousModePermissionPrompt in Claude Code settings")
 
     async def _handle_startup_prompts(
         self, idle_gap: Optional[float] = None, outer_timeout: Optional[float] = None
@@ -842,7 +890,7 @@ class ClaudeCodeProvider(BaseProvider):
         # Not exhaustive: wait_for_shell's own backend polling, _load_profile(),
         # and _build_claude_command's temp-file I/O above/below are still
         # loop-side -- tens of ms each, not the multi-second pileup #451 fixes.
-        await asyncio.to_thread(self._ensure_skip_bypass_prompt_setting)
+        await asyncio.to_thread(self._ensure_skip_bypass_prompt_setting, self._config_dir)
 
         # Build properly escaped command string
         command = self._build_claude_command(profile)

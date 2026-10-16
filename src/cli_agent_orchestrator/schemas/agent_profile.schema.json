@@ -33,7 +33,12 @@
     },
     "provider": {
       "type": "string",
-      "description": "Provider override (e.g. claude_code, kiro_cli, codex)."
+      "description": "Canonical provider override (e.g. claude_code, kiro_cli, codex)."
+    },
+    "providerProfile": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+      "description": "Optional named provider-account profile. Credentials remain in CAO's provider-managed store."
     },
     "engine": {
       "type": "string",

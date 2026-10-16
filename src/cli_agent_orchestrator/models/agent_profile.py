@@ -38,6 +38,15 @@ class AgentProfile(BaseModel):
     name: str
     description: str
     provider: Optional[str] = None  # Provider override (e.g. "claude_code", "kiro_cli")
+    # CAO-native. Selects a named provider-account profile for this agent while
+    # keeping ``provider`` canonical. The service layer validates that the
+    # referenced profile belongs to the resolved provider before launch.
+    providerProfile: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
     system_prompt: Optional[str] = None  # The markdown content
     role: Optional[str] = None  # "supervisor", "developer", "reviewer", "workflow_scout"
     engine: Optional[KiroEngine] = None  # Kiro v2/KAS selection; omitted resolves to v2.

@@ -5,6 +5,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, cast
 
 from sqlalchemy import (
@@ -158,6 +159,9 @@ class TerminalModel(Base):
     tmux_session = Column(String, nullable=False)  # "cao-session-name"
     tmux_window = Column(String, nullable=False)  # a window name, or a pane mark
     provider = Column(String, nullable=False)  # "kiro_cli", "claude_code"
+    # Optional named account/config selection within the canonical provider.
+    # Credential material remains provider-owned on disk and never enters DB.
+    provider_profile = Column(String, nullable=True)
     agent_profile = Column(String)  # "developer", "reviewer" (optional)
     model = Column(String, nullable=True)  # resolved per-launch model; NULL = provider default
     model_honored = Column(Boolean, nullable=True)  # NULL = unknown for pre-migration rows
@@ -606,6 +610,7 @@ class FlowModel(Base):
     schedule = Column(String, nullable=False)
     agent_profile = Column(String, nullable=False)
     provider = Column(String, nullable=False)
+    provider_profile = Column(String, nullable=True)
     script = Column(String, nullable=True)
     last_run = Column(DateTime, nullable=True)
     next_run = Column(DateTime, nullable=True)
@@ -759,6 +764,10 @@ def init_db() -> None:
     # Appended LAST (issue #447, ``handoff_results``). Its own new table, no shared
     # columns with anything above, so registry order is immaterial here too.
     _migrate_add_handoff_results()
+    # Provider-account metadata owns no credentials and uses a disjoint table.
+    # Keep this in the startup registry; the store repeats it only as a guard for
+    # isolated/repointed databases that intentionally do not call init_db().
+    _migrate_provider_profiles()
 
 
 def _restrict_db_file_permissions() -> None:
@@ -1629,11 +1638,57 @@ def _migrate_workflow_run() -> None:
                     "ALTER TABLE workflow_run ADD COLUMN role_providers_json TEXT DEFAULT NULL"
                 )
                 logger.info("Migration: added role_providers_json column to workflow_run")
+            if "role_provider_profiles_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE workflow_run ADD COLUMN role_provider_profiles_json TEXT DEFAULT NULL"
+                )
+                logger.info("Migration: added role_provider_profiles_json column to workflow_run")
             if "error" not in columns:
                 conn.execute("ALTER TABLE workflow_run ADD COLUMN error TEXT DEFAULT NULL")
                 logger.info("Migration: added error column to workflow_run")
     except Exception as e:  # noqa: BLE001 — derived/recoverable; logged at debug (B4-RD-4)
         logger.debug(f"workflow_run migration skipped: {e}")
+
+
+def _migrate_provider_profiles(db_path: Optional[Path] = None) -> None:
+    """Create and upgrade durable non-secret provider-profile metadata."""
+    import sqlite3
+
+    from cli_agent_orchestrator.constants import DATABASE_FILE
+
+    target = db_path or DATABASE_FILE
+    try:
+        with sqlite3.connect(str(target)) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS provider_profiles ("
+                "id TEXT PRIMARY KEY, "
+                "label TEXT NOT NULL, "
+                "provider TEXT NOT NULL, "
+                "login_method TEXT NOT NULL, "
+                "settings_json TEXT NOT NULL DEFAULT '{}', "
+                "is_default INTEGER NOT NULL DEFAULT 0, "
+                "auth_state TEXT NOT NULL DEFAULT 'unknown', "
+                "auth_detail TEXT, "
+                "last_checked_at TEXT, "
+                "created_at TEXT NOT NULL, "
+                "updated_at TEXT NOT NULL"
+                ")"
+            )
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(provider_profiles)")
+            }
+            if "settings_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE provider_profiles "
+                    "ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'"
+                )
+                logger.info("Migration: added settings_json column to provider_profiles")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_profiles_one_default "
+                "ON provider_profiles(provider) WHERE is_default = 1"
+            )
+    except Exception as e:  # noqa: BLE001 — idempotent startup migration
+        logger.debug(f"provider_profiles migration skipped: {e}")
 
 
 def _migrate_workflow_run_step() -> None:
@@ -1749,6 +1804,11 @@ def _migrate_workflow_run_step() -> None:
                     "ALTER TABLE workflow_run_step ADD COLUMN effective_provider TEXT DEFAULT NULL"
                 )
                 logger.info("Migration: added effective_provider column to workflow_run_step")
+            if "effective_provider_profile" not in columns:
+                conn.execute(
+                    "ALTER TABLE workflow_run_step ADD COLUMN effective_provider_profile TEXT DEFAULT NULL"
+                )
+                logger.info("Migration: added effective_provider_profile column to workflow_run_step")
     except Exception as e:  # noqa: BLE001 — derived/recoverable; logged at debug (B4-RD-4)
         logger.debug(f"workflow_run_step migration skipped: {e}")
 
@@ -1909,6 +1969,10 @@ def _migrate_terminals_schema() -> None:
         conn = sqlite3.connect(str(DATABASE_FILE))
         cursor = conn.execute("PRAGMA table_info(terminals)")
         columns = {row[1] for row in cursor.fetchall()}
+        if "provider_profile" not in columns:
+            conn.execute("ALTER TABLE terminals ADD COLUMN provider_profile TEXT")
+            conn.commit()
+            logger.info("Migration: added provider_profile column to terminals table")
         if "allowed_tools" not in columns:
             conn.execute("ALTER TABLE terminals ADD COLUMN allowed_tools TEXT")
             conn.commit()
@@ -1979,6 +2043,11 @@ def _migrate_terminals_schema() -> None:
             conn.execute("ALTER TABLE terminals ADD COLUMN model_honored BOOLEAN")
             conn.commit()
             logger.info("Migration: added model_honored column to terminals table")
+        flow_columns = {row[1] for row in conn.execute("PRAGMA table_info(flows)").fetchall()}
+        if flow_columns and "provider_profile" not in flow_columns:
+            conn.execute("ALTER TABLE flows ADD COLUMN provider_profile TEXT")
+            conn.commit()
+            logger.info("Migration: added provider_profile column to flows table")
         conn.close()
     except Exception as e:
         logger.warning(f"Migration check for terminals schema failed: {e}")
@@ -1990,6 +2059,7 @@ def create_terminal(
     tmux_window: str,
     provider: str,
     agent_profile: Optional[str] = None,
+    provider_profile: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
     shell_command: Optional[str] = None,
     caller_id: Optional[str] = None,
@@ -2046,6 +2116,7 @@ def create_terminal(
             tmux_session=tmux_session,
             tmux_window=tmux_window,
             provider=provider,
+            provider_profile=provider_profile,
             agent_profile=agent_profile,
             model=model,
             model_honored=model_honored,
@@ -2085,6 +2156,7 @@ def create_terminal(
             "tmux_session": terminal.tmux_session,
             "tmux_window": terminal.tmux_window,
             "provider": terminal.provider,
+            "provider_profile": terminal.provider_profile,
             "agent_profile": terminal.agent_profile,
             "model": terminal.model,
             "model_honored": terminal.model_honored,
@@ -2205,6 +2277,7 @@ def get_terminal_metadata(terminal_id: str) -> Optional[Dict[str, Any]]:
             "tmux_session": terminal.tmux_session,
             "tmux_window": terminal.tmux_window,
             "provider": terminal.provider,
+            "provider_profile": terminal.provider_profile,
             "agent_profile": terminal.agent_profile,
             "model": terminal.model,
             "model_honored": terminal.model_honored,
@@ -3106,6 +3179,7 @@ def create_flow(
     provider: str,
     script: str,
     next_run: datetime,
+    provider_profile: Optional[str] = None,
 ) -> Flow:
     """Create flow record."""
     with SessionLocal() as db:
@@ -3115,6 +3189,7 @@ def create_flow(
             schedule=schedule,
             agent_profile=agent_profile,
             provider=provider,
+            provider_profile=provider_profile,
             script=script,
             next_run=next_run,
         )
@@ -3127,6 +3202,9 @@ def create_flow(
             schedule=flow.schedule,
             agent_profile=flow.agent_profile,
             provider=flow.provider,
+            provider_profile=(
+                flow.provider_profile if isinstance(flow.provider_profile, str) else None
+            ),
             script=flow.script,
             last_run=flow.last_run,
             next_run=flow.next_run,
@@ -3147,6 +3225,9 @@ def get_flow(name: str) -> Optional[Flow]:
             schedule=flow.schedule,
             agent_profile=flow.agent_profile,
             provider=flow.provider,
+            provider_profile=(
+                flow.provider_profile if isinstance(flow.provider_profile, str) else None
+            ),
             script=flow.script,
             last_run=flow.last_run,
             next_run=flow.next_run,
@@ -3166,6 +3247,9 @@ def list_flows() -> List[Flow]:
                 schedule=f.schedule,
                 agent_profile=f.agent_profile,
                 provider=f.provider,
+                provider_profile=(
+                    f.provider_profile if isinstance(f.provider_profile, str) else None
+                ),
                 script=f.script,
                 last_run=f.last_run,
                 next_run=f.next_run,
@@ -3223,6 +3307,9 @@ def get_flows_to_run() -> List[Flow]:
                 schedule=f.schedule,
                 agent_profile=f.agent_profile,
                 provider=f.provider,
+                provider_profile=(
+                    f.provider_profile if isinstance(f.provider_profile, str) else None
+                ),
                 script=f.script,
                 last_run=f.last_run,
                 next_run=f.next_run,

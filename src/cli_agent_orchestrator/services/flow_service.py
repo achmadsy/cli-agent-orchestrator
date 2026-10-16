@@ -89,6 +89,7 @@ def add_flow(file_path: str) -> Flow:
         provider = metadata.get(
             "provider", DEFAULT_PROVIDER
         )  # Optional, defaults to DEFAULT_PROVIDER
+        provider_profile = metadata.get("provider_profile")
         script = metadata.get("script", "")  # Optional
 
         # Validate cron expression and calculate next run
@@ -105,6 +106,7 @@ def add_flow(file_path: str) -> Flow:
             schedule=schedule,
             agent_profile=agent_profile,
             provider=provider,
+            provider_profile=provider_profile,
             engine=metadata.get("engine"),
             script=script,
             last_run=None,
@@ -120,6 +122,7 @@ def add_flow(file_path: str) -> Flow:
             schedule=schedule,
             agent_profile=agent_profile,
             provider=provider,
+            provider_profile=provider_profile,
             script=script,
             next_run=next_run,
         )
@@ -373,6 +376,7 @@ async def execute_flow(name: str) -> bool:
         terminal = await create_terminal(
             session_name=session_name,
             provider=flow.provider,
+            provider_profile=flow.provider_profile,
             agent_profile=flow.agent_profile,
             new_session=True,
             engine=flow.engine,

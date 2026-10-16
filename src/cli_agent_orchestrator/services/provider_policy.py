@@ -6,7 +6,10 @@ import json
 import logging
 from typing import Dict, Mapping, Optional
 
-from cli_agent_orchestrator.models.provider_policy import RoleProviderPolicy
+from cli_agent_orchestrator.models.provider_policy import (
+    RoleProviderPolicy,
+    RoleProviderProfilePolicy,
+)
 from cli_agent_orchestrator.utils.agent_profiles import load_launch_profile
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,28 @@ def resolve_role_provider(
     return role_providers.get(role, authored_provider)
 
 
+def resolve_role_provider_profile(
+    profile_name: str,
+    explicit_profile: Optional[str],
+    role_provider_profiles: Optional[Mapping[str, str]],
+) -> Optional[str]:
+    """Apply a matching role profile override; explicit per-step value wins.
+
+    Returns ``explicit_profile`` unchanged when given (a step/request override
+    always beats the role policy). Otherwise resolves the agent profile's role
+    and returns the role policy's entry, or ``None`` when neither applies.
+    ``None`` means "no override" — ``terminal_service`` then falls back to the
+    agent profile default / provider default. Ownership (profile belongs to the
+    step's provider) is validated by ``terminal_service`` at creation, not here.
+    """
+    if explicit_profile is not None:
+        return explicit_profile
+    role = profile_role(profile_name)
+    if role is None or not role_provider_profiles:
+        return None
+    return role_provider_profiles.get(role)
+
+
 def parse_role_policy_mapping(value: object) -> Dict[str, str]:
     """Validate an untrusted metadata value, degrading invalid policy to empty."""
     if not isinstance(value, Mapping):
@@ -69,4 +94,23 @@ def parse_stored_policy(raw: Optional[str]) -> Dict[str, str]:
         return RoleProviderPolicy(**parsed).compact()
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         logger.debug("stored role policy corrupt; using empty policy: %s", exc)
+        return {}
+
+
+def parse_stored_profile_policy(raw: Optional[str]) -> Dict[str, str]:
+    """Parse durable ``role_provider_profiles_json`` fail-open to empty policy.
+
+    Same posture as :func:`parse_stored_policy`: corrupt value degrades to {},
+    never to run-absent. Values are profile ids (no secrets); nothing logged
+    beyond the existing debug line shape.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("role_provider_profiles_json is not a JSON object")
+        return RoleProviderProfilePolicy(**parsed).compact()
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        logger.debug("stored role profile policy corrupt; using empty policy: %s", exc)
         return {}

@@ -90,6 +90,7 @@ _REQUIRED_RUN_COLUMNS = frozenset(
         # exists to catch.
         "manifest_json",
         "role_providers_json",
+        "role_provider_profiles_json",
         "error",
     }
 )
@@ -108,6 +109,7 @@ _REQUIRED_STEP_COLUMNS = frozenset(
         "error_kind",
         "result_json",
         "effective_provider",
+        "effective_provider_profile",
     }
 )
 
@@ -133,6 +135,7 @@ class RunRow:
     # (or by a YAML run, which never freezes) reads back observably identical to its previous shape.
     manifest_json: Optional[str] = None
     role_providers_json: Optional[str] = None
+    role_provider_profiles_json: Optional[str] = None
     # Issue #753: redacted, bounded script-level failure diagnostic.
     error: Optional[str] = None
 
@@ -171,6 +174,7 @@ class StepRow:
     # takes the new last slot — which also honours this field's own append-only rule.
     result_json: Optional[str] = None
     effective_provider: Optional[str] = None
+    effective_provider_profile: Optional[str] = None
 
 
 @dataclass
@@ -385,6 +389,7 @@ def insert_run(
     generation: str = "1",
     manifest_json: Optional[str] = None,
     role_providers_json: Optional[str] = None,
+    role_provider_profiles_json: Optional[str] = None,
 ) -> None:
     """INSERT the ``workflow_run`` row at ``start_run`` (lifecycle table, E1).
 
@@ -406,8 +411,8 @@ def insert_run(
             "INSERT INTO workflow_run "
             "(run_id, workflow_name, spec_snapshot, inputs_json, state, "
             " current_step_id, started_at, finished_at, tier, generation, manifest_json, "
-            " role_providers_json) "
-            "VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)",
+            " role_providers_json, role_provider_profiles_json) "
+            "VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 workflow_name,
@@ -419,6 +424,7 @@ def insert_run(
                 generation,
                 manifest_json,
                 role_providers_json,
+                role_provider_profiles_json,
             ),
         )
 
@@ -436,7 +442,9 @@ def insert_run_with_steps(
     generation: str = "1",
     manifest_json: Optional[str] = None,
     role_providers_json: Optional[str] = None,
+    role_provider_profiles_json: Optional[str] = None,
     effective_providers: Optional[Mapping[str, str]] = None,
+    effective_provider_profiles: Optional[Mapping[str, str]] = None,
 ) -> None:
     """Atomically INSERT the run row AND seed its step rows in ONE transaction (U2, TR-1).
 
@@ -467,8 +475,8 @@ def insert_run_with_steps(
             "INSERT INTO workflow_run "
             "(run_id, workflow_name, spec_snapshot, inputs_json, state, "
             " current_step_id, started_at, finished_at, tier, generation, manifest_json, "
-            " role_providers_json) "
-            "VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)",
+            " role_providers_json, role_provider_profiles_json) "
+            "VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 workflow_name,
@@ -480,16 +488,25 @@ def insert_run_with_steps(
                 generation,
                 manifest_json,
                 role_providers_json,
+                role_provider_profiles_json,
             ),
         )
         providers = effective_providers or {}
+        provider_profiles = effective_provider_profiles or {}
         conn.executemany(
             "INSERT OR REPLACE INTO workflow_run_step "
             "(run_id, step_id, state, attempts, output_json, error, updated_at, "
-            " effective_provider) "
-            "VALUES (?, ?, ?, 0, NULL, NULL, ?, ?)",
+            " effective_provider, effective_provider_profile) "
+            "VALUES (?, ?, ?, 0, NULL, NULL, ?, ?, ?)",
             [
-                (run_id, step_id, step_state, updated_at, providers.get(step_id))
+                (
+                    run_id,
+                    step_id,
+                    step_state,
+                    updated_at,
+                    providers.get(step_id),
+                    provider_profiles.get(step_id),
+                )
                 for step_id, step_state in steps
             ],
         )
@@ -517,17 +534,26 @@ def insert_steps(
     steps: Sequence[Tuple[str, str]],
     updated_at: str,
     effective_providers: Optional[Mapping[str, str]] = None,
+    effective_provider_profiles: Optional[Mapping[str, str]] = None,
 ) -> None:
-    """Seed step rows, including providers frozen at run admission."""
+    """Seed step rows, including providers and account profiles frozen at admission."""
     providers = effective_providers or {}
+    provider_profiles = effective_provider_profiles or {}
     with _connect() as conn:
         conn.executemany(
             "INSERT OR REPLACE INTO workflow_run_step "
             "(run_id, step_id, state, attempts, output_json, error, updated_at, "
-            " effective_provider) "
-            "VALUES (?, ?, ?, 0, NULL, NULL, ?, ?)",
+            " effective_provider, effective_provider_profile) "
+            "VALUES (?, ?, ?, 0, NULL, NULL, ?, ?, ?)",
             [
-                (run_id, step_id, state, updated_at, providers.get(step_id))
+                (
+                    run_id,
+                    step_id,
+                    state,
+                    updated_at,
+                    providers.get(step_id),
+                    provider_profiles.get(step_id),
+                )
                 for step_id, state in steps
             ],
         )
@@ -562,7 +588,12 @@ def update_step(
         )
 
 
-def set_step_effective_provider(run_id: str, step_id: str, provider: str) -> str:
+def set_step_effective_provider(
+    run_id: str,
+    step_id: str,
+    provider: str,
+    effective_provider_profile: Optional[str] = None,
+) -> str:
     """Freeze provider once and return durable value.
 
     YAML rows are seeded at admission. Script rows may not exist until the first
@@ -571,7 +602,7 @@ def set_step_effective_provider(run_id: str, step_id: str, provider: str) -> str
     """
     with _connect() as conn:
         row = conn.execute(
-            "SELECT effective_provider FROM workflow_run_step "
+            "SELECT effective_provider, effective_provider_profile FROM workflow_run_step "
             "WHERE run_id = ? AND step_id = ?",
             (run_id, step_id),
         ).fetchone()
@@ -584,12 +615,24 @@ def set_step_effective_provider(run_id: str, step_id: str, provider: str) -> str
                 " effective_provider) VALUES (?, ?, 'pending', 0, NULL, NULL, '', ?)",
                 (run_id, step_id, provider),
             )
+            if effective_provider_profile is not None:
+                conn.execute(
+                    "UPDATE workflow_run_step SET effective_provider_profile = ? "
+                    "WHERE run_id = ? AND step_id = ?",
+                    (effective_provider_profile, run_id, step_id),
+                )
         else:
             conn.execute(
                 "UPDATE workflow_run_step SET effective_provider = ? "
                 "WHERE run_id = ? AND step_id = ? AND effective_provider IS NULL",
                 (provider, run_id, step_id),
             )
+            if effective_provider_profile is not None:
+                conn.execute(
+                    "UPDATE workflow_run_step SET effective_provider_profile = ? "
+                    "WHERE run_id = ? AND step_id = ? AND effective_provider_profile IS NULL",
+                    (effective_provider_profile, run_id, step_id),
+                )
         row = conn.execute(
             "SELECT effective_provider FROM workflow_run_step "
             "WHERE run_id = ? AND step_id = ?",
@@ -935,7 +978,7 @@ def get_run(run_id: str) -> Optional[RunRow]:
         row = conn.execute(
             "SELECT run_id, workflow_name, spec_snapshot, inputs_json, state, "
             "current_step_id, started_at, finished_at, tier, generation, manifest_json, "
-            "role_providers_json, error "
+            "role_providers_json, role_provider_profiles_json, error "
             "FROM workflow_run WHERE run_id = ?",
             (run_id,),
         ).fetchone()
@@ -956,7 +999,8 @@ def get_run(run_id: str) -> Optional[RunRow]:
         # failed. Both read back as None, which the resume gate refuses when enforcement is on.
         manifest_json=row[10],
         role_providers_json=row[11],
-        error=row[12],
+        role_provider_profiles_json=row[12],
+        error=row[13],
     )
 
 
@@ -974,7 +1018,7 @@ def get_steps(run_id: str) -> List[StepRow]:
         rows = conn.execute(
             "SELECT run_id, step_id, state, attempts, output_json, error, updated_at, "
             "call_fingerprint, terminal_id, reprompted, error_kind, result_json, "
-            "effective_provider "
+            "effective_provider, effective_provider_profile "
             "FROM workflow_run_step WHERE run_id = ?",
             (run_id,),
         ).fetchall()
@@ -993,6 +1037,7 @@ def get_steps(run_id: str) -> List[StepRow]:
             error_kind=r[10],
             result_json=r[11],
             effective_provider=r[12],
+            effective_provider_profile=r[13],
         )
         for r in rows
     ]
@@ -1017,7 +1062,7 @@ def get_step(run_id: str, step_id: str) -> Optional[StepRow]:
         row = conn.execute(
             "SELECT run_id, step_id, state, attempts, output_json, error, updated_at, "
             "call_fingerprint, terminal_id, reprompted, error_kind, result_json, "
-            "effective_provider "
+            "effective_provider, effective_provider_profile "
             "FROM workflow_run_step WHERE run_id = ? AND step_id = ?",
             (run_id, step_id),
         ).fetchone()
@@ -1037,6 +1082,7 @@ def get_step(run_id: str, step_id: str) -> Optional[StepRow]:
         error_kind=row[10],
         result_json=row[11],
         effective_provider=row[12],
+        effective_provider_profile=row[13],
     )
 
 

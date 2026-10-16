@@ -62,6 +62,7 @@ logger = logging.getLogger(__name__)
 async def create_session(
     provider: str | None,
     agent_profile: str,
+    provider_profile: str | None = None,
     session_name: str | None = None,
     working_directory: str | None = None,
     allowed_tools: list[str] | None = None,
@@ -118,6 +119,7 @@ async def create_session(
 
     terminal = await create_terminal(
         provider=resolved_provider,
+        provider_profile=provider_profile,
         agent_profile=agent_profile,
         session_name=session_name,
         new_session=True,

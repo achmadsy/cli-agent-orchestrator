@@ -71,6 +71,7 @@ def test_workflow_run_columns(patched_db):
         "generation",
         "manifest_json",
         "role_providers_json",
+        "role_provider_profiles_json",
         "error",
     }
     # run_id is the primary key; the nullable columns are current_step_id/finished_at.
@@ -128,6 +129,7 @@ def test_workflow_run_step_columns(patched_db):
         "error_kind",
         "result_json",
         "effective_provider",
+        "effective_provider_profile",
     }
     # Composite PRIMARY KEY (run_id, step_id): both carry pk>0.
     assert cols["run_id"][5] > 0
@@ -302,6 +304,7 @@ def test_workflow_run_indexes_do_not_change_columns(patched_db):
         # test_workflow_journal_connection_posture.py. Three places, one column set.
         "manifest_json",
         "role_providers_json",
+        "role_provider_profiles_json",
         "error",
     }
 

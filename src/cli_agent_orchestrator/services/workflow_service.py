@@ -49,7 +49,10 @@ from cli_agent_orchestrator.models.workflow import (
     WorkflowSpec,
     WorkflowStep,
 )
-from cli_agent_orchestrator.models.provider_policy import RoleProviderPolicy
+from cli_agent_orchestrator.models.provider_policy import (
+    RoleProviderPolicy,
+    RoleProviderProfilePolicy,
+)
 from cli_agent_orchestrator.models.workflow_runtime import (
     RunStatus,
     StepOutputRecord,
@@ -61,7 +64,9 @@ from cli_agent_orchestrator.providers.base import OutputExtractionError
 from cli_agent_orchestrator.services import workflow_journal
 from cli_agent_orchestrator.services.provider_policy import (
     parse_stored_policy,
+    parse_stored_profile_policy,
     resolve_role_provider,
+    resolve_role_provider_profile,
 )
 from cli_agent_orchestrator.services.agent_step import (
     StepCancelledError,
@@ -168,6 +173,7 @@ class StepRunState:
     error: Optional[str] = None
     # Provider frozen for this run. Restored from the durable step row on resume.
     effective_provider: Optional[str] = None
+    effective_provider_profile: Optional[str] = None
     # In-memory carrier for the step's ``v2`` call fingerprint (issue #583, unit
     # ``settlement-rewire``, BR-2/TD-3). ``run_agent_step`` COMPUTES the value in the one
     # window BR-5 permits — after working-directory resolution, before terminal creation —
@@ -200,6 +206,7 @@ class RunRecord:
     started_at: str = ""
     finished_at: Optional[str] = None
     role_providers: Dict[str, str] = field(default_factory=dict)
+    role_provider_profiles: Dict[str, str] = field(default_factory=dict)
     # Per-run event sequence counter (U2, issue #504). Additive in-memory-only
     # field — NOT journaled directly as a column; it is the allocator for the
     # ``workflow_run_event.seq`` ordering key. Advanced by ``_next_event_seq`` at
@@ -301,6 +308,11 @@ def _journal_insert_run(record: RunRecord) -> None:
                 if record.role_providers
                 else None
             ),
+            role_provider_profiles_json=(
+                json.dumps(record.role_provider_profiles, sort_keys=True)
+                if record.role_provider_profiles
+                else None
+            ),
         )
         workflow_journal.insert_steps(
             record.run_id,
@@ -310,6 +322,11 @@ def _journal_insert_run(record: RunRecord) -> None:
                 step_id: state.effective_provider
                 for step_id, state in record.step_states.items()
                 if state.effective_provider is not None
+            },
+            {
+                step_id: state.effective_provider_profile
+                for step_id, state in record.step_states.items()
+                if state.effective_provider_profile is not None
             },
         )
     except (
@@ -722,6 +739,16 @@ async def _collect_structured_output(
     return StepState.COMPLETED_UNVALIDATED
 
 
+def _effective_step_provider_profile(record: RunRecord, step: WorkflowStep) -> Optional[str]:
+    """Return provider-account profile frozen for this run."""
+    state = record.step_states[step.id]
+    if state.effective_provider_profile is None:
+        state.effective_provider_profile = resolve_role_provider_profile(
+            step.agent, None, record.role_provider_profiles
+        )
+    return state.effective_provider_profile
+
+
 def _effective_step_provider(record: RunRecord, step: WorkflowStep) -> str:
     """Return provider frozen for this run, resolving it once when absent."""
     state = record.step_states[step.id]
@@ -746,12 +773,14 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
     """
     n_retries = step.retries if step.retries is not None else WORKFLOW_DEFAULT_STEP_RETRIES
     effective_provider = _effective_step_provider(record, step)
+    effective_provider_profile = _effective_step_provider_profile(record, step)
     try:
         effective_provider = await asyncio.to_thread(
             workflow_journal.set_step_effective_provider,
             record.run_id,
             step.id,
             effective_provider,
+            effective_provider_profile,
         )
         record.step_states[step.id].effective_provider = effective_provider
     except Exception as exc:  # noqa: BLE001 - journal remains best-effort for live runs
@@ -803,6 +832,7 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
                 provider=effective_provider,
                 agent=step.agent,
                 prompt=prompt,
+                provider_profile=effective_provider_profile,
                 teardown=True,
                 timeout=WORKFLOW_STEP_TIMEOUT,
                 engine=step.engine,
@@ -1140,6 +1170,7 @@ async def start_run(
     inputs: Dict[str, Any],
     run_id: str,
     role_providers: Optional[RoleProviderPolicy] = None,
+    role_provider_profiles: Optional[RoleProviderProfilePolicy] = None,
 ) -> WorkflowRunResult:
     """Run a validated workflow spec to completion, awaited inline (§1, Q1=A).
 
@@ -1171,6 +1202,9 @@ async def start_run(
 
     # 3. Build the RunRecord.
     compact_policy = role_providers.compact() if role_providers else {}
+    compact_profile_policy = (
+        role_provider_profiles.compact() if role_provider_profiles else {}
+    )
     record = RunRecord(
         run_id=run_id,
         workflow_name=spec.name,
@@ -1185,11 +1219,15 @@ async def start_run(
                 effective_provider=resolve_role_provider(
                     step.agent, step.provider, compact_policy
                 ),
+                effective_provider_profile=resolve_role_provider_profile(
+                    step.agent, None, compact_profile_policy
+                ),
             )
             for step in spec.steps
         },
         started_at=_now(),
         role_providers=compact_policy,
+        role_provider_profiles=compact_profile_policy,
     )
     # 4. Register (in-memory floor) + mark the drive live + journal the run +
     # seed every step (§1). The ``finally`` guarantees the liveness mark is
@@ -1361,6 +1399,9 @@ def _rebuild_record_from_journal(run_id: str) -> Optional[RunRecord]:
         # Additive policy parses fail-open: corrupt value degrades to {},
         # never to run-absent (unlike corrupt spec/inputs below).
         role_providers = parse_stored_policy(row.role_providers_json)
+        role_provider_profiles = parse_stored_profile_policy(
+            row.role_provider_profiles_json
+        )
         if not isinstance(inputs, dict):
             # "null" / arrays parse fine but leave record.inputs non-dict, which
             # would later escape _drive as an unmapped TypeError. Corrupt -> absent.
@@ -1375,6 +1416,7 @@ def _rebuild_record_from_journal(run_id: str) -> Optional[RunRecord]:
             started_at=row.started_at,
             finished_at=row.finished_at,
             role_providers=role_providers,
+            role_provider_profiles=role_provider_profiles,
         )
     except (ValidationError, ValueError, TypeError) as e:
         # ValidationError subclasses ValueError (pydantic v2) but is named for clarity;
@@ -1410,6 +1452,7 @@ def _rebuild_record_from_journal(run_id: str) -> Optional[RunRecord]:
                 output=_record_from_json(srow.output_json),
                 error=srow.error,
                 effective_provider=srow.effective_provider,
+                effective_provider_profile=srow.effective_provider_profile,
             )
         except ValueError as e:
             # Unknown ``state`` value etc. — one bad row must never abort the

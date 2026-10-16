@@ -256,6 +256,48 @@ export interface ProviderInfo {
   installed: boolean
 }
 
+export type ProviderAuthState = 'unknown' | 'authenticated' | 'expired' | 'unconfigured' | 'unsupported' | 'error'
+export type ProviderProfileMode = 'isolated_home' | 'native_profile' | 'unsupported'
+
+export interface ProviderProfileCapabilities {
+  supported: boolean
+  profile_mode: ProviderProfileMode
+  auth_lifecycle: boolean
+  quota: boolean
+  resume: boolean
+}
+
+export interface ProviderProfile {
+  id: string
+  label: string
+  provider: string
+  login_method: ProviderProfileMode
+  settings: Record<string, unknown>
+  is_default: boolean
+  auth_state: ProviderAuthState
+  auth_detail?: string | null
+  last_checked_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ProviderQuotaRow {
+  key: string
+  name: string
+  used: number
+  total: number
+  remaining: number
+  reset_at?: string | null
+}
+
+export interface ProviderQuota {
+  profile_id: string
+  provider?: string
+  status: string
+  quotas: ProviderQuotaRow[]
+  stale: boolean
+}
+
 export interface MemoryStatus {
   enabled: boolean
 }
@@ -369,6 +411,7 @@ export interface GapMarker {
 export type WorkflowTier = 'yaml' | 'python'
 export type ProviderRole = 'supervisor' | 'developer' | 'reviewer'
 export type RoleProviderPolicy = Partial<Record<ProviderRole, string>>
+export type RoleProviderProfilePolicy = Partial<Record<ProviderRole, string>>
 
 export interface WorkflowInputDecl {
   type: 'string' | 'int' | 'float' | 'bool'
@@ -709,6 +752,29 @@ export const api = {
   deleteProfile: (name: string) =>
     fetchJSON<void>(`/agents/profiles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   listProviders: () => fetchJSON<ProviderInfo[]>('/agents/providers'),
+  listProviderProfileCapabilities: () =>
+    fetchJSON<Record<string, ProviderProfileCapabilities>>('/agents/provider-profiles/capabilities'),
+  listProviderProfiles: () => fetchJSON<ProviderProfile[]>('/agents/provider-profiles'),
+  createProviderProfile: (data: { id: string; label: string; provider: string; login_method: ProviderProfileMode; settings?: Record<string, unknown>; is_default?: boolean }) =>
+    fetchJSON<ProviderProfile>('/agents/provider-profiles', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    }),
+  updateProviderProfile: (id: string, data: { label?: string; is_default?: boolean }) =>
+    fetchJSON<ProviderProfile>(`/agents/provider-profiles/${encodeURIComponent(id)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    }),
+  deleteProviderProfile: (id: string, deleteHome = false) =>
+    fetchJSON<void>(`/agents/provider-profiles/${encodeURIComponent(id)}?delete_home=${deleteHome}`, { method: 'DELETE' }),
+  loginProviderProfile: (id: string) =>
+    fetchJSON<Terminal>(`/agents/provider-profiles/${encodeURIComponent(id)}/auth/login`, { method: 'POST' }),
+  checkProviderProfileAuth: (id: string) =>
+    fetchJSON<{ id: string; state: ProviderAuthState; detail?: string | null }>(`/agents/provider-profiles/${encodeURIComponent(id)}/auth/status`, { method: 'POST' }),
+  logoutProviderProfile: (id: string) =>
+    fetchJSON<{ id: string; state: ProviderAuthState; detail?: string | null }>(`/agents/provider-profiles/${encodeURIComponent(id)}/auth/logout`, { method: 'POST' }),
+  getProviderQuota: (id: string) =>
+    fetchJSON<ProviderQuota>(`/agents/provider-profiles/${encodeURIComponent(id)}/quota`),
+  getProviderQuotaOverview: () =>
+    fetchJSON<ProviderQuota[]>('/agents/provider-profiles/quota/overview'),
 
   // Settings
   getAgentDirs: () => fetchJSON<AgentDirsSettings>('/settings/agent-dirs'),
@@ -728,8 +794,9 @@ export const api = {
     sessionName?: string,
     workingDirectory?: string,
     roleProviders?: RoleProviderPolicy,
+    providerProfile?: string,
   ) => fetchJSON<Terminal>(
-    `/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`,
+    `/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${providerProfile ? `&provider_profile=${encodeURIComponent(providerProfile)}` : ''}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -773,8 +840,8 @@ export const api = {
   },
   getWorkingDirectory: (id: string) =>
     fetchJSON<{ working_directory: string | null }>(`/terminals/${id}/working-directory`),
-  addTerminalToSession: (sessionName: string, provider: string, agentProfile: string, workingDirectory?: string) =>
-    fetchJSON<Terminal>(`/sessions/${sessionName}/terminals?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`, { method: 'POST', timeoutMs: 90000 }),
+  addTerminalToSession: (sessionName: string, provider: string, agentProfile: string, workingDirectory?: string, providerProfile?: string) =>
+    fetchJSON<Terminal>(`/sessions/${sessionName}/terminals?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${providerProfile ? `&provider_profile=${encodeURIComponent(providerProfile)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`, { method: 'POST', timeoutMs: 90000 }),
 
   // Inbox
   getInboxMessages: (terminalId: string, limit?: number, status?: string) =>
@@ -883,6 +950,7 @@ export const api = {
     inputs: Record<string, unknown>,
     runId?: string,
     roleProviders?: RoleProviderPolicy,
+    roleProviderProfiles?: RoleProviderProfilePolicy,
   ) => fetchJSON<WorkflowRunSubmitResponse>('/workflows/runs:submit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -892,6 +960,9 @@ export const api = {
       ...(runId ? { run_id: runId } : {}),
       ...(roleProviders && Object.keys(roleProviders).length > 0
         ? { role_providers: roleProviders }
+        : {}),
+      ...(roleProviderProfiles && Object.keys(roleProviderProfiles).length > 0
+        ? { role_provider_profiles: roleProviderProfiles }
         : {}),
     }),
     timeoutMs: 30000,

@@ -71,6 +71,8 @@ class ProviderManager:
         engine: Optional[KiroEngine] = None,
         resume_session_id: Optional[str] = None,
         provider_variant: Optional[str] = None,
+        provider_profile: Optional[str] = None,
+        provider_action: Optional[str] = None,
     ) -> BaseProvider:
         """Create and store provider instance."""
         try:
@@ -105,6 +107,8 @@ class ProviderManager:
                     skill_prompt=skill_prompt,
                     model=model,
                     resume_session_id=resume_session_id,
+                    provider_profile=provider_profile,
+                    provider_action=provider_action,
                 )
             elif provider_type == ProviderType.CODEX.value:
                 provider = CodexProvider(
@@ -287,6 +291,7 @@ class ProviderManager:
             metadata["agent_profile"],
             engine=persisted_engine,
             provider_variant=metadata.get("provider_variant"),
+            provider_profile=metadata.get("provider_profile"),
         )
         # Restore shell_command baseline from DB so get_status() can detect kiro exit.
         # The terminal already exists in the DB, so its CLI has long since

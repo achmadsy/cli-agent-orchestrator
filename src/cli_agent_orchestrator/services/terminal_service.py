@@ -817,6 +817,7 @@ def _fingerprint_component(value: str) -> str:
 
 def _request_fingerprint(
     provider: Optional[str],
+    provider_profile: Optional[str],
     agent_profile: Optional[str],
     session_name: Optional[str],
     working_directory: Optional[str],
@@ -997,6 +998,7 @@ def _request_fingerprint(
 
     parts = [
         provider or "",
+        provider_profile or "",
         agent_profile or "",
         session_name or "",
         working_directory or "",
@@ -1027,6 +1029,7 @@ class _EphemeralLaunchState:
 async def create_terminal(
     provider: str,
     agent_profile: str,
+    provider_profile: Optional[str] = None,
     session_name: Optional[str] = None,
     new_session: bool = False,
     working_directory: Optional[str] = None,
@@ -1046,6 +1049,7 @@ async def create_terminal(
     metadata: Optional[Dict[str, Any]] = None,
     idempotency_key: Optional[str] = None,
     claim_id: Optional[str] = None,
+    provider_action: Optional[str] = None,
 ) -> Terminal:
     """Create a new terminal with an initialized CLI agent.
 
@@ -1281,6 +1285,7 @@ async def create_terminal(
     try:
         return await _create_terminal_unguarded(
             provider=provider,
+            provider_profile=provider_profile,
             agent_profile=agent_profile,
             session_name=session_name,
             new_session=new_session,
@@ -1301,6 +1306,7 @@ async def create_terminal(
             metadata=metadata,
             idempotency_key=idempotency_key,
             claim_id=claim_id,
+            provider_action=provider_action,
             ephemeral_state=state,
         )
     except BaseException as exc:
@@ -1315,6 +1321,7 @@ async def create_terminal(
 async def _create_terminal_unguarded(
     provider: str,
     agent_profile: str,
+    provider_profile: Optional[str] = None,
     session_name: Optional[str] = None,
     new_session: bool = False,
     working_directory: Optional[str] = None,
@@ -1334,6 +1341,7 @@ async def _create_terminal_unguarded(
     metadata: Optional[Dict[str, Any]] = None,
     idempotency_key: Optional[str] = None,
     claim_id: Optional[str] = None,
+    provider_action: Optional[str] = None,
     *,
     ephemeral_state: _EphemeralLaunchState,
 ) -> Terminal:
@@ -1348,6 +1356,7 @@ async def _create_terminal_unguarded(
     if idempotency_key:
         request_fingerprint = _request_fingerprint(
             provider,
+            provider_profile,
             agent_profile,
             session_name,
             working_directory,
@@ -1498,6 +1507,24 @@ async def _create_terminal_unguarded(
         if profile is not None and not isinstance(profile, AgentProfile):
             profile = None
         launch_model = resolve_launch_model(model, profile)
+        requested_provider_profile = provider_profile or (
+            profile.providerProfile if profile is not None else None
+        )
+        from cli_agent_orchestrator.services.provider_profile_registry import capabilities_for
+        from cli_agent_orchestrator.services.provider_profile_store import resolve_provider_profile
+
+        resolved_provider_profile = resolve_provider_profile(provider, requested_provider_profile)
+        if resolved_provider_profile is not None:
+            capabilities = capabilities_for(provider)
+            if not capabilities.supported:
+                raise ValueError(
+                    f"provider '{provider}' does not support isolated account profiles"
+                )
+            if not ProviderManager.provider_class(provider).supports_profiles:
+                raise ValueError(
+                    f"provider '{provider}' account-profile launch adapter is unavailable"
+                )
+        provider_profile = resolved_provider_profile.id if resolved_provider_profile else None
         model_honored = ProviderManager.provider_class(provider).honors_model(
             agent_profile=agent_profile,
             profile=profile,
@@ -1819,7 +1846,8 @@ async def _create_terminal_unguarded(
                         created_window_name,
                         provider,
                         agent_profile,
-                        allowed_tools,
+                        provider_profile=provider_profile,
+                        allowed_tools=allowed_tools,
                         model=launch_model,
                         model_honored=model_honored,
                         caller_id=caller_id,
@@ -1938,6 +1966,8 @@ async def _create_terminal_unguarded(
             model=launch_model,
             engine=resolved_engine,
             resume_session_id=resume_session_id,
+            provider_profile=provider_profile,
+            provider_action=provider_action,
         )
 
         # Deferred-init path: return fast so callers (e.g. MCP assign) do not
@@ -1994,6 +2024,7 @@ async def _create_terminal_unguarded(
             id=terminal_id,
             name=window_name,
             provider=ProviderType(provider),
+            provider_profile=provider_profile,
             session_name=session_name,
             agent_profile=agent_profile,
             model=launch_model,

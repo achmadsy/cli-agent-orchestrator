@@ -10,11 +10,13 @@ import { ProfilesPanel } from './components/ProfilesPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { WorkflowsPanel } from './components/WorkflowsPanel'
 import { PluginsPanel } from './components/PluginsPanel'
+import { ProviderProfilesPanel } from './components/ProviderProfilesPanel'
+import { QuotaPanel } from './components/QuotaPanel'
 import { PLUGINS_TAB_ENABLED } from './featureFlags'
 import { CaoMark } from './components/CaoMark'
-import { Bot, Home, Clock, Settings, Brain, Workflow, Puzzle, CheckCircle, XCircle, Info, Wifi, WifiOff, Package } from 'lucide-react'
+import { Bot, Home, Clock, Settings, Brain, Workflow, Puzzle, CheckCircle, XCircle, Info, Wifi, WifiOff, Package, KeyRound, Gauge } from 'lucide-react'
 
-type TabKey = 'home' | 'profiles' | 'agents' | 'flows' | 'settings' | 'memory' | 'workflows' | 'plugins'
+type TabKey = 'home' | 'profiles' | 'agents' | 'flows' | 'settings' | 'memory' | 'workflows' | 'plugins' | 'providerProfiles' | 'quota'
 
 // Profiles sits between Home and Agents (#510): browsing/authoring profiles
 // precedes launching agents, and AgentPanel stays the launch picker. This was
@@ -36,6 +38,8 @@ const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: 'memory', label: 'Memory', icon: <Brain size={16} /> },
   { key: 'workflows', label: 'Workflows', icon: <Workflow size={16} /> },
   { key: 'plugins', label: 'Plugins', icon: <Puzzle size={16} /> },
+  { key: 'providerProfiles', label: 'Accounts', icon: <KeyRound size={16} /> },
+  { key: 'quota', label: 'Quota', icon: <Gauge size={16} /> },
 ]
 
 function Snackbar() {
@@ -201,6 +205,8 @@ export default function App() {
             {tab === 'memory' && <MemoryPanel />}
             {tab === 'workflows' && <WorkflowsPanel />}
             {tab === 'plugins' && PLUGINS_TAB_ENABLED && <PluginsPanel />}
+            {tab === 'providerProfiles' && <ProviderProfilesPanel />}
+            {tab === 'quota' && <QuotaPanel />}
           </Suspense>
         </ErrorBoundary>
       </main>

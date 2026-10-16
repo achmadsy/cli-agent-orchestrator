@@ -86,6 +86,31 @@ class BaseProvider(ABC):
         _allowed_tools: CAO-vocabulary tool names this agent is allowed to use
     """
 
+    # Named account/config profile capabilities. Providers opt in explicitly;
+    # unsupported is the safe default and prevents a profile label from falsely
+    # implying credential isolation the underlying CLI cannot provide.
+    supports_profiles: bool = False
+    profile_mode: str = "unsupported"
+    supports_auth_lifecycle: bool = False
+    supports_resume: bool = False
+    supports_quota: bool = False
+
+    @classmethod
+    def profile_capabilities(cls) -> Dict[str, Any]:
+        """Describe provider-profile behavior without exposing credentials."""
+        return {
+            "supports_profiles": cls.supports_profiles,
+            "profile_mode": cls.profile_mode,
+            "supports_auth_lifecycle": cls.supports_auth_lifecycle,
+            "supports_resume": cls.supports_resume,
+            "supports_quota": cls.supports_quota,
+        }
+
+    @classmethod
+    def profile_settings_schema(cls) -> Dict[str, Any]:
+        """Return the closed non-secret settings schema for this provider."""
+        return {"type": "object", "properties": {}, "additionalProperties": False}
+
     @classmethod
     def honors_model(
         cls,

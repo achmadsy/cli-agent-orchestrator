@@ -79,7 +79,10 @@ class Terminal(BaseModel):
 
     id: str = Field(..., description="Unique terminal identifier")
     name: str = Field(..., description="Terminal/window name")
-    provider: ProviderType = Field(..., description="CLI tool provider")
+    provider: ProviderType = Field(..., description="Canonical CLI tool provider")
+    provider_profile: Optional[str] = Field(
+        None, description="Named provider-account profile used for this terminal"
+    )
     session_name: str = Field(..., description="Session name")
     agent_profile: Optional[str] = Field(None, description="Agent profile")
     model: Optional[str] = Field(None, description="Model requested at launch")
