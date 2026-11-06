@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
-import { api, AgentProfileInfo, ProviderInfo, ProviderProfile, ProviderRole, RoleProviderPolicy } from '../api'
-import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Tag, Search, Mail, Plus, LogOut, Send, FileText, X } from 'lucide-react'
+import { api, AgentProfileInfo, ProviderInfo, ProviderProfile, ProviderRole, RoleProviderPolicy, RoleProviderProfilePolicy, RuntimeFailure } from '../api'
+import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Tag, Search, Mail, Plus, LogOut, Send, FileText, X, AlertTriangle, Repeat } from 'lucide-react'
 import { TerminalView } from './TerminalView'
 import { ConfirmModal } from './ConfirmModal'
 import { InboxPanel } from './InboxPanel'
@@ -80,6 +80,18 @@ export function AgentPanel() {
   const [delegatedMode, setDelegatedMode] = useState<'defaults' | 'same' | 'roles'>('defaults')
   const [delegatedProvider, setDelegatedProvider] = useState('')
   const [delegatedRoles, setDelegatedRoles] = useState<RoleProviderPolicy>({})
+  // Per-role account profiles (role_provider_profiles). An entry is only
+  // meaningful when its role's selected provider supports profiles, so a
+  // provider change resets that role's account; filtering below is by the
+  // role's current provider, never a global assumption.
+  const [delegatedProfiles, setDelegatedProfiles] = useState<RoleProviderProfilePolicy>({})
+  // #runtime: structured provider failures, keyed by terminal id. Server
+  // classification — React never regex-parses terminal text.
+  const [runtimeFailures, setRuntimeFailures] = useState<Record<string, RuntimeFailure | null>>({})
+  const [switchTarget, setSwitchTarget] = useState<{ terminalId: string; provider: string } | null>(null)
+  const [switchProfileId, setSwitchProfileId] = useState('')
+  const [switchNote, setSwitchNote] = useState('')
+  const [switching, setSwitching] = useState(false)
 
   const handleDeleteTerminal = async () => {
     if (!pendingClose) return
@@ -155,20 +167,45 @@ export function AgentPanel() {
     }
   }, [activeSession])
 
-  // Poll terminal statuses for visible terminals in the session detail
+  // Poll one authoritative full projection per visible terminal. Both coarse
+  // status and structured runtime failure come from the same server response;
+  // React never interprets provider output.
   useEffect(() => {
-    if (!activeSessionDetail?.terminals.length) return
-    const terminalIds = activeSessionDetail.terminals.map(t => t.id)
-    const fetchStatuses = () => {
+    const terminalIds = activeSessionDetail?.terminals.map(t => t.id) ?? []
+    const visible = new Set(terminalIds)
+    setRuntimeFailures(previous => Object.fromEntries(
+      Object.entries(previous).filter(([id]) => visible.has(id)),
+    ))
+    if (terminalIds.length === 0) return
+
+    let cancelled = false
+    const inFlight = new Set<string>()
+    const fetchProjections = () => {
       terminalIds.forEach(id => {
-        api.getTerminalStatus(id)
-          .then(status => { if (status) setTerminalStatus(id, status) })
-          .catch(() => {})
+        if (inFlight.has(id)) return
+        inFlight.add(id)
+        api.getTerminal(id)
+          .then(terminal => {
+            if (cancelled) return
+            if (terminal.status) setTerminalStatus(id, terminal.status)
+            setRuntimeFailures(previous => ({
+              ...previous,
+              [id]: terminal.runtime_failure ?? null,
+            }))
+          })
+          .catch(() => {
+            // Preserve last successful projection across transient read errors.
+          })
+          .finally(() => { inFlight.delete(id) })
       })
     }
-    fetchStatuses()
-    const interval = setInterval(fetchStatuses, 3000)
-    return () => clearInterval(interval)
+
+    fetchProjections()
+    const interval = setInterval(fetchProjections, 3000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
   }, [activeSessionDetail?.terminals.map(t => t.id).join(',')])
 
   const handleCreate = async () => {
@@ -188,6 +225,15 @@ export function AgentPanel() {
           Object.entries(delegatedRoles).filter(([, value]) => Boolean(value)),
         ) as RoleProviderPolicy
       }
+      let roleProviderProfiles: RoleProviderProfilePolicy | undefined
+      if (delegatedMode === 'same' && delegatedProvider) {
+        const shared = delegatedProfiles.supervisor
+        roleProviderProfiles = shared ? { supervisor: shared, developer: shared, reviewer: shared } : undefined
+      } else if (delegatedMode === 'roles') {
+        roleProviderProfiles = Object.fromEntries(
+          Object.entries(delegatedProfiles).filter(([, value]) => Boolean(value)),
+        ) as RoleProviderProfilePolicy
+      }
       await createSession(
         provider,
         profile.trim(),
@@ -195,15 +241,43 @@ export function AgentPanel() {
         sessionName.trim() || undefined,
         roleProviders,
         providerProfile || undefined,
+        roleProviderProfiles,
       )
       setShowSpawnModal(false)
       setProfile('')
       setWorkingDirectory('')
       setSessionName('')
+      setDelegatedProfiles({})
     } finally {
       setCreating(false)
       creatingRef.current = false
     }
+  }
+
+  const handleSwitchAccount = async () => {
+    if (!switchTarget || !switchProfileId || switching) return
+    setSwitching(true)
+    try {
+      const result = await api.switchProviderProfile(
+        switchTarget.terminalId,
+        switchProfileId,
+        switchNote.trim() || undefined,
+      )
+      showSnackbar({
+        type: 'success',
+        message:
+          result.status === 'switched'
+            ? `Switched to account ${switchProfileId} — successor ${result.successor_id} created; predecessor retained`
+            : `Successor ${result.successor_id} created but its first message was not delivered — check the new terminal`,
+      })
+      setSwitchTarget(null)
+      setSwitchNote('')
+      setSwitchProfileId('')
+      if (activeSession) await selectSession(activeSession)
+    } catch (e: any) {
+      showSnackbar({ type: 'error', message: e.detail || e.message || 'Failed to switch account' })
+    }
+    setSwitching(false)
   }
 
   const openTerminal = (terminalId: string, provider?: string, agentProfile?: string | null) => {
@@ -459,6 +533,37 @@ export function AgentPanel() {
                     </button>
                   </div>
                 </div>
+                {/* #runtime: provider-classified failure banner. Server-owned
+                    classification; no terminal text parsing here. */}
+                {runtimeFailures[t.id] && (
+                  <div className="flex items-start gap-2 bg-red-900/30 border border-red-800/50 rounded-lg px-3 py-2">
+                    <AlertTriangle size={14} className="text-red-400 mt-0.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-red-300">
+                        {runtimeFailures[t.id]!.kind === 'rate_limited' ? 'Rate limited'
+                          : runtimeFailures[t.id]!.kind === 'quota_exhausted' ? 'Quota exhausted'
+                          : runtimeFailures[t.id]!.kind === 'auth_expired' ? 'Authentication expired'
+                          : 'Provider error'}
+                        {runtimeFailures[t.id]!.reset_at && (
+                          <span className="text-red-400/70 font-normal"> · resets {runtimeFailures[t.id]!.reset_at}</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-red-400/80 break-words mt-0.5">{runtimeFailures[t.id]!.message}</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setSwitchTarget({ terminalId: t.id, provider: t.provider })
+                        setSwitchProfileId('')
+                        setSwitchNote('')
+                      }}
+                      className="flex items-center gap-1.5 px-2.5 py-1 bg-red-700/60 hover:bg-red-600 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors shrink-0"
+                      title="Continue on another authenticated account"
+                    >
+                      <Repeat size={12} />
+                      Switch account
+                    </button>
+                  </div>
+                )}
                 {/* Working Directory Display */}
                 {terminalWorkDirs[t.id] && (
                   <div className="flex items-center gap-1.5" title={terminalWorkDirs[t.id]!}>
@@ -522,6 +627,87 @@ export function AgentPanel() {
           terminalId={outputTerminalId}
           onClose={() => setOutputTerminalId(null)}
         />
+      )}
+
+      {/* Switch Account Modal (#runtime) */}
+      {switchTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => !switching && setSwitchTarget(null)} />
+          <div className="relative bg-gray-800 border border-gray-700 rounded-2xl shadow-2xl shadow-black/50 w-full max-w-md mx-4">
+            <div className="flex items-center justify-between p-5 border-b border-gray-700/50">
+              <div>
+                <h3 className="text-base font-semibold text-gray-200">Switch account</h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Creates a successor agent on the new account in this same session. The current terminal stays open for inspection until you close it.
+                </p>
+              </div>
+              <button
+                onClick={() => !switching && setSwitchTarget(null)}
+                className="p-1.5 text-gray-500 hover:text-gray-300 transition-colors rounded-lg hover:bg-gray-700/50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              {(() => {
+                const options = providerProfiles.filter(p => p.provider === switchTarget.provider)
+                if (options.length === 0) {
+                  return (
+                    <p className="text-xs text-amber-400">
+                      No other {switchTarget.provider} account profiles exist. Add and authenticate one in Provider Profiles first.
+                    </p>
+                  )
+                }
+                return (
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Target account</label>
+                    <CustomSelect
+                      value={switchProfileId}
+                      onChange={setSwitchProfileId}
+                      placeholder="Select account..."
+                      options={options.map(p => ({
+                        value: p.id,
+                        label: p.label,
+                        sublabel: p.id + ' · ' + p.auth_state,
+                        disabled: p.auth_state !== 'authenticated',
+                      }))}
+                    />
+                  </div>
+                )
+              })()}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Continuation note <span className="text-gray-600">(optional)</span></label>
+                <textarea
+                  value={switchNote}
+                  onChange={e => setSwitchNote(e.target.value)}
+                  placeholder="What should the successor know to continue? (bounded context handoff — no transcript or credentials are copied)"
+                  rows={3}
+                  maxLength={400}
+                  className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-xs rounded-lg px-3 py-2 focus:border-emerald-500 focus:outline-none resize-none"
+                />
+              </div>
+              <p className="text-[11px] text-gray-600">
+                This is a context handoff, not a conversation resume: the successor starts fresh with a short summary of the failure plus your note. Automatic account rotation never happens.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-3 p-5 border-t border-gray-700/50">
+              <button
+                onClick={() => !switching && setSwitchTarget(null)}
+                className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSwitchAccount}
+                disabled={!switchProfileId || switching}
+                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-medium px-4 py-2.5 rounded-lg transition-colors"
+              >
+                <Repeat size={14} />
+                {switching ? 'Switching...' : 'Switch account'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Close Confirmation Modal */}
@@ -672,26 +858,68 @@ export function AgentPanel() {
                       </label>
                     ))}
                     {delegatedMode === 'same' && (
-                      <CustomSelect
-                        value={delegatedProvider}
-                        onChange={setDelegatedProvider}
-                        placeholder="Select installed CLI"
-                        options={providers.map(p => ({ value: p.name, label: p.name.replace(/_/g, ' '), disabled: !p.installed, sublabel: !p.installed ? 'Not installed' : undefined }))}
-                      />
+                      <>
+                        <CustomSelect
+                          value={delegatedProvider}
+                          onChange={value => {
+                            setDelegatedProvider(value)
+                            // A shared account from the old provider is invalid now.
+                            setDelegatedProfiles({})
+                          }}
+                          placeholder="Select installed CLI"
+                          options={providers.map(p => ({ value: p.name, label: p.name.replace(/_/g, ' '), disabled: !p.installed, sublabel: !p.installed ? 'Not installed' : undefined }))}
+                        />
+                        {delegatedProvider && providerProfiles.some(p => p.provider === delegatedProvider) && (
+                          <div>
+                            <label className="block mb-1 text-[11px] text-gray-500">Shared account</label>
+                            <CustomSelect
+                              value={delegatedProfiles.supervisor ?? ''}
+                              onChange={value => setDelegatedProfiles(value ? { supervisor: value, developer: value, reviewer: value } : {})}
+                              placeholder="Default account"
+                              options={[{ value: '', label: 'Default account' }, ...providerProfiles.filter(p => p.provider === delegatedProvider).map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]}
+                            />
+                          </div>
+                        )}
+                      </>
                     )}
                     {delegatedMode === 'roles' && (
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        {(['supervisor', 'developer', 'reviewer'] as ProviderRole[]).map(role => (
-                          <div key={role}>
-                            <label className="block mb-1 text-[11px] capitalize text-gray-500">{role}</label>
-                            <CustomSelect
-                              value={delegatedRoles[role] ?? ''}
-                              onChange={value => setDelegatedRoles(current => ({ ...current, [role]: value || undefined }))}
-                              placeholder="Default"
-                              options={[{ value: '', label: 'Default' }, ...providers.map(p => ({ value: p.name, label: p.name.replace(/_/g, ' '), disabled: !p.installed }))]}
-                            />
-                          </div>
-                        ))}
+                        {(['supervisor', 'developer', 'reviewer'] as ProviderRole[]).map(role => {
+                          const roleProvider = delegatedRoles[role] ?? ''
+                          const roleAccounts = providerProfiles.filter(p => p.provider === roleProvider)
+                          return (
+                            <div key={role}>
+                              <label className="block mb-1 text-[11px] capitalize text-gray-500">{role}</label>
+                              <CustomSelect
+                                value={delegatedRoles[role] ?? ''}
+                                onChange={value => {
+                                  setDelegatedRoles(current => ({ ...current, [role]: value || undefined }))
+                                  // Reset the role's account when its provider changed,
+                                  // because a profile from the old provider is invalid now.
+                                  setDelegatedProfiles(current => {
+                                    if (!current[role]) return current
+                                    const next = { ...current }
+                                    delete next[role]
+                                    return next
+                                  })
+                                }}
+                                placeholder="Default"
+                                options={[{ value: '', label: 'Default' }, ...providers.map(p => ({ value: p.name, label: p.name.replace(/_/g, ' '), disabled: !p.installed }))]}
+                              />
+                              {roleProvider && roleAccounts.length > 0 && (
+                                <div className="mt-1">
+                                  <label className="block mb-1 text-[11px] text-gray-500">Account</label>
+                                  <CustomSelect
+                                    value={delegatedProfiles[role] ?? ''}
+                                    onChange={value => setDelegatedProfiles(current => ({ ...current, [role]: value || undefined }))}
+                                    placeholder="Default account"
+                                    options={[{ value: '', label: 'Default account' }, ...roleAccounts.map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
                   </div>

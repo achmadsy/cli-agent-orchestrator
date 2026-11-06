@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
@@ -55,6 +55,49 @@ class TerminalInputBlockedError(Exception):
     running instead of tearing it down the way any other exception from initialize() (or from the
     send_input it triggers on the deferred-init path) would.
     """
+
+
+# Kinds of provider-owned runtime failures. Deliberately CLOSED: a new kind
+# requires a visible model edit so UI/API consumers never need to guess.
+RUNTIME_FAILURE_KINDS = (
+    "rate_limited",
+    "quota_exhausted",
+    "auth_expired",
+    "provider_error",
+)
+RUNTIME_FAILURE_MESSAGE_MAX = 240
+
+
+class ProviderRuntimeFailure(BaseModel):
+    """CAO-owned structured verdict for one provider CLI failure (#runtime).
+
+    Classification is provider-owned (each provider knows its own error
+    chrome); persistence/redaction is CAO-owned. ``message`` is provider
+    error text, bounded; raw pane output never persists.
+    """
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    kind: Literal[
+        "rate_limited", "quota_exhausted", "auth_expired", "provider_error"
+    ] = Field(..., description="Failure kind (closed set)")
+    message: str = Field(
+        ..., min_length=1, max_length=RUNTIME_FAILURE_MESSAGE_MAX,
+        description="Bounded provider-owned failure text",
+    )
+    retryable: bool = Field(
+        False, description="Whether the failure may resolve on retry"
+    )
+    retry_after_s: Optional[int] = Field(
+        None, description="Server-suggested retry delay in seconds, when stated"
+    )
+    reset_at: Optional[str] = Field(
+        None, description="Provider-stated reset time text, when stated"
+    )
+    observed_generation: Optional[int] = Field(
+        None,
+        description="StatusMonitor output generation the verdict was read from",
+    )
 
 
 class TerminalLimitError(Exception):
@@ -119,6 +162,19 @@ class Terminal(BaseModel):
             "CAO-owned durable deferred-initialization failure metadata. "
             "Separate from consumer metadata so clients cannot overwrite lifecycle truth."
         ),
+    )
+    runtime_failure: Optional[ProviderRuntimeFailure] = Field(
+        None,
+        description=(
+            "Structured provider-owned runtime failure (rate limit, quota, auth). "
+            "CAO-owned; cleared only on a new dispatch lifecycle."
+        ),
+    )
+    switch_predecessor_id: Optional[str] = Field(
+        None, description="CAO-owned predecessor terminal for an explicit account switch"
+    )
+    switch_successor_id: Optional[str] = Field(
+        None, description="CAO-owned successor terminal for an explicit account switch"
     )
     initial_delivery: Optional[Dict[str, Any]] = Field(
         None,

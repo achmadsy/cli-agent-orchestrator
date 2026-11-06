@@ -78,6 +78,23 @@ def parse_role_policy_mapping(value: object) -> Dict[str, str]:
         return {}
 
 
+def parse_role_profile_policy_mapping(value: object) -> Dict[str, str]:
+    """Validate an untrusted metadata profile-account policy, fail-open to empty.
+
+    Companion to :func:`parse_role_policy_mapping` for
+    ``metadata.role_provider_profiles``: an agent or API caller can corrupt the
+    free-form metadata column, so a malformed value degrades to no override
+    rather than blocking delegation.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    try:
+        return RoleProviderProfilePolicy(**dict(value)).compact()
+    except (ValueError, TypeError) as exc:
+        logger.debug("role profile metadata corrupt; using empty policy: %s", exc)
+        return {}
+
+
 def parse_stored_policy(raw: Optional[str]) -> Dict[str, str]:
     """Parse durable ``role_providers_json`` fail-open to empty policy.
 

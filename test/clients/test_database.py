@@ -1771,6 +1771,7 @@ class TestTerminalsSchemaMigration:
         assert "deferred_init_external_owner" in columns
         assert "deferred_init_runtime_reclaimed" in columns
         assert "session_incarnation_id" in columns
+        assert {"switch_predecessor_id", "switch_successor_id"} <= columns
         assert {"model", "model_honored"} <= columns
         assert rows == [
             ("abc12345", None, None, None, None)
@@ -1809,6 +1810,8 @@ class TestTerminalsSchemaMigration:
         assert columns.count("deferred_init_external_owner") == 1
         assert columns.count("deferred_init_runtime_reclaimed") == 1
         assert columns.count("session_incarnation_id") == 1
+        assert columns.count("switch_predecessor_id") == 1
+        assert columns.count("switch_successor_id") == 1
         assert columns.count("model") == 1
         assert columns.count("model_honored") == 1
 
@@ -2067,6 +2070,39 @@ class TestTerminalMetadataRoundTrip:
         assert fetched["session_incarnation_id"] == "inc-123"
         assert list_terminals_by_session("cao-s")[0]["session_incarnation_id"] == "inc-123"
         assert list_terminals_in_sessions(["cao-s"])[0]["session_incarnation_id"] == "inc-123"
+
+    def test_switch_linkage_is_reciprocal_and_single_successor(self, tmp_path, monkeypatch):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from cli_agent_orchestrator.clients import database as db_mod
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'switch-link.db'}")
+        Base.metadata.create_all(bind=engine)
+        monkeypatch.setattr(db_mod, "SessionLocal", sessionmaker(bind=engine))
+
+        create_terminal("abc12345", "cao-s", "w-0", "claude_code")
+        successor = create_terminal(
+            "def67890",
+            "cao-s",
+            "w-1",
+            "claude_code",
+            switch_predecessor_id="abc12345",
+        )
+
+        predecessor = get_terminal_metadata("abc12345")
+        assert successor["switch_predecessor_id"] == "abc12345"
+        assert predecessor["switch_successor_id"] == "def67890"
+
+        with pytest.raises(ValueError, match="already has a successor"):
+            create_terminal(
+                "fedcba98",
+                "cao-s",
+                "w-2",
+                "claude_code",
+                switch_predecessor_id="abc12345",
+            )
+        assert get_terminal_metadata("fedcba98") is None
 
     @pytest.mark.parametrize("model_honored", [True, False])
     def test_launch_model_round_trips_through_terminal_record(
@@ -2500,6 +2536,9 @@ class TestListTerminalsInSessions:
             "deferred_init_failure",
             "deferred_init_external_owner",
             "deferred_init_runtime_reclaimed",
+            "runtime_failure",
+            "switch_predecessor_id",
+            "switch_successor_id",
             "session_incarnation_id",
             "last_active",
         }

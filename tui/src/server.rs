@@ -755,6 +755,13 @@ fn route(id: CommandId) -> Option<Route> {
         // for the same reason every other HIDE row is, and `no HANDOFF or HIDE command may carry a
         // route` is asserted below.
         CommandId::WorkflowStep => None,
+
+        // ── `cao workspace-mcp *` — folder-backed Quick Tunnel instances ──────────────
+        // HIDE: managed primarily via Web UI and CLI; unrouted in Rust TUI.
+        CommandId::WorkspaceMcpList
+        | CommandId::WorkspaceMcpStart
+        | CommandId::WorkspaceMcpStatus
+        | CommandId::WorkspaceMcpStop => None,
     }
 }
 

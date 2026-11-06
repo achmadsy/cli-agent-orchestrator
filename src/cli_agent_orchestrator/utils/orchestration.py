@@ -47,7 +47,9 @@ from cli_agent_orchestrator.services.elastic_worker_gateway import (
 )
 from cli_agent_orchestrator.services.provider_policy import (
     parse_role_policy_mapping,
+    parse_role_profile_policy_mapping,
     resolve_role_provider,
+    resolve_role_provider_profile,
 )
 from cli_agent_orchestrator.services.settings_service import get_server_settings
 from cli_agent_orchestrator.utils.agent_profiles import resolve_provider
@@ -465,6 +467,7 @@ def _create_terminal(
     create_timeout: Optional[float] = None,
     idempotency_key: Optional[str] = None,
     provider: Optional[str] = None,
+    provider_profile: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Create a new terminal with the specified agent profile.
 
@@ -524,7 +527,11 @@ def _create_terminal(
     _refuse_ephemeral_target_without_claim(agent_profile)
 
     explicit_provider = provider
+    explicit_provider_profile = provider_profile
     provider = explicit_provider or DEFAULT_PROVIDER
+    resolved_provider_profile = resolve_role_provider_profile(
+        agent_profile, explicit_provider_profile, None
+    )
     parent_allowed_tools = None
 
     # Get current terminal ID from environment
@@ -548,6 +555,12 @@ def _create_terminal(
         role_policy = parse_role_policy_mapping(metadata.get("role_providers"))
         provider = explicit_provider or resolve_role_provider(
             agent_profile, profile_provider, role_policy
+        )
+        role_profile_policy = parse_role_profile_policy_mapping(
+            metadata.get("role_provider_profiles")
+        )
+        resolved_provider_profile = resolve_role_provider_profile(
+            agent_profile, explicit_provider_profile, role_profile_policy
         )
         session_name = terminal_metadata["session_name"]
         parent_allowed_tools = terminal_metadata.get("allowed_tools")
@@ -585,6 +598,8 @@ def _create_terminal(
             params["working_directory"] = working_directory
         if child_allowed_tools:
             params["allowed_tools"] = child_allowed_tools
+        if resolved_provider_profile:
+            params["provider_profile"] = resolved_provider_profile
         if provider == ProviderType.KIRO_CLI.value and engine is not None:
             params["engine"] = engine
         if model and model.strip():
@@ -653,11 +668,16 @@ def _create_terminal(
         provider = explicit_provider or resolve_provider(
             agent_profile, fallback_provider=DEFAULT_PROVIDER
         )
+        resolved_provider_profile = resolve_role_provider_profile(
+            agent_profile, explicit_provider_profile, None
+        )
         params = {
             "provider": provider,
             "agent_profile": agent_profile,
             "session_name": session_name,
         }
+        if resolved_provider_profile:
+            params["provider_profile"] = resolved_provider_profile
         if working_directory:
             params["working_directory"] = working_directory
         if provider == ProviderType.KIRO_CLI.value and engine is not None:
@@ -774,6 +794,17 @@ def _terminal_role_provider(
     return resolved or None
 
 
+def _terminal_role_provider_profile(
+    agent_profile: str, terminal_metadata: Mapping[str, Any]
+) -> Optional[str]:
+    """Return matching account profile from terminal policy, no explicit value."""
+    metadata = terminal_metadata.get("metadata") or {}
+    role_profile_policy = parse_role_profile_policy_mapping(
+        metadata.get("role_provider_profiles")
+    )
+    return resolve_role_provider_profile(agent_profile, None, role_profile_policy)
+
+
 class HandoffContext(NamedTuple):
     """Supervisor-derived context for a handoff, resolved WITHOUT creating a terminal.
 
@@ -781,16 +812,22 @@ class HandoffContext(NamedTuple):
     supervisor, inherit the supervisor's allowed-tools, and record the
     supervisor as its caller (issue #284). These are resolved caller-side from
     the supervisor metadata so the single combined run-step call carries them.
+    ``provider_profile`` resolves the same way from the supervisor's
+    ``metadata.role_provider_profiles`` when no explicit per-call profile was
+    given; ``None`` leaves the account choice to profile defaults.
     """
 
     provider: str
     session_name: Optional[str]
     caller_id: Optional[str]
     allowed_tools: Optional[list]
+    provider_profile: Optional[str] = None
 
 
 def _resolve_handoff_provider(
-    agent_profile: str, explicit_provider: Optional[str] = None
+    agent_profile: str,
+    explicit_provider: Optional[str] = None,
+    explicit_provider_profile: Optional[str] = None,
 ) -> HandoffContext:
     """Resolve the handoff context for a worker WITHOUT creating a terminal.
 
@@ -815,6 +852,7 @@ def _resolve_handoff_provider(
             session_name=None,
             caller_id=None,
             allowed_tools=None,
+            provider_profile=resolve_role_provider_profile(agent_profile, None, None),
         )
 
     response = requests.get(
@@ -839,11 +877,17 @@ def _resolve_handoff_provider(
     parent_allowed_tools = terminal_metadata.get("allowed_tools")
     child_allowed_tools = _resolve_child_allowed_tools(parent_allowed_tools, agent_profile)
     allowed_tools_list = child_allowed_tools.split(",") if child_allowed_tools else None
+    role_profile_policy = parse_role_profile_policy_mapping(
+        metadata.get("role_provider_profiles")
+    )
     return HandoffContext(
         provider=provider,
         session_name=terminal_metadata["session_name"],
         caller_id=current_terminal_id,
         allowed_tools=allowed_tools_list,
+        provider_profile=resolve_role_provider_profile(
+            agent_profile, explicit_provider_profile, role_profile_policy
+        ),
     )
 
 
@@ -1171,6 +1215,7 @@ async def _handoff_impl(
     idempotency_key: Optional[str] = None,
     target_host: Optional[str] = None,
     provider: Optional[str] = None,
+    provider_profile: Optional[str] = None,
 ) -> HandoffResult:
     """Implementation of handoff logic.
 
@@ -1329,13 +1374,16 @@ async def _handoff_impl(
                 session_name=None,
                 caller_id=None,
                 allowed_tools=None,
+                provider_profile=resolve_role_provider_profile(
+                    agent_profile, provider_profile, None
+                ),
             )
         else:
             # Resolve the supervisor context WITHOUT creating a terminal, so the
             # codex fast-fail (which needs CAO_TERMINAL_ID) can run before any
             # terminal exists, on every path below.
             base_url = API_BASE_URL
-            ctx = _resolve_handoff_provider(agent_profile, provider)
+            ctx = _resolve_handoff_provider(agent_profile, provider, provider_profile)
         provider = ctx.provider
 
         # Fail fast for codex: its handoff banner requires CAO_TERMINAL_ID. We
@@ -1384,6 +1432,8 @@ async def _handoff_impl(
                 payload["caller_id"] = ctx.caller_id
             if ctx.allowed_tools:
                 payload["allowed_tools"] = ctx.allowed_tools
+            if ctx.provider_profile:
+                payload["provider_profile"] = ctx.provider_profile
             if working_directory:
                 payload["working_directory"] = working_directory
             if provider == ProviderType.KIRO_CLI.value and engine is not None:
@@ -1421,6 +1471,7 @@ async def _handoff_impl(
             create_timeout=_HANDOFF_CREATE_TIMEOUT_S,
             idempotency_key=idempotency_key,
             provider=provider,
+            provider_profile=ctx.provider_profile,
         )
         if on_terminal_id is not None:
             try:
@@ -1476,6 +1527,11 @@ async def _handoff_impl(
             "teardown": False,
             "timeout": float(timeout),
         }
+        # reused terminal's account is already fixed at create time; sending
+        # provider_profile on reuse would contradict run_agent_step's
+        # "ignored when reusing" contract, so it is deliberately omitted here.
+        if ctx.provider_profile:
+            payload["provider_profile"] = ctx.provider_profile
         if provider == ProviderType.KIRO_CLI.value and engine is not None:
             payload["engine"] = engine
         result = await _run_step_and_build_result(
@@ -1518,6 +1574,7 @@ def _assign_remote(
     model: Optional[str],
     use_worktree: bool,
     provider: Optional[str] = None,
+    provider_profile: Optional[str] = None,
     ready_wait_seconds: float = 0.0,
     callback_url: Optional[str] = None,
     remote_session_name: Optional[str] = None,
@@ -1529,6 +1586,12 @@ def _assign_remote(
     node) and the task is delivered once the remote provider initializes. The
     remote node resolves the provider from its OWN installed profile store
     (``provider`` is deliberately omitted from the request).
+
+    ``provider_profile`` is an opaque account-profile ID the supervisor already
+    resolved from its own role profile policy (or an explicit call value); it
+    travels as an ID and the remote node validates/owns the actual account —
+    no credential material crosses nodes, and an unknown ID fails closed
+    on the remote side.
 
     Callback routing: assign is non-blocking, so results come back via the
     worker's ``send_message``. The worker's node has no DB row for this
@@ -1579,6 +1642,11 @@ def _assign_remote(
     params: Dict[str, Any] = {"agent_profile": agent_profile}
     if provider is not None:
         params["provider"] = provider
+    # Same opaque profile ID the supervisor resolved locally; the remote node
+    # re-resolves it against ITS OWN profile store and fails closed when
+    # unknown/never owned — credentials never cross nodes.
+    if provider_profile is not None:
+        params["provider_profile"] = provider_profile
     if remote_session_name:
         params["session_name"] = remote_session_name
     if working_directory:
@@ -1673,6 +1741,7 @@ def _assign_impl(
     callback_url: Optional[str] = None,
     remote_session_name: Optional[str] = None,
     provider: Optional[str] = None,
+    provider_profile: Optional[str] = None,
     use_terminal_role_policy: bool = True,
 ) -> Dict[str, Any]:
     """Implementation of assign logic.
@@ -1738,6 +1807,7 @@ def _assign_impl(
             worker_message = message
 
         if target_host:
+            selected_provider_profile = provider_profile
             if provider is None and use_terminal_role_policy:
                 metadata_response = requests.get(
                     f"{API_BASE_URL}/terminals/{current_terminal_id}",
@@ -1748,6 +1818,10 @@ def _assign_impl(
                 selected_provider = _terminal_role_provider(
                     agent_profile, metadata_response.json()
                 )
+                if selected_provider_profile is None:
+                    selected_provider_profile = _terminal_role_provider_profile(
+                        agent_profile, metadata_response.json()
+                    )
             return _assign_remote(
                 agent_profile=agent_profile,
                 worker_message=worker_message,
@@ -1758,6 +1832,7 @@ def _assign_impl(
                 model=model,
                 use_worktree=use_worktree,
                 provider=selected_provider,
+                provider_profile=selected_provider_profile,
                 ready_wait_seconds=ready_wait_seconds,
                 callback_url=callback_url,
                 remote_session_name=remote_session_name,
@@ -1778,6 +1853,7 @@ def _assign_impl(
             model=model,
             use_worktree=use_worktree,
             provider=selected_provider,
+            provider_profile=provider_profile,
         )
 
         return {

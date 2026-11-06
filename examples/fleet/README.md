@@ -118,7 +118,12 @@ from other devices.
 ```bash
 bin/fleet list                   # list nodes
 bin/fleet exec node-b session list   # run any cao command against a node
+bin/fleet exec node-b workspace-mcp list        # list workspace MCP servers on a node
+bin/fleet exec node-b workspace-mcp start /dir  # spawn a workspace MCP Quick Tunnel on a node
 bin/fleet show node-b            # print the resolved API base URL
+# Or directly via CAO CLI's node flag:
+cao workspace-mcp list --node node-b
+cao workspace-mcp start /dir --node node-b
 ```
 
 ## Tests

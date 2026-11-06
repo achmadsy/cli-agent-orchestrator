@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Loader2, Play, X } from 'lucide-react'
-import { api, ProviderInfo, ProviderRole, RoleProviderPolicy, WorkflowInputDecl, WorkflowSpecSummary } from '../../api'
+import { api, ProviderInfo, ProviderProfile, ProviderRole, RoleProviderPolicy, RoleProviderProfilePolicy, WorkflowInputDecl, WorkflowSpecSummary } from '../../api'
 import { useStore } from '../../store'
 import { CustomSelect } from '../CustomSelect'
 
@@ -40,11 +40,13 @@ export function PreRunModal({ open, workflowName, onClose, onStarted }: Props) {
   const releaseNavLock = useStore(s => s.releaseNavLock)
   const [spec, setSpec] = useState<WorkflowSpecSummary | null>(null)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [providerProfiles, setProviderProfiles] = useState<ProviderProfile[]>([])
   const [values, setValues] = useState<Record<string, string>>({})
   const [runId, setRunId] = useState('')
   const [mode, setMode] = useState<ProviderMode>('defaults')
   const [sameProvider, setSameProvider] = useState('')
   const [roleProviders, setRoleProviders] = useState<RoleProviderPolicy>({})
+  const [roleProviderProfiles, setRoleProviderProfiles] = useState<RoleProviderProfilePolicy>({})
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -64,10 +66,12 @@ export function PreRunModal({ open, workflowName, onClose, onStarted }: Props) {
     setRunId('')
     setMode('defaults')
     setRoleProviders({})
-    Promise.all([api.getWorkflow(workflowName), api.listProviders()])
-      .then(([workflow, listed]) => {
+    setRoleProviderProfiles({})
+    Promise.all([api.getWorkflow(workflowName), api.listProviders(), api.listProviderProfiles()])
+      .then(([workflow, listed, profiles]) => {
         setSpec(workflow)
         setProviders(listed)
+        setProviderProfiles(profiles)
         const first = listed.find(p => p.installed)?.name ?? ''
         setSameProvider(first)
       })
@@ -86,14 +90,37 @@ export function PreRunModal({ open, workflowName, onClose, onStarted }: Props) {
     return Object.fromEntries(Object.entries(roleProviders).filter(([, value]) => Boolean(value))) as RoleProviderPolicy
   }, [mode, sameProvider, roleProviders])
 
+  // Per-role effective provider drives account filtering: a role with no
+  // selected CLI uses either the shared CLI (same mode) or its authored
+  // provider. Only authenticated profiles are selectable — switching
+  // accounts mid-run is the operator's explicit choice and never inferred.
+  const resolvedRoleProvider = (role: ProviderRole): string => {
+    if (policy[role]) return policy[role] as string
+    if (mode === 'same') return sameProvider
+    const step = (spec?.steps ?? []).find(
+      s => s.agent === role || (role === 'supervisor' && s.agent === 'code_supervisor'),
+    )
+    return step?.provider ?? ''
+  }
+  const profilePolicy = useMemo<RoleProviderProfilePolicy>(() => {
+    if (Object.keys(policy).length === 0 && mode !== 'roles') return {}
+    return Object.fromEntries(
+      Object.entries(roleProviderProfiles).filter(([, value]) => Boolean(value)),
+    ) as RoleProviderProfilePolicy
+  }, [mode, policy, roleProviderProfiles])
+
   const impacts = useMemo(() => {
     const steps = spec?.steps ?? []
     return steps.map(step => {
       const role = ROLES.find(candidate => step.agent === candidate || (candidate === 'supervisor' && step.agent === 'code_supervisor'))
       const effective = role ? policy[role] : undefined
-      return { ...step, role, effective: effective ?? step.provider }
+      const account = role ? (profilePolicy[role] ?? undefined) : undefined
+      const accountLabel = account
+        ? (providerProfiles.find(p => p.id === account)?.label ?? account)
+        : undefined
+      return { ...step, role, effective: effective ?? step.provider, account: accountLabel }
     })
-  }, [spec, policy])
+  }, [spec, policy, profilePolicy, providerProfiles])
 
   const submit = async () => {
     if (submitGuard.current || !spec) return
@@ -111,6 +138,7 @@ export function PreRunModal({ open, workflowName, onClose, onStarted }: Props) {
         inputs,
         runId.trim() || undefined,
         policy,
+        Object.keys(profilePolicy).length > 0 ? profilePolicy : undefined,
       )
       onStarted(result.run_id)
       onClose()
@@ -167,11 +195,67 @@ export function PreRunModal({ open, workflowName, onClose, onStarted }: Props) {
                     <span className="flex items-start gap-2"><input type="radio" name="provider-mode" checked={mode === value} onChange={() => setMode(value)} className="mt-1" /><span><span className="block text-sm text-gray-200">{label}</span><span className="block text-xs text-gray-500">{help}</span></span></span>
                   </label>
                 ))}
-                {mode === 'same' && <CustomSelect value={sameProvider} onChange={setSameProvider} options={options} placeholder="Select installed CLI" />}
-                {mode === 'roles' && <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">{ROLES.map(role => <div key={role}><label className="block text-xs capitalize text-gray-400 mb-1">{role}</label><CustomSelect value={roleProviders[role] ?? ''} onChange={value => setRoleProviders(current => ({ ...current, [role]: value || undefined }))} options={[{ value: '', label: 'Workflow default' }, ...options]} placeholder="Workflow default" /></div>)}</div>}
+                {mode === 'same' && (
+                  <>
+                    <CustomSelect value={sameProvider} onChange={value => { setSameProvider(value); setRoleProviderProfiles({}) }} options={options} placeholder="Select installed CLI" />
+                    {sameProvider && providerProfiles.some(p => p.provider === sameProvider) && (
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Shared account</label>
+                        <CustomSelect
+                          ariaLabel="Shared account"
+                          value={roleProviderProfiles.supervisor ?? ''}
+                          onChange={value => setRoleProviderProfiles(value ? { supervisor: value, developer: value, reviewer: value } : {})}
+                          options={[{ value: '', label: 'Default account' }, ...providerProfiles.filter(p => p.provider === sameProvider).map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]}
+                          placeholder="Default account"
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+                {mode === 'roles' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {ROLES.map(role => {
+                      const roleProvider = resolvedRoleProvider(role)
+                      const roleAccounts = providerProfiles.filter(p => p.provider === roleProvider)
+                      return (
+                        <div key={role}>
+                          <label className="block text-xs capitalize text-gray-400 mb-1">{role}</label>
+                          <CustomSelect
+                            value={roleProviders[role] ?? ''}
+                            onChange={value => {
+                              setRoleProviders(current => ({ ...current, [role]: value || undefined }))
+                              // A profile bound to the previous provider's account
+                              // is invalid there — drop it when the CLI changes.
+                              setRoleProviderProfiles(current => {
+                                if (!current[role]) return current
+                                const next = { ...current }
+                                delete next[role]
+                                return next
+                              })
+                            }}
+                            options={[{ value: '', label: 'Workflow default' }, ...options]}
+                            placeholder="Workflow default"
+                          />
+                          {roleAccounts.length > 0 && (
+                            <div className="mt-1">
+                              <label className="block text-[11px] text-gray-500 mb-1">Account</label>
+                              <CustomSelect
+                                ariaLabel={`Account for ${role}`}
+                                value={roleProviderProfiles[role] ?? ''}
+                                onChange={value => setRoleProviderProfiles(current => ({ ...current, [role]: value || undefined }))}
+                                options={[{ value: '', label: 'Default account' }, ...roleAccounts.map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]}
+                                placeholder="Default account"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </section>
 
-              {impacts.length > 0 && <section><h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Provider impact</h4><div className="space-y-1">{impacts.map(step => <div key={step.id} className="flex justify-between rounded bg-gray-950/40 px-3 py-2 text-xs"><span className="text-gray-300">{step.id} <span className="text-gray-600">· {step.agent}</span></span><span className={step.effective !== step.provider ? 'text-emerald-400' : 'text-gray-500'}>{step.provider}{step.effective !== step.provider ? ` → ${step.effective}` : ''}</span></div>)}</div></section>}
+              {impacts.length > 0 && <section><h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Provider impact</h4><div className="space-y-1">{impacts.map(step => <div key={step.id} className="flex justify-between rounded bg-gray-950/40 px-3 py-2 text-xs"><span className="text-gray-300">{step.id} <span className="text-gray-600">· {step.agent}</span></span><span className={step.effective !== step.provider ? 'text-emerald-400' : 'text-gray-500'}>{step.provider}{step.effective !== step.provider ? ` → ${step.effective}` : ''}{step.account ? <span className="text-gray-500"> on {step.account}</span> : null}</span></div>)}</div></section>}
             </>
           )}
           {error && <div role="alert" className="flex gap-2 rounded-lg border border-red-700/50 bg-red-950/30 p-3 text-xs text-red-300"><AlertTriangle size={14} />{error}</div>}

@@ -1,4 +1,5 @@
 """CAO Fleet Panel — FastAPI aggregate + control API, serves the static UI."""
+
 import asyncio
 import hmac
 import json
@@ -39,9 +40,7 @@ def _bearer_ok(header):
     if not config.PANEL_TOKEN or not header:
         return False
     scheme, _, presented = header.partition(" ")
-    return scheme.lower() == "bearer" and hmac.compare_digest(
-        presented.strip(), config.PANEL_TOKEN
-    )
+    return scheme.lower() == "bearer" and hmac.compare_digest(presented.strip(), config.PANEL_TOKEN)
 
 
 def _browser_session(request):
@@ -202,7 +201,9 @@ async def tailscale_peers():
         )
         status = json.loads(result.stdout)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=503, detail=f"tailscale status unavailable: {type(exc).__name__}")
+        raise HTTPException(
+            status_code=503, detail=f"tailscale status unavailable: {type(exc).__name__}"
+        )
     registered_hosts = {machine["host"] for machine in config.load_machines()}
     peers = []
     for peer in (status.get("Peer") or {}).values():
@@ -216,11 +217,15 @@ async def tailscale_peers():
             continue
         if host in registered_hosts:
             continue
-        peers.append({
-            "name": str(peer.get("DNSName") or peer.get("HostName") or host).split(".", 1)[0].lower(),
-            "host": host,
-            "os": peer.get("OS") or "linux",
-        })
+        peers.append(
+            {
+                "name": str(peer.get("DNSName") or peer.get("HostName") or host)
+                .split(".", 1)[0]
+                .lower(),
+                "host": host,
+                "os": peer.get("OS") or "linux",
+            }
+        )
     return {"peers": sorted(peers, key=lambda peer: peer["name"])}
 
 
@@ -289,7 +294,9 @@ async def register_machine(body: dict = Body(default_factory=dict)):
             await client.health(c, base)
             await client.list_sessions(c, base)
         except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"node validation failed: {type(exc).__name__}")
+            raise HTTPException(
+                status_code=502, detail=f"node validation failed: {type(exc).__name__}"
+            )
     try:
         machine = config.add_machine(candidate)
     except ValueError as exc:
@@ -333,8 +340,13 @@ async def fleet():
     async def probe(m):
         base = config.base_url(m)
         entry = {
-            "name": m["name"], "label": m["label"], "host": m["host"],
-            "role": m.get("role"), "online": False, "claude": None, "sessions": [],
+            "name": m["name"],
+            "label": m["label"],
+            "host": m["host"],
+            "role": m.get("role"),
+            "online": False,
+            "claude": None,
+            "sessions": [],
         }
         async with client.async_client(client.TIMEOUT, config.NODE_TOKEN) as c:
             try:
@@ -366,7 +378,9 @@ async def launch(name: str, body: dict = Body(default_factory=dict)):
             detail = (exc.response.text or "").strip() or str(exc)
             raise HTTPException(status_code=502, detail=f"{name} launch failed: {detail}")
         except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"{name} launch failed: {type(exc).__name__}: {exc}")
+            raise HTTPException(
+                status_code=502, detail=f"{name} launch failed: {type(exc).__name__}: {exc}"
+            )
         tid = term.get("id")
         # cao-server prefixes caller-provided names with "cao-". Return the
         # canonical value so subsequent detail and shutdown routes address the
@@ -379,7 +393,12 @@ async def launch(name: str, body: dict = Body(default_factory=dict)):
                 task_sent = True
             except httpx.HTTPError:
                 task_sent = False
-    return {"machine": name, "session_name": session_name, "terminal_id": tid, "task_sent": task_sent}
+    return {
+        "machine": name,
+        "session_name": session_name,
+        "terminal_id": tid,
+        "task_sent": task_sent,
+    }
 
 
 @app.get("/api/machines/{name}/sessions/{session_name}")
@@ -534,4 +553,5 @@ async def index():
 
 def run():
     import uvicorn
+
     uvicorn.run(app, host=config.PANEL_HOST, port=config.PANEL_PORT)

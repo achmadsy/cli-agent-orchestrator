@@ -116,7 +116,7 @@ use std::vec::Vec;
 /// must not offer itself — giving **33 IN-APP / 5 HANDOFF / 23 HIDE = 61**. Recorded here
 /// because a reader comparing the design's 60 against this 61 would otherwise suspect drift.
 /// (#321)
-const COMMAND_COUNT: usize = 95;
+const COMMAND_COUNT: usize = 99;
 
 /// What the TUI does with a command.
 ///
@@ -312,9 +312,13 @@ pub(crate) const DISPLAY_ORDER: [CommandId; COMMAND_COUNT] = [
     CommandId::WorkflowStep,
     CommandId::WorkflowWait,
     CommandId::WorkflowValidate,
+    CommandId::WorkspaceMcpList,
+    CommandId::WorkspaceMcpStart,
+    CommandId::WorkspaceMcpStatus,
+    CommandId::WorkspaceMcpStop,
 ];
 
-/// One variant per leaf command — **all 95**, the same figure [`COMMAND_COUNT`] pins.
+/// One variant per leaf command — **all 99**, the same figure [`COMMAND_COUNT`] pins.
 ///
 /// Why an enum rather than a `String` key is the subject of this module's own docs: it is what
 /// makes an unclassified command a **compile error** instead of a runtime `None` (FR-4.2).
@@ -543,6 +547,16 @@ pub enum CommandId {
     WorkflowWait,
     /// `cao workflow validate`
     WorkflowValidate,
+
+    // `cao workspace-mcp *` — folder-backed Quick Tunnel MCP instances
+    /// `cao workspace-mcp list`
+    WorkspaceMcpList,
+    /// `cao workspace-mcp start`
+    WorkspaceMcpStart,
+    /// `cao workspace-mcp status`
+    WorkspaceMcpStatus,
+    /// `cao workspace-mcp stop`
+    WorkspaceMcpStop,
 }
 
 /// The one place a command's row is written.
@@ -1671,6 +1685,60 @@ fn entry(id: CommandId) -> Command {
             params: &[Param { name: "file", required: true, kind: ParamKind::Text }, Param { name: "--json", required: false, kind: ParamKind::Flag }],
             handoff_reason: None,
         },
+
+        // ── `cao workspace-mcp *` — folder-backed Quick Tunnel instances ──────────────
+        //
+        // HIDE: managed primarily via Web UI and CLI; unvetted for direct Rust TUI flow.
+        CommandId::WorkspaceMcpList => Command {
+            id: CommandId::WorkspaceMcpList,
+            parent: Some("workspace-mcp"),
+            leaf_name: "list",
+            summary: "List tracked workspace MCP instances.",
+            policy: Policy::Hidden,
+            params: &[
+                Param { name: "--node", required: false, kind: ParamKind::Text },
+                Param { name: "--json", required: false, kind: ParamKind::Flag },
+            ],
+            handoff_reason: None,
+        },
+        CommandId::WorkspaceMcpStart => Command {
+            id: CommandId::WorkspaceMcpStart,
+            parent: Some("workspace-mcp"),
+            leaf_name: "start",
+            summary: "Start a workspace MCP server backing FOLDER.",
+            policy: Policy::Hidden,
+            params: &[
+                Param { name: "folder", required: true, kind: ParamKind::Text },
+                Param { name: "--agentic", required: false, kind: ParamKind::Flag },
+                Param { name: "--no-agentic", required: false, kind: ParamKind::Flag },
+                Param { name: "--node", required: false, kind: ParamKind::Text },
+            ],
+            handoff_reason: None,
+        },
+        CommandId::WorkspaceMcpStatus => Command {
+            id: CommandId::WorkspaceMcpStatus,
+            parent: Some("workspace-mcp"),
+            leaf_name: "status",
+            summary: "Show detailed status of a workspace MCP instance.",
+            policy: Policy::Hidden,
+            params: &[
+                Param { name: "instance_id", required: true, kind: ParamKind::Text },
+                Param { name: "--node", required: false, kind: ParamKind::Text },
+            ],
+            handoff_reason: None,
+        },
+        CommandId::WorkspaceMcpStop => Command {
+            id: CommandId::WorkspaceMcpStop,
+            parent: Some("workspace-mcp"),
+            leaf_name: "stop",
+            summary: "Stop and unregister a workspace MCP instance.",
+            policy: Policy::Hidden,
+            params: &[
+                Param { name: "instance_id", required: true, kind: ParamKind::Text },
+                Param { name: "--node", required: false, kind: ParamKind::Text },
+            ],
+            handoff_reason: None,
+        },
     }
 }
 
@@ -1995,6 +2063,10 @@ mod tests {
                     CommandId::WorkflowStatus => CommandId::WorkflowStatus,
                     CommandId::WorkflowWait => CommandId::WorkflowWait,
                     CommandId::WorkflowValidate => CommandId::WorkflowValidate,
+                    CommandId::WorkspaceMcpList => CommandId::WorkspaceMcpList,
+                    CommandId::WorkspaceMcpStart => CommandId::WorkspaceMcpStart,
+                    CommandId::WorkspaceMcpStatus => CommandId::WorkspaceMcpStatus,
+                    CommandId::WorkspaceMcpStop => CommandId::WorkspaceMcpStop,
                 }
             }
 
@@ -2095,6 +2167,10 @@ mod tests {
                 CommandId::WorkflowStep,
                 CommandId::WorkflowWait,
                 CommandId::WorkflowValidate,
+                CommandId::WorkspaceMcpList,
+                CommandId::WorkspaceMcpStart,
+                CommandId::WorkspaceMcpStatus,
+                CommandId::WorkspaceMcpStop,
             ]
             .into_iter()
             .map(identity)

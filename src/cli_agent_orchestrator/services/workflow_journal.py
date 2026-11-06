@@ -35,6 +35,7 @@ which is observably identical to the pre-extension shape.
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -208,6 +209,7 @@ class EventRow:
     output_ref: Optional[str] = None
     iteration: Optional[int] = None
     which_guard_fired: Optional[str] = None
+    runtime_failure_json: Optional[str] = None
 
 
 @dataclass
@@ -594,11 +596,12 @@ def set_step_effective_provider(
     provider: str,
     effective_provider_profile: Optional[str] = None,
 ) -> str:
-    """Freeze provider once and return durable value.
+    """Freeze provider once and return the DURABLE PROVIDER.
 
-    YAML rows are seeded at admission. Script rows may not exist until the first
-    dynamic step call, so this helper inserts a minimal row when needed and only
-    fills a NULL provider on conflict. Existing non-NULL values always win.
+    Callers that also freeze an account profile MUST pass it via
+    ``effective_provider_profile`` and read back the pair with
+    :func:`get_step_effective_pair` — this function returns only the provider
+    column, exactly as before the profile column existed.
     """
     with _connect() as conn:
         row = conn.execute(
@@ -641,6 +644,49 @@ def set_step_effective_provider(
     if row is None or row[0] is None:  # pragma: no cover - same transaction guarantees row
         raise RuntimeError(f"failed to freeze provider for step '{run_id}/{step_id}'")
     return str(row[0])
+
+
+def get_step_effective_pair(run_id: str, step_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return the durable ``(effective_provider, effective_provider_profile)`` pair.
+
+    ``profile`` is ``None`` when the row is absent or was frozen before the
+    provider-profile column existed — meaning "no account override was journaled",
+    NOT "some default".
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT effective_provider, effective_provider_profile FROM workflow_run_step "
+            "WHERE run_id = ? AND step_id = ?",
+            (run_id, step_id),
+        ).fetchone()
+    if row is None:
+        return None, None
+    return (
+        str(row[0]) if row[0] is not None else None,
+        str(row[1]) if row[1] is not None else None,
+    )
+
+
+def override_step_effective_provider_profile(
+    run_id: str, step_id: str, provider_profile: str
+) -> None:
+    """Replace one failed step's account and authorize one rerun atomically.
+
+    Changing account identity intentionally changes the v3 call fingerprint. The
+    ``rerun_authorized`` state admits exactly that next execution; ``begin_step``
+    consumes it into ``running`` and re-baselines the fingerprint. Validation
+    (step exists, failed quota/rate-limit evidence, provider ownership,
+    authenticated target) is service-owned; this DAL performs one narrow write.
+    """
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE workflow_run_step "
+            "SET effective_provider_profile = ?, state = 'rerun_authorized' "
+            "WHERE run_id = ? AND step_id = ?",
+            (provider_profile, run_id, step_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"run '{run_id}' has no step '{step_id}'")
 
 
 def update_run_current_step(run_id: str, current_step_id: Optional[str]) -> None:
@@ -1456,6 +1502,7 @@ _EVENT_COLUMNS: Tuple[str, ...] = (
     "output_ref",
     "iteration",
     "which_guard_fired",
+    "runtime_failure_json",
 )
 
 # Memoization set: the (process, db-path) keys whose event/seq migrators have
@@ -1517,6 +1564,7 @@ def append_event(
     output_ref: Optional[str] = None,
     iteration: Optional[int] = None,
     which_guard_fired: Optional[str] = None,
+    runtime_failure: Optional[dict] = None,
 ) -> None:
     """INSERT one immutable ``workflow_run_event`` row (append-only, BR-5).
 
@@ -1550,6 +1598,7 @@ def append_event(
         output_ref,
         iteration,
         which_guard_fired,
+        (_json.dumps(runtime_failure) if runtime_failure is not None else None),
     )
     placeholders = ", ".join("?" for _ in _EVENT_COLUMNS)
     with _connect_event() as conn:
@@ -1606,6 +1655,7 @@ def _event_row(row: Sequence) -> EventRow:
         output_ref=row[18],
         iteration=row[19],
         which_guard_fired=row[20],
+        runtime_failure_json=row[21] if len(row) > 21 else None,
     )
 
 

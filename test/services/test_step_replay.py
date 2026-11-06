@@ -85,8 +85,8 @@ TS = "2026-08-16T00:00:00Z"
 # DIGEST-SHAPED FIXTURES (SR-1's verification asks for exactly this): the assertions about
 # ``reason`` are then about what the gate DOES with a real digest, not about a string nobody
 # supplied.
-FP_CALL = "v2:" + "a" * 64  # this call's fingerprint, current scheme
-FP_OTHER_V2 = "v2:" + "b" * 64  # a stored current-scheme value that DIFFERS
+FP_CALL = "v3:" + "a" * 64  # this call's fingerprint, current scheme
+FP_OTHER_V2 = "v3:" + "b" * 64  # a stored current-scheme value that DIFFERS
 FP_LEGACY = "c" * 64  # the three-field scheme: a bare digest, no prefix
 FP_LEGACY_SAME_DIGEST = "a" * 64  # FP_CALL's digest WITHOUT the prefix — legacy provenance
 
@@ -1484,7 +1484,7 @@ _SWEEP_STATES = [
     StepState.FAILED.value,
     "a_state_no_unit_has_written_yet",
 ]
-_SWEEP_SCHEMES = ["v2", "legacy", "absent"]
+_SWEEP_SCHEMES = ["v3", "v2", "legacy", "absent"]
 
 
 def _stored_fingerprint(scheme: str, matches: bool) -> Optional[str]:
@@ -1494,6 +1494,8 @@ def _stored_fingerprint(scheme: str, matches: bool) -> Optional[str]:
         # ``matches`` still varies the value: the same digest with the prefix stripped is the
         # case a digest-only comparison would wrongly replay.
         return FP_LEGACY_SAME_DIGEST if matches else FP_LEGACY
+    if scheme == "v2":
+        return "v2:" + (("a" if matches else "b") * 64)
     return FP_CALL if matches else FP_OTHER_V2
 
 

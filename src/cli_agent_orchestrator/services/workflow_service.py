@@ -912,6 +912,7 @@ async def _run_step(record: RunRecord, step: WorkflowStep) -> None:
                 terminal_id=exc.terminal_id,
                 provider=effective_provider,
                 agent_profile=step.agent,
+                runtime_failure=exc.runtime_failure,
             )
             continue  # consume an attempt, retry the same prompt
         # Settled (COMPLETED or COMPLETED_UNVALIDATED) — neither is a run-failure.
@@ -1904,6 +1905,12 @@ async def replay_single_step(
             payload["error"] = str(e)
             payload["error_kind"] = e.kind
             payload["terminal_id"] = e.terminal_id
+            # A provider-owned runtime failure (quota/rate-limit/auth) rides
+            # the same structured verdict the terminal projection reports — a
+            # caller can offer the account switch directly from this payload
+            # without re-parsing the error text (#runtime).
+            if e.runtime_failure:
+                payload["runtime_failure"] = e.runtime_failure
             # THE WORKER IS STILL RUNNING AT THIS POINT. ``run_agent_step`` tears a
             # terminal down on success, on cancellation and on extraction failure — but
             # NOT here: at its readiness-timeout raise it says so outright ("We do NOT

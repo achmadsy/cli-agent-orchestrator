@@ -116,6 +116,11 @@ from cli_agent_orchestrator.models.provider_profile import (
     ProviderProfileUpdate,
 )
 from cli_agent_orchestrator.models.terminal import Terminal, TerminalId, TerminalLimitError
+from cli_agent_orchestrator.models.workspace_mcp import (
+    BrowseDirectoriesResponse,
+    CreateWorkspaceMcpRequest,
+    WorkspaceMcpInstance,
+)
 from cli_agent_orchestrator.models.workflow import RecoveryPolicy
 from cli_agent_orchestrator.plugins import PluginRegistry
 from cli_agent_orchestrator.providers.base import OutputExtractionError
@@ -167,7 +172,9 @@ from cli_agent_orchestrator.services.herdr_inbox_service import HerdrInboxServic
 from cli_agent_orchestrator.services.inbox_service import inbox_service
 from cli_agent_orchestrator.services.provider_policy import (
     parse_stored_policy,
+    parse_stored_profile_policy,
     resolve_role_provider,
+    resolve_role_provider_profile,
 )
 from cli_agent_orchestrator.services.install_service import (
     InstallResult,
@@ -362,6 +369,7 @@ class CreateSessionBody(CreateTerminalBody):
     env_vars: Optional[Dict[str, str]] = None
     group: Optional[List[str]] = None
     metadata: Optional[Dict] = None
+    role_provider_profiles: Optional[RoleProviderProfilePolicy] = None
 
     @field_validator("env_vars")
     @classmethod
@@ -390,7 +398,13 @@ class CreateSessionBody(CreateTerminalBody):
     @field_validator("metadata")
     @classmethod
     def validate_metadata(cls, v: Optional[Dict]) -> Optional[Dict]:
-        return _check_metadata_size(v)
+        checked = _check_metadata_size(v)
+        if checked and "role_provider_profiles" in checked:
+            raise ValueError(
+                "metadata.role_provider_profiles is reserved; use top-level "
+                "role_provider_profiles"
+            )
+        return checked
 
 
 RESUME_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,63}\Z")
@@ -523,6 +537,16 @@ class RunStepRequest(BaseModel):
             "(ignored when reusing a terminal), applied ahead of the agent "
             "profile's own static model field. Lets a caller pin a specific "
             "model for one worker without a dedicated agent profile."
+        ),
+    )
+    provider_profile: Optional[str] = Field(
+        default=None,
+        description=(
+            "Explicit provider account profile for a freshly created terminal; "
+            "overrides role provider-profile policy. Ignored when reusing a "
+            "terminal. Ownership (profile exists, matches the effective "
+            "provider, is authenticated) is validated centrally in "
+            "terminal_service.create_terminal()."
         ),
     )
     recovery: Optional[RecoveryPolicy] = Field(
@@ -765,6 +789,15 @@ class ResumeRunRequest(BaseModel):
             "400 and applies nothing at all."
         ),
     )
+    provider_profile_overrides: Optional[Dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Explicit operator account switch for failed script steps: "
+            "step_id -> provider-profile ID. Accepted only when the step's latest "
+            "provider-owned runtime failure is rate_limited or quota_exhausted; "
+            "ordinary resume never rotates accounts."
+        ),
+    )
 
 
 class StepReplayRequest(BaseModel):
@@ -842,6 +875,7 @@ class StepInspection(BaseModel):
     reprompted: Optional[int] = None
     call_fingerprint: Optional[str] = None
     effective_provider: Optional[str] = None
+    effective_provider_profile: Optional[str] = None
 
 
 class RunInspection(BaseModel):
@@ -864,6 +898,7 @@ class RunInspection(BaseModel):
     finished_at: Optional[str] = None
     tier: str
     role_providers: Dict[str, str] = Field(default_factory=dict)
+    role_provider_profiles: Dict[str, str] = Field(default_factory=dict)
     steps: List[StepInspection] = Field(default_factory=list)
 
 
@@ -3123,7 +3158,7 @@ async def provider_profile_login_endpoint(
     if not capabilities_for(profile.provider.value).auth_lifecycle:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported provider")
     return await terminal_service.create_terminal(
-        provider="claude_code",
+        provider=profile.provider.value,
         provider_profile=profile_id,
         agent_profile="developer",
         new_session=True,
@@ -3217,6 +3252,94 @@ class AgentDirsUpdate(BaseModel):
     agent_dirs: Optional[Dict[str, str]] = None
     extra_dirs: Optional[List[str]] = None
     disabled_dirs: Optional[List[str]] = None
+
+
+# ── Workspace MCP (folder-backed Quick Tunnel instances) ─────────────────────
+
+
+def _workspace_mcp_service():
+    from cli_agent_orchestrator.services.workspace_mcp_service import get_workspace_mcp_service
+
+    return get_workspace_mcp_service()
+
+
+def _workspace_mcp_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, RuntimeError):
+        return HTTPException(status_code=504, detail=str(exc))
+    return HTTPException(status_code=500, detail=f"workspace-mcp error: {type(exc).__name__}")
+
+
+@app.get("/workspace-mcp", response_model=List[WorkspaceMcpInstance])
+async def list_workspace_mcp_instances(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> List[WorkspaceMcpInstance]:
+    """List all known workspace MCP instances (live and recently stopped)."""
+    instances = await asyncio.to_thread(_workspace_mcp_service().list_instances)
+    # Discovery never includes credentials. POST /workspace-mcp returns the
+    # generated password once to a write-scoped caller.
+    return [instance.model_copy(update={"admin_password": None}) for instance in instances]
+
+
+@app.get("/workspace-mcp/browse-directories", response_model=BrowseDirectoriesResponse)
+async def workspace_mcp_browse_directories(
+    path: Optional[str] = None,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> BrowseDirectoriesResponse:
+    """List immediate subdirectories of `path` for the folder picker."""
+    try:
+        result = await asyncio.to_thread(_workspace_mcp_service().browse_directories, path)
+    except (ValueError, PermissionError, FileNotFoundError) as exc:
+        raise _workspace_mcp_http_error(exc) from exc
+    return BrowseDirectoriesResponse(**result)
+
+
+@app.get("/workspace-mcp/{instance_id}", response_model=WorkspaceMcpInstance)
+async def get_workspace_mcp_instance(
+    instance_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> WorkspaceMcpInstance:
+    """Look up one instance by id or exact folder path. 404 if unknown."""
+    instance = await asyncio.to_thread(_workspace_mcp_service().get_instance, instance_id)
+    if instance is None:
+        raise HTTPException(status_code=404, detail=f"workspace-mcp instance not found: {instance_id}")
+    return instance.model_copy(update={"admin_password": None})
+
+
+@app.post("/workspace-mcp", response_model=WorkspaceMcpInstance)
+async def create_workspace_mcp_instance(
+    body: CreateWorkspaceMcpRequest,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> WorkspaceMcpInstance:
+    """Spawn a new workspace MCP Quick Tunnel for the given folder."""
+    service = _workspace_mcp_service()
+    try:
+        return await asyncio.to_thread(
+            service.start_instance, body.folder_path, body.agentic, timeout_s=60
+        )
+    except (ValueError, RuntimeError, FileNotFoundError, PermissionError) as exc:
+        # 409 when the folder is already served by a live instance;
+        # 400 for bad path/deps; 504 when the tunnel handshake timed out.
+        if isinstance(exc, ValueError) and "already served by a running instance" in str(exc):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _workspace_mcp_http_error(exc) from exc
+
+
+@app.delete("/workspace-mcp/{instance_id}", response_model=WorkspaceMcpInstance)
+async def delete_workspace_mcp_instance(
+    instance_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> WorkspaceMcpInstance:
+    """Stop and unregister a workspace MCP instance by id or folder path."""
+    instance = await asyncio.to_thread(_workspace_mcp_service().stop_instance, instance_id)
+    if instance is None:
+        raise HTTPException(status_code=404, detail=f"workspace-mcp instance not found: {instance_id}")
+    return instance.model_copy(update={"admin_password": None})
 
 
 @app.get("/settings/memory")
@@ -3700,6 +3823,11 @@ async def create_session(
                 )
         # Parse comma-separated allowed_tools string into list
         allowed_tools_list = allowed_tools.split(",") if allowed_tools else None
+        session_metadata = dict(body.metadata or {}) if body else {}
+        if body and body.role_provider_profiles is not None:
+            compact_profile_policy = body.role_provider_profiles.compact()
+            if compact_profile_policy:
+                session_metadata["role_provider_profiles"] = compact_profile_policy
 
         result = await session_service.create_session(
             provider=provider,
@@ -3718,7 +3846,7 @@ async def create_session(
             idempotency_key=idempotency_key,
             resume_session_id=resume_session_id,
             group=body.group if body else None,
-            metadata=body.metadata if body else None,
+            metadata=session_metadata or None,
         )
 
         if memory_manager and str(memory_manager).lower() in ("true", "1", "yes"):
@@ -4338,6 +4466,45 @@ async def send_terminal_input(
         )
 
 
+class SwitchProviderProfileRequest(BaseModel):
+    """Body of ``POST /terminals/{id}/switch-provider-profile`` (#runtime).
+
+    ``provider_profile`` names the ACCOUNT the successor runs under (a
+    provider-profile ID of the same provider); ``continuation_note`` is an
+    optional operator sentence bounded by the server.
+
+    Always user-triggered; the predecessor is RETAINED (the caller deletes it
+    via the ordinary DELETE endpoint once the successor works).
+    """
+
+    provider_profile: str = Field(..., min_length=1, max_length=64)
+    continuation_note: Optional[str] = Field(None, max_length=400)
+
+
+@app.post("/terminals/{terminal_id}/switch-provider-profile")
+async def switch_terminal_provider_profile(
+    terminal_id: TerminalId,
+    request: SwitchProviderProfileRequest,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    """Replace a terminal with a successor running another account (#runtime).
+
+    Successor-first and never destructive: the predecessor stays up for
+    inspection. Preconditions are validated before any tmux work, so a
+    precondition failure surfaces as 409 with a precise reason and changes
+    nothing.
+    """
+    try:
+        result = await terminal_service.switch_provider_profile(
+            terminal_id,
+            request.provider_profile,
+            continuation_note=request.continuation_note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    return result
+
+
 @app.post("/terminals/{terminal_id}/key")
 async def send_terminal_key(
     terminal_id: TerminalId,
@@ -4665,13 +4832,23 @@ async def run_step(
     fence_run_id = env_vars.get("CAO_WORKFLOW_RUN_ID")
     fence_generation = env_vars.get("CAO_WORKFLOW_GENERATION")
     run_role_providers: Dict[str, str] = {}
+    run_role_provider_profiles: Dict[str, str] = {}
     if fence_run_id is not None:
         policy_row = await asyncio.to_thread(workflow_journal.get_run, fence_run_id)
         if policy_row is not None:
             run_role_providers = parse_stored_policy(policy_row.role_providers_json)
+            run_role_provider_profiles = parse_stored_profile_policy(
+                policy_row.role_provider_profiles_json
+            )
 
     effective_step_provider = resolve_role_provider(
         body.agent, body.provider, run_role_providers
+    )
+    # Precedence: explicit request profile > run role policy > terminal
+    # metadata > provider default. Ownership stays centralized in
+    # terminal_service.create_terminal().
+    effective_step_provider_profile = resolve_role_provider_profile(
+        body.agent, body.provider_profile, run_role_provider_profiles
     )
     if fence_run_id is not None and fence_generation is not None:
         try:
@@ -4688,11 +4865,16 @@ async def run_step(
     if fence_run_id is not None and step_id_for_provider is not None:
         # Read-only before replay decision: a replay must perform no write, and
         # creating a row here would make a brand-new step look interrupted.
-        frozen_step = await asyncio.to_thread(
-            workflow_journal.get_step, fence_run_id, step_id_for_provider
+        frozen_provider, frozen_profile = await asyncio.to_thread(
+            workflow_journal.get_step_effective_pair, fence_run_id, step_id_for_provider
         )
-        if frozen_step is not None and frozen_step.effective_provider:
-            effective_step_provider = frozen_step.effective_provider
+        if frozen_provider:
+            effective_step_provider = frozen_provider
+        # The journaled account wins over the request's resolution. ``None``
+        # means the run predates profile freezing (or no override was journaled)
+        # — the request's own resolution then stands.
+        if frozen_profile is not None:
+            effective_step_provider_profile = frozen_profile
 
     # Mark the job as in-progress before the long-running substrate starts.
     # This is best-effort; a failure here must not block execution. Placed
@@ -4760,6 +4942,7 @@ async def run_step(
                     # hardcoded so it stays correct if that ever changes.
                     reused_terminal=body.reuse_terminal_id is not None,
                     timeout=body.timeout,
+                    provider_profile=effective_step_provider_profile,
                 )
             ),
         )
@@ -4858,11 +5041,19 @@ async def run_step(
         if fence_run_id is not None and step_id_for_provider is not None:
             # Freeze only after replay gate authorizes execution. This preserves
             # replay's no-write invariant and avoids manufacturing an interrupted row.
+            # Profile freeze returns the durable value (existing non-NULL wins)
+            # so replay/resume keeps the journaled account, not current defaults.
             effective_step_provider = await asyncio.to_thread(
                 workflow_journal.set_step_effective_provider,
                 fence_run_id,
                 step_id_for_provider,
                 effective_step_provider,
+                effective_step_provider_profile,
+            )
+            _, effective_step_provider_profile = await asyncio.to_thread(
+                workflow_journal.get_step_effective_pair,
+                fence_run_id,
+                step_id_for_provider,
             )
 
         result = await run_agent_step(
@@ -4884,15 +5075,22 @@ async def run_step(
             engine=body.engine,
             registry=get_plugin_registry(request),
             env_vars=body.env_vars,
+            provider_profile=effective_step_provider_profile,
             on_step_terminal_ready=on_step_terminal_ready,
             model=body.model,
             use_worktree=body.use_worktree,
             job_id=job_id,
             claim_id=body.claim_id,
             metadata=(
-                {"role_providers": run_role_providers}
-                if run_role_providers
-                else None
+                {
+                    **({"role_providers": run_role_providers} if run_role_providers else {}),
+                    **(
+                        {"role_provider_profiles": run_role_provider_profiles}
+                        if run_role_provider_profiles
+                        else {}
+                    ),
+                }
+                or None
             ),
         )
         # Success -> transition the script step RUNNING->COMPLETED (no-op for
@@ -4967,11 +5165,20 @@ async def run_step(
         # Transition the script step RUNNING->FAILED (no-op for non-script callers).
         _settle_step(e.terminal_id, str(e))
         await _record_job_state(job_id, "error", terminal_id=e.terminal_id, error_message=str(e))
-        code = status.HTTP_502_BAD_GATEWAY if e.kind == "error" else status.HTTP_504_GATEWAY_TIMEOUT
-        raise HTTPException(
-            status_code=code,
-            detail={"message": str(e), "kind": e.kind, "terminal_id": e.terminal_id},
-        )
+        # A runtime_failure step carries the provider-owned structured verdict
+        # (#runtime) in the detail so an operator-facing caller can offer the
+        # account switch directly — HTTP-200-equivalent terminal projection
+        # keeps its own coarse ERROR, this is an HTTP-level step failure.
+        if e.kind == "runtime_failure":
+            code = status.HTTP_502_BAD_GATEWAY
+        elif e.kind == "error":
+            code = status.HTTP_502_BAD_GATEWAY
+        else:
+            code = status.HTTP_504_GATEWAY_TIMEOUT
+        detail: dict = {"message": str(e), "kind": e.kind, "terminal_id": e.terminal_id}
+        if e.runtime_failure:
+            detail["runtime_failure"] = e.runtime_failure
+        raise HTTPException(status_code=code, detail=detail)
     except (TimeoutError, TerminalInputBlockedError) as e:
         # TerminalInputBlockedError (PR #539) is kept a DISTINCT type from
         # TimeoutError rather than collapsed into it, because
@@ -6228,6 +6435,7 @@ async def get_workflow_run_endpoint(
                 reprompted=srow.reprompted if srow else None,
                 call_fingerprint=srow.call_fingerprint if srow else None,
                 effective_provider=srow.effective_provider if srow else None,
+                effective_provider_profile=srow.effective_provider_profile if srow else None,
             )
         )
         seen.add(st.id)
@@ -6246,6 +6454,7 @@ async def get_workflow_run_endpoint(
                 reprompted=srow.reprompted,
                 call_fingerprint=srow.call_fingerprint,
                 effective_provider=srow.effective_provider,
+                effective_provider_profile=getattr(srow, "effective_provider_profile", None),
             )
         )
 
@@ -6278,6 +6487,11 @@ async def get_workflow_run_endpoint(
             parse_stored_policy(run_row.role_providers_json)
             if run_row is not None
             else getattr(workflow_service.run_registry.get(run_id), "role_providers", {})
+        ),
+        role_provider_profiles=(
+            parse_stored_profile_policy(run_row.role_provider_profiles_json)
+            if run_row is not None
+            else {}
         ),
         steps=steps,
     )
@@ -7364,6 +7578,9 @@ async def resume_workflow_run_endpoint(
     from cli_agent_orchestrator.services import script_runner, workflow_journal, workflow_service
 
     decisions = body.decisions if body is not None else None
+    provider_profile_overrides = (
+        body.provider_profile_overrides if body is not None else None
+    )
 
     row = workflow_journal.get_run(run_id)
     if row is None:
@@ -7371,8 +7588,18 @@ async def resume_workflow_run_endpoint(
 
     if row.tier == "script":
         try:
-            if decisions:
-                result = await script_runner.resume_script_run(run_id, decisions=decisions)
+            if provider_profile_overrides:
+                result = await script_runner.resume_script_run(
+                    run_id,
+                    decisions=decisions,
+                    provider_profile_overrides=provider_profile_overrides,
+                )
+            elif decisions:
+                # Preserve the pre-account call shape for existing clients/tests
+                # and for ordinary decision-only recovery.
+                result = await script_runner.resume_script_run(
+                    run_id, decisions=decisions
+                )
             else:
                 # Byte-identical to the pre-#583 call, so an ordinary resume cannot
                 # regress on a code path it never enters.
@@ -7398,14 +7625,14 @@ async def resume_workflow_run_endpoint(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         return result.model_dump()
 
-    if decisions:
-        # The YAML arm honours no decision, so it refuses one instead of accepting it
-        # and doing something else (see the docstring). Nothing is written on this path.
+    if decisions or provider_profile_overrides:
+        # The YAML arm honours neither field, so it refuses instead of accepting
+        # operator intent and doing something else. Nothing is written here.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"run '{run_id}' is tier '{row.tier}'; recovery decisions apply to "
-                f"script-tier runs only"
+                f"run '{run_id}' is tier '{row.tier}'; recovery decisions and "
+                f"provider_profile_overrides apply to script-tier runs only"
             ),
         )
 

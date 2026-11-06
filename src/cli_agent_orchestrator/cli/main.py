@@ -73,6 +73,13 @@ _COMMANDS: tuple[tuple[str, str, str, str, bool], ...] = (
     ("tui", _PKG + "tui", "tui", "Launch the terminal UI (bundled Rust binary).", False),
     ("update", _PKG + "update", "update", "Update CAO to the latest version.", False),
     ("worker", _PKG + "worker", "worker", "Inspect and talk to workers in a CAO cluster.", False),
+    (
+        "workspace-mcp",
+        _PKG + "workspace_mcp",
+        "workspace_mcp",
+        "Manage folder-backed workspace MCP tunnel instances.",
+        False,
+    ),
     ("workflow", _PKG + "workflow", "workflow", "Author and inspect CAO workflow specs.", False),
 )
 _BY_NAME = {entry[0]: entry for entry in _COMMANDS}

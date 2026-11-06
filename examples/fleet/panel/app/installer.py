@@ -1,4 +1,5 @@
 """Guided Ubuntu/WSL2 fleet installation over Tailscale SSH."""
+
 import hashlib
 import io
 import os
@@ -16,15 +17,19 @@ from pathlib import Path
 from . import config
 
 _REMOTE_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
-WHEEL_PATH = Path(os.environ.get(
-    "CAO_FLEET_WHEEL",
-    "/home/ubuntu/workspace/cao/cli-agent-orchestrator/dist/cli_agent_orchestrator-2.5.3-py3-none-any.whl",
-))
+WHEEL_PATH = Path(
+    os.environ.get(
+        "CAO_FLEET_WHEEL",
+        "/home/ubuntu/workspace/cao/cli-agent-orchestrator/dist/cli_agent_orchestrator-2.5.3-py3-none-any.whl",
+    )
+)
 REMOTE_COMMAND = "install -d -m 700 ~/.cache/cao-fleet-install && tar -xf - -C ~/.cache/cao-fleet-install && bash ~/.cache/cao-fleet-install/install.sh"
 INSTALL_TIMEOUT = int(os.environ.get("CAO_FLEET_INSTALL_TIMEOUT", "600"))
 
 CBM_VERSION = "0.10.8"
-CBM_RELEASE_BASE = f"https://github.com/DeusData/codebase-memory-mcp/releases/download/v{CBM_VERSION}"
+CBM_RELEASE_BASE = (
+    f"https://github.com/DeusData/codebase-memory-mcp/releases/download/v{CBM_VERSION}"
+)
 CBM_ASSETS = {
     "amd64": {
         "filename": f"codebase-memory-mcp-linux-amd64-portable.tar.gz",
@@ -73,9 +78,7 @@ def ensure_cbm_archive(arch: str) -> Path:
         if cache_path.is_file() and _file_sha256(cache_path) == meta["sha256"]:
             return cache_path
         url = f"{CBM_RELEASE_BASE}/{meta['filename']}"
-        fd, temp_name = tempfile.mkstemp(
-            prefix=f".{meta['filename']}.", dir=cache_path.parent
-        )
+        fd, temp_name = tempfile.mkstemp(prefix=f".{meta['filename']}.", dir=cache_path.parent)
         temp_path = Path(temp_name)
         try:
             with os.fdopen(fd, "wb") as output:
@@ -112,7 +115,6 @@ def probe_remote_arch(user: str, peer: str) -> str:
         error = (run.stderr or run.stdout).strip() or f"exit {run.returncode}"
         raise RuntimeError(f"failed to probe remote architecture: {error}")
     return map_arch(run.stdout)
-
 
 
 @dataclass
@@ -159,7 +161,7 @@ def list_jobs():
 
 
 def _install_script():
-    return r'''#!/usr/bin/env bash
+    return r"""#!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/node.env"
 export PATH="$HOME/.local/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
@@ -228,6 +230,75 @@ ensure_cbm() {
 }
 
 ensure_cbm
+ensure_workspace_mcp() {
+  # workspace-mcp: repo clone + Quick Tunnel runtime deps, installed
+  # non-interactively so scripts/start-tunnel.sh never hits its TTY gate.
+  run_priv() {
+    if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@" 2>/dev/null || sudo "$@"; fi
+  }
+  local missing=""
+  for c in cloudflared bwrap slirp4netns git; do
+    command -v "$c" >/dev/null || missing="$missing $c"
+  done
+  if [ -d "$HOME/workspace-mcp/.git" ] && [ -z "$missing" ]; then
+    git -C "$HOME/workspace-mcp" pull --ff-only >/dev/null 2>&1 || true
+    echo "workspace-mcp already installed"
+    return 0
+  fi
+
+  # Sandbox + Quick Tunnel binaries (Ubuntu; the remote is probe-verified
+  # Ubuntu before this script ever runs).
+  local pkgs=""
+  command -v git >/dev/null || pkgs="$pkgs git"
+  command -v bwrap >/dev/null || pkgs="$pkgs bubblewrap"
+  command -v slirp4netns >/dev/null || pkgs="$pkgs slirp4netns"
+  if [ -n "$pkgs" ]; then
+    run_priv env DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1 || true
+    # shellcheck disable=SC2086
+    run_priv env DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgs >/dev/null 2>&1 ||
+      { echo "workspace-mcp: failed to install deb packages:$pkgs (exit 26)"; exit 26; }
+  fi
+
+  # cloudflared from the Cloudflare apt repo (same repo/key the launcher adds).
+  if ! command -v cloudflared >/dev/null; then
+    run_priv mkdir -p --mode=0755 /usr/share/keyrings
+    local cfkey="$(mktemp)"
+    if ! curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o "$cfkey"; then
+      rm -f "$cfkey"; echo "workspace-mcp: cloudflared key download failed (exit 27)"; exit 27
+    fi
+    if ! run_priv tee /usr/share/keyrings/cloudflare-main.gpg < "$cfkey" >/dev/null; then
+      rm -f "$cfkey"; exit 27
+    fi
+    rm -f "$cfkey"
+    printf '%s\n' "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" |
+      run_priv tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
+    run_priv env DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1 || true
+    run_priv env DEBIAN_FRONTEND=noninteractive apt-get install -y cloudflared >/dev/null 2>&1 ||
+      { echo "workspace-mcp: cloudflared install failed (exit 27)"; exit 27; }
+  fi
+
+  # --agentic spawns need a running user manager for systemd-run --user.
+  command -v loginctl >/dev/null && run_priv loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
+  command -v systemctl >/dev/null && run_priv systemctl start "user@$(id -u).service" >/dev/null 2>&1 || true
+
+  # Repo clone.
+  if [ -d "$HOME/workspace-mcp/.git" ]; then
+    git -C "$HOME/workspace-mcp" pull --ff-only >/dev/null 2>&1 || true
+  elif [ -d "$HOME/workspace-mcp" ]; then
+    echo "workspace-mcp: $HOME/workspace-mcp exists but is not a git clone (exit 28)"; exit 28
+  else
+    if ! git clone --depth 1 https://github.com/achmadsy/workspace-mcp.git "$HOME/workspace-mcp" >/dev/null 2>&1; then
+      echo "workspace-mcp: git clone failed (exit 29)"; exit 29
+    fi
+  fi
+  for c in cloudflared bwrap slirp4netns; do
+    command -v "$c" >/dev/null || { echo "workspace-mcp: $c still missing after install (exit 30)"; exit 30; }
+  done
+  [ -d "$HOME/workspace-mcp/scripts" ] || { echo "workspace-mcp: clone incomplete (exit 31)"; exit 31; }
+  echo "workspace-mcp installed successfully"
+}
+
+ensure_workspace_mcp
 install -d -m 700 "$CAO_HOME_DIR" "$HOME/.config/cao" "$HOME/.config/systemd/user"
 uv tool install "$(dirname "$0")/cli_agent_orchestrator-2.5.3-py3-none-any.whl" --reinstall
 CAO_HOME_DIR="$CAO_HOME_DIR" cao install code_supervisor
@@ -254,31 +325,33 @@ systemctl --user enable --now cao-server.service
 for _ in 1 2 3 4 5; do curl -fsS --max-time 5 "http://$CAO_BIND_HOST:9889/health" >/dev/null && break; sleep 2; done
 curl -fsS --max-time 5 "http://$CAO_BIND_HOST:9889/health" >/dev/null
 echo "CAO fleet install complete"
-'''
+"""
 
 
 def _payload(machine, peer, user, host, token, arch="amd64"):
     hostname = config.public_hostname(machine)
     remote_home = f"/home/{user}"
-    node_env = "\n".join([
-        f"CAO_AUTH_LOCAL_TOKEN={token}",
-        f"CAO_HOME_DIR={remote_home}/.local/share/cao",
-        f"CAO_BIND_HOST={host}",
-        f"CAO_API_HOST={host}",
-        "CAO_API_PORT=9889",
-        "CAO_MEMORY_API_URL=http://100.78.240.36:9889",
-        "CAO_CODEBASE_ENABLED=true",
-        f"CAO_FLEET_NODE_ID={machine}",
-        "CAO_CODEBASE_API_URL=http://100.78.240.36:9889",
-        f"CAO_ADVERTISED_URL=http://{host}:9889",
-        f"CAO_ALLOWED_HOSTS={host},{machine},{machine}.taildbbd8c.ts.net,{hostname},localhost,127.0.0.1",
-        f"CAO_CORS_ORIGINS=http://{host}:9889,https://{hostname}",
-        "CAO_WS_ALLOWED_CLIENTS=100.78.240.36,127.0.0.1,::1,localhost",
-        f"CAO_WS_ALLOWED_ORIGINS=https://{hostname}",
-        "CAO_FORWARDED_ALLOW_IPS=100.78.240.36",
-        "CAO_MCP_APPS_ENABLED=true",
-        "",
-    ]).encode()
+    node_env = "\n".join(
+        [
+            f"CAO_AUTH_LOCAL_TOKEN={token}",
+            f"CAO_HOME_DIR={remote_home}/.local/share/cao",
+            f"CAO_BIND_HOST={host}",
+            f"CAO_API_HOST={host}",
+            "CAO_API_PORT=9889",
+            "CAO_MEMORY_API_URL=http://100.78.240.36:9889",
+            "CAO_CODEBASE_ENABLED=true",
+            f"CAO_FLEET_NODE_ID={machine}",
+            "CAO_CODEBASE_API_URL=http://100.78.240.36:9889",
+            f"CAO_ADVERTISED_URL=http://{host}:9889",
+            f"CAO_ALLOWED_HOSTS={host},{machine},{machine}.taildbbd8c.ts.net,{hostname},localhost,127.0.0.1",
+            f"CAO_CORS_ORIGINS=http://{host}:9889,https://{hostname}",
+            "CAO_WS_ALLOWED_CLIENTS=100.78.240.36,127.0.0.1,::1,localhost",
+            f"CAO_WS_ALLOWED_ORIGINS=https://{hostname}",
+            "CAO_FORWARDED_ALLOW_IPS=100.78.240.36",
+            "CAO_MCP_APPS_ENABLED=true",
+            "",
+        ]
+    ).encode()
     install_env = f"CAO_HOME_DIR={remote_home}/.local/share/cao\nCAO_BIND_HOST={host}\n".encode()
     cbm_archive = ensure_cbm_archive(arch)
     buffer = io.BytesIO()
@@ -325,20 +398,24 @@ def _run(job, host, token):
             elif line_str in (
                 "codebase-memory-mcp 0.10.8 already installed",
                 "codebase-memory-mcp 0.10.8 installed successfully",
+                "workspace-mcp already installed",
+                "workspace-mcp installed successfully",
                 "CAO fleet install complete",
             ):
                 job.steps.append(line_str)
         if result.returncode:
             raise RuntimeError(f"Tailscale SSH install exited {result.returncode}")
         job.steps.append("Remote authenticated CAO health check passed")
-        machine = config.add_machine({
-            "name": job.machine,
-            "host": host,
-            "label": job.machine,
-            "os": "linux",
-            "role": "agent",
-            "port": 9889,
-        })
+        machine = config.add_machine(
+            {
+                "name": job.machine,
+                "host": host,
+                "label": job.machine,
+                "os": "linux",
+                "role": "agent",
+                "port": 9889,
+            }
+        )
         try:
             subprocess.run(
                 ["sudo", "-n", config.SYNC_COMMAND],

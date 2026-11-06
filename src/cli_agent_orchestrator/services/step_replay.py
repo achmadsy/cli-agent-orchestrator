@@ -102,7 +102,7 @@ from cli_agent_orchestrator.services.workflow_journal import StepRow, get_step
 # The one scheme a fingerprint may be compared under. Named because BOTH the SR-3 precondition
 # and rules 4-5 ask the same question of it; two literals is the drift that would let the
 # incoming check and the stored check disagree about what "current" means.
-_CURRENT_SCHEME = "v2"
+_CURRENT_SCHEME = "v3"
 
 # The policies whose author declared re-execution safe (rules 2 and 4). ONE tuple, tested in
 # two places, and deliberately NOT two branches: ``RECONCILE`` has no reconciliation operation

@@ -223,11 +223,19 @@ step's key, that step **diverges** and the run fails with
 `ReplayDivergenceError`.
 
 Replay is decided from the step's *execution-affecting* inputs — the provider,
-the agent profile name, the prompt, and the other fields that determine what
-actually runs. Change one of them at the same step key and the step diverges
-rather than replaying. Only the agent profile's **name** counts, not its
-contents: edit the profile and the step still replays under its old
-definition.
+the provider-account profile ID, the agent profile name, the prompt, and the
+other fields that determine what actually runs. Change one of them at the same
+step key and the step diverges rather than replaying. Only profile **IDs/names**
+count, never provider-profile contents or credentials. The current fingerprint
+scheme is `v3`; stored `v2` rows predate account identity and are classified as
+unverifiable rather than falsely compared as divergent.
+
+Reusable scripts should name roles (`developer`, `reviewer`) and let server run
+policy choose accounts. Account precedence is explicit call/step
+`provider_profile`, then `role_provider_profiles[role]`, then
+`AgentProfile.providerProfile`, then provider default. The journal freezes that
+result per step, so retry and ordinary resume keep the same account. CAO never
+rotates accounts automatically.
 
 So a resume no longer repeats completed work by default, and the old advice to
 "design for repeated steps" is now a fallback rather than the rule. What you

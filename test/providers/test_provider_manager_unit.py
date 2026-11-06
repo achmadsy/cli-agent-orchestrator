@@ -14,6 +14,63 @@ from cli_agent_orchestrator.providers.manager import ProviderManager
 from cli_agent_orchestrator.providers.omp import OmpProvider
 
 
+def test_create_provider_forwards_codex_account_profile():
+    manager = ProviderManager()
+    provider = MagicMock()
+    with patch(
+        "cli_agent_orchestrator.providers.manager.CodexProvider", return_value=provider
+    ) as provider_cls:
+        manager.create_provider(
+            ProviderType.CODEX.value,
+            terminal_id="t1",
+            tmux_session="s1",
+            tmux_window="w1",
+            agent_profile="developer",
+            provider_profile="codex-work",
+            provider_action="auth_login",
+        )
+
+    provider_cls.assert_called_once_with(
+        "t1",
+        "s1",
+        "w1",
+        "developer",
+        None,
+        skill_prompt=None,
+        model=None,
+        provider_profile="codex-work",
+        provider_action="auth_login",
+    )
+
+
+def test_create_provider_forwards_opencode_account_profile():
+    manager = ProviderManager()
+    provider = MagicMock()
+    with patch(
+        "cli_agent_orchestrator.providers.manager.OpenCodeCliProvider", return_value=provider
+    ) as provider_cls:
+        manager.create_provider(
+            ProviderType.OPENCODE_CLI.value,
+            terminal_id="t1",
+            tmux_session="s1",
+            tmux_window="w1",
+            agent_profile="developer",
+            provider_profile="opencode-work",
+            provider_action="auth_login",
+        )
+
+    provider_cls.assert_called_once_with(
+        "t1",
+        "s1",
+        "w1",
+        "developer",
+        None,
+        model=None,
+        provider_profile="opencode-work",
+        provider_action="auth_login",
+    )
+
+
 def test_create_provider_codex_stores_mapping():
     manager = ProviderManager()
     provider = manager.create_provider(

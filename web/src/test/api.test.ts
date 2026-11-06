@@ -5,6 +5,7 @@ describe('API wrapper', () => {
   const mockFetch = vi.fn()
 
   beforeEach(() => {
+    mockFetch.mockReset()
     vi.stubGlobal('fetch', mockFetch)
   })
 
@@ -55,6 +56,24 @@ describe('API wrapper', () => {
       expect.stringContaining('/sessions?provider=kiro_cli&agent_profile=developer'),
       expect.objectContaining({ method: 'POST' })
     )
+  })
+
+  it('createSession sends account policy at typed top level', async () => {
+    mockResponse({ id: 't1' })
+    await api.createSession(
+      'claude_code',
+      'developer',
+      undefined,
+      undefined,
+      { developer: 'claude_code' },
+      undefined,
+      { developer: 'claude-work' },
+    )
+    const options = mockFetch.mock.calls[0][1]
+    expect(JSON.parse(options.body)).toEqual({
+      metadata: { role_providers: { developer: 'claude_code' } },
+      role_provider_profiles: { developer: 'claude-work' },
+    })
   })
 
   it('createSession sends POST with opencode_cli provider', async () => {

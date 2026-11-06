@@ -294,7 +294,7 @@ def test_create_path_writes_a_running_row_before_the_step_executes():
     )
 
     assert probe["captured"]["state"] == "running"
-    assert scheme_of(probe["captured"]["fingerprint"]) == "v2"
+    assert scheme_of(probe["captured"]["fingerprint"]) == "v3"
     assert record.step_states["s1"].call_fingerprint == probe["captured"]["fingerprint"]
 
 
@@ -321,7 +321,7 @@ def test_reuse_path_writes_a_running_row_before_the_step_executes():
 
     assert result.terminal_id == "reuse-1"
     assert probe["captured"]["state"] == "running"
-    assert scheme_of(probe["captured"]["fingerprint"]) == "v2"
+    assert scheme_of(probe["captured"]["fingerprint"]) == "v3"
     assert record.step_states["s1"].terminal_id == "reuse-1"
 
 
@@ -376,7 +376,7 @@ def test_both_paths_publish_a_fingerprint_onto_the_step_state():
     for record in (created, reused):
         published = record.step_states["s1"].call_fingerprint
         assert published is not None
-        assert scheme_of(published) == "v2"
+        assert scheme_of(published) == "v3"
     # Same provider/agent/prompt, different paths -> different identities (``reused_terminal``
     # is itself a hashed component, so the two populations cannot collide).
     assert created.step_states["s1"].call_fingerprint != reused.step_states["s1"].call_fingerprint
@@ -497,7 +497,7 @@ def test_a_reuse_fingerprint_is_the_ten_component_sentinel_form():
         )
     )
     assert seen[0][1] == expected
-    assert scheme_of(seen[0][1]) == "v2"
+    assert scheme_of(seen[0][1]) == "v3"
     # The sentinel is a positional substitution, not a shortening: a create call whose
     # creation-only fields literally hold the sentinel STRING is still a different identity.
     assert seen[0][1] != compute(
@@ -983,10 +983,10 @@ def test_a_begin_step_failure_is_swallowed_and_logged(
     hook = make_step_terminal_recorder(_env("run-beginboom", "s1"))
     assert hook is not None
     with caplog.at_level(logging.WARNING, logger="cli_agent_orchestrator.services.script_runner"):
-        hook("term-1", "v2:" + "a" * 64)  # must not raise
+        hook("term-1", "v3:" + "a" * 64)  # must not raise
 
     assert record.step_states["s1"].terminal_id == "term-1"
-    assert record.step_states["s1"].call_fingerprint == "v2:" + "a" * 64
+    assert record.step_states["s1"].call_fingerprint == "v3:" + "a" * 64
     hits = [r for r in caplog.records if "failed to write the running row" in r.getMessage()]
     assert len(hits) == 1
     # SR-7: the failure line must not carry the digest.
@@ -1077,4 +1077,4 @@ def test_a_crash_between_begin_and_settle_leaves_the_row_running():
     assert row is not None
     assert row.state == "running"
     assert row.result_json is None
-    assert scheme_of(row.call_fingerprint) == "v2"
+    assert scheme_of(row.call_fingerprint) == "v3"

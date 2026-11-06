@@ -42,6 +42,7 @@ from cli_agent_orchestrator.services.step_fingerprint import (
 )
 
 _V2_FORM = re.compile(r"^v2:[0-9a-f]{64}$")
+_V3_FORM = re.compile(r"^v3:[0-9a-f]{64}$")
 
 # A fully-populated CREATE call. Every optional carries a real value so that flipping any one
 # field is a genuine change rather than a default-to-default no-op.
@@ -56,6 +57,7 @@ _CREATE = StepCallFields(
     use_worktree=False,
     reused_terminal=False,
     timeout=600.0,
+    provider_profile="claude-work",
 )
 
 # The same call against a REUSED terminal. Identical but for ``reused_terminal``.
@@ -70,6 +72,7 @@ _REUSE = StepCallFields(
     use_worktree=False,
     reused_terminal=True,
     timeout=600.0,
+    provider_profile="claude-work",
 )
 
 
@@ -160,6 +163,7 @@ def test_field_list_is_exactly_the_ten_and_excludes_the_six():
         "use_worktree",
         "reused_terminal",
         "timeout",
+        "provider_profile",
     )
     present = {f.name for f in dataclass_fields(StepCallFields)}
     for excluded in (
@@ -298,7 +302,7 @@ class TestGoldenVectors:
 
     @staticmethod
     def _digest(joined: str) -> str:
-        return "v2:" + hashlib.sha256(joined.encode("utf-8")).hexdigest()
+        return "v3:" + hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
     def test_create_path_vector(self):
         """Ten components, in BR-1's order, NUL-joined. ``allowed_tools`` is sorted (BR-4) and
@@ -314,9 +318,10 @@ class TestGoldenVectors:
             "/repo\x00"  # 7 effective_working_directory
             "false\x00"  # 8 use_worktree
             "false\x00"  # 9 reused_terminal
-            "600.000000"  # 10 timeout
+            "600.000000\x00"  # 10 timeout
+            "claude-work"  # 11 provider_profile (v3 component)
         )
-        assert joined.count("\x00") == 9, "ten components means nine separators"
+        assert joined.count("\x00") == 10, "eleven components means ten separators"
         assert compute(_CREATE) == self._digest(joined)
 
     def test_reuse_path_vector(self):
@@ -333,9 +338,10 @@ class TestGoldenVectors:
             "\x01creation-only\x00"  # 7 effective_working_directory -> sentinel
             "\x01creation-only\x00"  # 8 use_worktree  -> sentinel
             "true\x00"  # 9 reused_terminal
-            "600.000000"  # 10 timeout
+            "600.000000\x00"  # 10 timeout
+            "claude-work"  # 11 provider_profile (v3 component)
         )
-        assert joined.count("\x00") == 9, "substitution is per-field; the count stays ten"
+        assert joined.count("\x00") == 10, "substitution is per-field; the count stays ten"
         assert compute(_REUSE) == self._digest(joined)
 
 
@@ -381,13 +387,13 @@ class TestAllowedToolsSorting:
 # BR-7 — the returned form, determinism, and boundary safety
 # ---------------------------------------------------------------------------
 class TestReturnedForm:
-    def test_form_is_v2_prefix_plus_64_lowercase_hex(self):
-        """INV-4: every value ``compute`` emits carries the prefix, so it can never be mistaken
-        for a legacy value — which is what keeps the two populations distinguishable forever
-        (BR-9)."""
+    def test_form_is_v3_prefix_plus_64_lowercase_hex(self):
+        """INV-4: every value ``compute`` emits carries the current scheme's prefix, so it can
+        never be mistaken for a legacy or superseded-scheme value — which is what keeps the
+        populations distinguishable forever (BR-9)."""
         value = compute(_CREATE)
-        assert _V2_FORM.match(value), value
-        assert scheme_of(value) == "v2"
+        assert _V3_FORM.match(value), value
+        assert scheme_of(value) == "v3"
 
     def test_compute_is_deterministic(self):
         """INV-1. ``sha256`` over text with no salt and no locale dependence, so two processes
@@ -422,8 +428,8 @@ class TestReturnedForm:
 
     def test_all_optionals_none_hashes_without_raising(self):
         """INV-2: total on well-typed input. The minimal call — three required strings, every
-        optional at its default — yields a valid ``v2:`` value."""
-        assert _V2_FORM.match(compute(StepCallFields(provider="p", agent="a", prompt="")))
+        optional at its default — yields a valid ``v3:`` value."""
+        assert _V3_FORM.match(compute(StepCallFields(provider="p", agent="a", prompt="")))
 
     def test_nul_bytes_in_a_component_hash_without_raising(self):
         """A prompt may contain anything, including NUL, and must not raise.
@@ -442,7 +448,7 @@ class TestReturnedForm:
         scheme change and therefore a ``v3:`` decision, not a silent edit. This test pins
         current behaviour so that change cannot happen unnoticed.
         """
-        assert _V2_FORM.match(compute(StepCallFields(provider="p", agent="a", prompt="x\x00y")))
+        assert _V3_FORM.match(compute(StepCallFields(provider="p", agent="a", prompt="x\x00y")))
         shifted_left = StepCallFields(provider="a", agent="b\x00c", prompt="d")
         shifted_right = StepCallFields(provider="a", agent="b", prompt="c\x00d")
         assert compute(shifted_left) == compute(shifted_right)
@@ -529,7 +535,7 @@ def test_old_three_field_fingerprint_function_is_gone():
     assert "_step_call_fingerprint" not in source
 
 
-def test_compute_emits_a_v2_classifiable_value():
+def test_compute_emits_a_v3_classifiable_value():
     """INV-7's other half: what the live call site produces is classifiable as CURRENT.
 
     The live call site is ``run_agent_step`` (issue #583, unit ``settlement-rewire`` BR-1),
@@ -540,7 +546,11 @@ def test_compute_emits_a_v2_classifiable_value():
     ``test_settlement_rewire.py``'s job; this asserts only that ``compute``'s output is
     classifiable as current rather than as legacy.
     """
-    assert scheme_of(compute(StepCallFields(provider="kiro_cli", agent="dev", prompt="go"))) == "v2"
+    assert scheme_of(compute(StepCallFields(provider="kiro_cli", agent="dev", prompt="go"))) == "v3"
+
+    # A stored v2 row (pre-#account) classifies as the HISTORICAL scheme, never
+    # as current: replay-gate routes it to human review instead of comparing.
+    assert scheme_of("v2:" + "0" * 64) == "v2"
 
 
 # ---------------------------------------------------------------------------

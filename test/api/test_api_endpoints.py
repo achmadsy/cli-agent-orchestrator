@@ -358,7 +358,53 @@ class TestCreateSession:
             resume_session_id=None,
             group=None,
             metadata=None,
+            provider_profile=None,
         )
+
+    def test_create_session_validates_and_merges_role_provider_profiles(self, client):
+        mock_terminal = Terminal(
+            id="abcd1234",
+            name="test-window",
+            session_name="test-session",
+            provider="claude_code",
+            agent_profile="developer",
+        )
+        with patch("cli_agent_orchestrator.api.main.session_service") as mock_svc:
+            mock_svc.create_session = AsyncMock(return_value=mock_terminal)
+            response = client.post(
+                "/sessions",
+                params={"provider": "claude_code", "agent_profile": "developer"},
+                json={
+                    "metadata": {"purpose": "review"},
+                    "role_provider_profiles": {"developer": "claude-work"},
+                },
+            )
+
+        assert response.status_code == 201
+        assert mock_svc.create_session.call_args.kwargs["metadata"] == {
+            "purpose": "review",
+            "role_provider_profiles": {"developer": "claude-work"},
+        }
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"role_provider_profiles": {"unknown": "claude-work"}},
+            {"role_provider_profiles": {"developer": "bad profile"}},
+            {"metadata": {"role_provider_profiles": {"developer": "claude-work"}}},
+        ],
+    )
+    def test_create_session_rejects_invalid_or_nested_role_provider_profiles(
+        self, client, body
+    ):
+        with patch("cli_agent_orchestrator.api.main.session_service") as mock_svc:
+            response = client.post(
+                "/sessions",
+                params={"provider": "claude_code", "agent_profile": "developer"},
+                json=body,
+            )
+        assert response.status_code == 422
+        mock_svc.create_session.assert_not_called()
 
     def test_create_session_forwards_use_worktree_true(self, client):
         """Regression (review on PR #634): a fresh session used to have

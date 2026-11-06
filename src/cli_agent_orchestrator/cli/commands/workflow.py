@@ -272,6 +272,41 @@ def delete_cmd(name, yes):
     click.echo(f"deleted '{name}'")
 
 
+def _parse_role_pairs(pairs, option_name: str, *, provider_profiles: bool = False):
+    """Parse repeatable ``ROLE=VALUE`` routing options into one policy dict."""
+    import re
+
+    from cli_agent_orchestrator.constants import PROVIDERS
+
+    roles = {"supervisor", "developer", "reviewer"}
+    result = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise click.ClickException(f"{option_name} must be ROLE=VALUE (got '{pair}')")
+        role, _, value = pair.partition("=")
+        role = role.strip()
+        value = value.strip()
+        if role not in roles:
+            raise click.ClickException(
+                f"{option_name} role must be supervisor, developer, or reviewer "
+                f"(got '{role}')"
+            )
+        if not value:
+            raise click.ClickException(f"{option_name} value is empty for role '{role}'")
+        if provider_profiles:
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value) is None:
+                raise click.ClickException(
+                    f"{option_name} profile id must match [A-Za-z0-9_-]{{1,64}}"
+                )
+        elif value not in PROVIDERS:
+            raise click.ClickException(
+                f"{option_name} unknown provider '{value}' "
+                f"(accepted: {', '.join(sorted(PROVIDERS))})"
+            )
+        result[role] = value
+    return result
+
+
 def _parse_inputs(pairs):
     """Parse ``--input k=v`` pairs into an inputs dict with light type coercion.
 
@@ -488,6 +523,20 @@ def _poll_to_terminal(run_id, as_json):
 @click.option("--input", "inputs", multiple=True, help="Run input as k=v (repeatable).")
 @click.option("--run-id", "run_id", default=None, help="Optional explicit run id.")
 @click.option(
+    "--role-provider",
+    "role_providers",
+    multiple=True,
+    metavar="ROLE=PROVIDER",
+    help="Override provider CLI for supervisor/developer/reviewer (repeatable).",
+)
+@click.option(
+    "--role-provider-profile",
+    "role_provider_profiles",
+    multiple=True,
+    metavar="ROLE=PROFILE_ID",
+    help="Override provider account profile for a role (repeatable).",
+)
+@click.option(
     "--detach",
     is_flag=True,
     default=False,
@@ -500,7 +549,16 @@ def _poll_to_terminal(run_id, as_json):
     help="Block on the server inline until the run finishes (the retained blocking path).",
 )
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit the result as JSON.")
-def run_cmd(name_or_path, inputs, run_id, detach, wait, as_json):
+def run_cmd(
+    name_or_path,
+    inputs,
+    run_id,
+    role_providers,
+    role_provider_profiles,
+    detach,
+    wait,
+    as_json,
+):
     """Run a workflow.
 
     By default `run` SUBMITS the run asynchronously, prints the run id
@@ -520,6 +578,18 @@ def run_cmd(name_or_path, inputs, run_id, detach, wait, as_json):
     payload = {"name_or_path": name_or_path, "inputs": parsed}
     if run_id is not None:
         payload["run_id"] = run_id
+    role_provider_policy = _parse_role_pairs(
+        role_providers, "--role-provider"
+    )
+    role_provider_profile_policy = _parse_role_pairs(
+        role_provider_profiles,
+        "--role-provider-profile",
+        provider_profiles=True,
+    )
+    if role_provider_policy:
+        payload["role_providers"] = role_provider_policy
+    if role_provider_profile_policy:
+        payload["role_provider_profiles"] = role_provider_profile_policy
 
     # --- --wait: the retained blocking path (VR-2, FR-4.5). ------------------
     # ``--wait`` blocks on the server inline until the whole workflow finishes, so

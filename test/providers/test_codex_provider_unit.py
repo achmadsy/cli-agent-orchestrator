@@ -178,6 +178,46 @@ class TestCodexBuildCommand:
             " -c check_for_update_on_startup=false"
         )
 
+    @patch("cli_agent_orchestrator.services.provider_profile_store.profile_home")
+    @patch("cli_agent_orchestrator.services.provider_profile_store.get_provider_profile")
+    def test_profiled_command_uses_isolated_codex_home(
+        self, mock_get_profile, mock_profile_home, tmp_path
+    ):
+        mock_get_profile.return_value.provider.value = "codex"
+        mock_profile_home.return_value = tmp_path / "codex-work"
+        provider = CodexProvider(
+            "test1234",
+            "test-session",
+            "window-0",
+            provider_profile="codex-work",
+        )
+
+        command = provider._build_codex_command()
+
+        assert f"export CODEX_HOME={tmp_path / 'codex-work'}" in command
+        assert "unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN" in command
+        assert command.endswith("-c check_for_update_on_startup=false")
+
+    @patch("cli_agent_orchestrator.services.provider_profile_store.profile_home")
+    @patch("cli_agent_orchestrator.services.provider_profile_store.get_provider_profile")
+    def test_profiled_auth_action_runs_login_in_isolated_home(
+        self, mock_get_profile, mock_profile_home, tmp_path
+    ):
+        mock_get_profile.return_value.provider.value = "codex"
+        mock_profile_home.return_value = tmp_path / "codex-work"
+        provider = CodexProvider(
+            "test1234",
+            "test-session",
+            "window-0",
+            provider_profile="codex-work",
+            provider_action="auth_login",
+        )
+
+        command = provider._build_codex_command()
+
+        assert f"export CODEX_HOME={tmp_path / 'codex-work'}" in command
+        assert command.endswith("codex login")
+
     @patch("cli_agent_orchestrator.providers.codex.agent_profiles.load_agent_profile")
     def test_build_command_with_skill_prompt(self, mock_load_profile, tmp_path):
         mock_profile = MagicMock()

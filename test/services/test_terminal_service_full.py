@@ -358,7 +358,8 @@ class TestCreateTerminal:
             "developer-abcd",
             "kiro_cli",
             "developer",
-            ["fs_read"],
+            provider_profile=None,
+            allowed_tools=["fs_read"],
             model=None,
             model_honored=True,
             caller_id=None,
@@ -1515,6 +1516,7 @@ def _record(terminal_id="prior-terminal", **overrides):
         "resume_session_id": None,
         "initial_message": None,
         "initial_message_orchestration_type": None,
+        "provider_profile": None,
     }
     fields.update(overrides)
     return IdempotencyRecord(
@@ -1713,6 +1715,7 @@ class TestIdempotencyKeyRequestFingerprint:
         """
         assert _request_fingerprint(
             "kiro_cli",
+            None,
             "developer",
             None,
             None,
@@ -1726,7 +1729,7 @@ class TestIdempotencyKeyRequestFingerprint:
             None,
             None,
         ) == _request_fingerprint(
-            "kiro_cli", "developer", None, None, None, None, False, None, None, {}, None, None, None
+            "kiro_cli", None, "developer", None, None, None, None, False, None, None, {}, None, None, None
         )
 
     @pytest.mark.asyncio
@@ -1821,6 +1824,7 @@ class TestIdempotencyKeyRequestFingerprint:
         # the generated name would never match anything.
         assert mock_db_create.call_args.kwargs["request_fingerprint"] == _request_fingerprint(
             "kiro_cli",
+            None,
             "reviewer",
             None,
             None,

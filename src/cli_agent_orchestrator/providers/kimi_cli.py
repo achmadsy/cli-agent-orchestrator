@@ -2251,6 +2251,55 @@ class KimiCliProvider(BaseProvider):
             execution_established=self._execution_observed,
         )
 
+    def get_runtime_failure(self, buffer: str) -> Optional[Dict[str, Any]]:
+        """Derive a structured verdict from the SAME owned error lines (#runtime).
+
+        Wraps :func:`_terminal_error_message`: a column-zero fatal error line
+        is provider chrome (the ownership rule is already enforced there),
+        so classification reuses it verbatim rather than growing a second
+        matcher that could drift from the status detector's rule. An
+        ``APIError:`` line naming HTTP 429/rate-limit/quota wording becomes
+        ``rate_limited``; an auth-shaped one (401/403/unauthorized/
+        authentication) becomes ``auth_expired``; the rest are
+        ``provider_error``. The indented session-start shape is NOT a runtime
+        failure — it is the deferred-init ``ERROR`` lifecycle and keeps its
+        surface via :meth:`get_error_message`.
+        """
+        if not buffer:
+            return None
+        error_line = _terminal_error_message(
+            strip_terminal_escapes(buffer), execution_established=self._execution_observed
+        )
+        if error_line is None:
+            return None
+        # The indented session-start shape is deferred-init ``ERROR`` lifecycle
+        # (already surfaced by get_error_message / _surface_deferred_init_failure),
+        # not a mid-session runtime failure — exclude it here.
+        if error_line.startswith("Error: Failed to start a session:"):
+            return None
+        from cli_agent_orchestrator.models.terminal import RUNTIME_FAILURE_MESSAGE_MAX
+
+        lowered = error_line.lower()
+        if re.search(r"\b(?:429|rate.limit|quota|usage limit)\b", lowered):
+            kind = "rate_limited"
+            retryable = True
+        elif re.search(r"\b(?:401|403|unauthorized|authentication)\b", lowered):
+            kind = "auth_expired"
+            retryable = False
+        else:
+            kind = "provider_error"
+            retryable = True
+        message = error_line.strip()
+        if len(message) > RUNTIME_FAILURE_MESSAGE_MAX:
+            message = message[: RUNTIME_FAILURE_MESSAGE_MAX - 1].rstrip() + "…"
+        return {
+            "kind": kind,
+            "message": message,
+            "retryable": retryable,
+            "retry_after_s": None,
+            "reset_at": None,
+        }
+
     def _has_live_swarm_pane(
         self, generation: Optional[int] = None, revision: Optional[int] = None
     ) -> Optional[bool]:

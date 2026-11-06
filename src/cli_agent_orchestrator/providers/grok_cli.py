@@ -903,6 +903,70 @@ class GrokCliProvider(BaseProvider):
         with self._status_state_lock:
             return self._get_status_unlocked(output)
 
+    def get_runtime_failure(self, buffer: str) -> Optional[Dict[str, Any]]:
+        """Wrap Grok's boxed weekly-limit picker as a structured verdict (#runtime).
+
+        The status detector already owns the picker's structural evidence
+        (``USAGE_LIMIT_PATTERN`` refusal line + ``PICKER_FOOTER_PATTERN``
+        footer). This derives a ``quota_exhausted`` verdict from the same
+        shapes and returns it only when the decline/upgrade picker's refusal
+        is actually the newest drawn evidence — reusing the positional logic
+        so a picker an erase/redraw already replaced, or a transcript quoting
+        one, never classifies. A picker an operator has open on an otherwise
+        silent terminal still classifies (that is the real state).
+        """
+        if not buffer:
+            return None
+        from cli_agent_orchestrator.models.terminal import RUNTIME_FAILURE_MESSAGE_MAX
+
+        clean = strip_terminal_escapes(buffer)
+        if not clean.strip():
+            return None
+        tail = clean[-_STATUS_TAIL_CHARS:]
+
+        last_picker_footer = max(
+            (m.start() for m in PICKER_FOOTER_PATTERN.finditer(tail)), default=-1
+        )
+        last_limit = max(
+            (m.start() for m in USAGE_LIMIT_PATTERN.finditer(tail) if m.end() <= last_picker_footer),
+            default=-1,
+        )
+        if last_limit < 0:
+            return None
+
+        # Refuse when newer completion/ready/processing evidence follows the
+        # picker anywhere in the tail (mirrors get_status's ordering, on the
+        # same read window).
+        completion_markers = list(COMPLETION_PATTERN.finditer(tail))
+        last_completion = max((m.start() for m in completion_markers), default=-1)
+        last_ready = max(
+            (m.start() for m in READY_FOOTER_PATTERN.finditer(tail)), default=-1
+        )
+        last_processing = max(
+            (m.start() for m in re.finditer(r"[^\n]*Esc:cancel", tail)), default=-1
+        )
+        if last_limit <= max(last_completion, last_ready, last_processing):
+            return None
+
+        limit_match = USAGE_LIMIT_PATTERN.search(tail, last_limit)
+        line_end = tail.find("\n", last_limit)
+        if line_end == -1:
+            line_end = len(tail)
+        reset_at: Optional[str] = None
+        reset_match = re.search(r"resets?\s+(?:[A-Z][a-z]{1,2}\s+\d{1,2}|\S+)", tail[line_end : line_end + 400])
+        if reset_match:
+            reset_at = reset_match.group(0)[:60]
+        message = re.sub(r"\s+", " ", tail[limit_match.start() : line_end].rstrip())
+        if len(message) > RUNTIME_FAILURE_MESSAGE_MAX:
+            message = message[: RUNTIME_FAILURE_MESSAGE_MAX - 1].rstrip() + "…"
+        return {
+            "kind": "quota_exhausted",
+            "message": message,
+            "retryable": False,
+            "retry_after_s": None,
+            "reset_at": reset_at,
+        }
+
     @staticmethod
     def _queries_are_distinct(left: Optional[str], right: Optional[str]) -> bool:
         """Reject equal or prefix-related query fragments as wrapping ambiguity.
@@ -1437,6 +1501,24 @@ class GrokCliProvider(BaseProvider):
             )
             if not possible_owner:
                 return False
+            # Command-line shape replaces a bare ``python`` name as the CAO
+            # MCP-child candidate: an unrelated same-user Python service whose
+            # argv is readable (args never share the environment file's
+            # protection) and clearly ours-free is rejected before the exe()
+            # identity check can block on it. Grok main/updater, the
+            # cao-mcp-server binary, or a python whose exe is unreadable all
+            # fall through to the executable identity check below unchanged.
+            argv = proc.cmdline()
+            argv0 = os.path.basename(argv[0]) if argv else ""
+            argv1 = os.path.basename(argv[1]) if len(argv) >= 2 else ""
+            python_named = process_name.startswith("python")
+            known_child_shape = (
+                argv0 == "cao-mcp-server"
+                or (python_named and argv1 == "cao-mcp-server")
+                or argv0.startswith("grok")
+            )
+            if python_named and not known_child_shape:
+                return False
             executable = proc.exe()
         except psutil.NoSuchProcess:
             return False
@@ -1464,8 +1546,6 @@ class GrokCliProvider(BaseProvider):
             # but not an arbitrary executable which merely contains ``grok``
             # somewhere in its filename.
             is_grok = executable_name == "grok" or executable_name.startswith("grok-")
-            argv = proc.cmdline()
-            argv0 = os.path.basename(argv[0]) if argv else ""
             is_cao_mcp = (argv0 == "cao-mcp-server" and executable_name == "cao-mcp-server") or (
                 len(argv) >= 2
                 and argv0.startswith("python")

@@ -14,6 +14,7 @@ class ProviderProfileCapabilities:
     auth_lifecycle: bool
     quota: bool
     resume: bool = False
+    unavailable_reason: str | None = None
 
     @property
     def supported(self) -> bool:
@@ -27,42 +28,83 @@ PROFILE_CAPABILITIES: Mapping[str, ProviderProfileCapabilities] = {
     ProviderType.CLAUDE_CODE.value: ProviderProfileCapabilities(
         "isolated_home", auth_lifecycle=True, quota=True, resume=True
     ),
-    # Account isolation for these providers has not yet been verified against
-    # an installed CLI. Keep them visible to capability/quota callers, but do
-    # not allow profile creation or imply that an agent-level preset isolates
-    # credentials.
     ProviderType.CODEX.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=True
-    ),
-    ProviderType.KIMI_CLI.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=True
-    ),
-    ProviderType.GROK_CLI.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=True
-    ),
-    ProviderType.COPILOT_CLI.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=True
-    ),
-    ProviderType.CURSOR_CLI.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=True
-    ),
-    ProviderType.KIRO_CLI.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=True
-    ),
-    ProviderType.ANTIGRAVITY_CLI.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=True
-    ),
-    ProviderType.MINIMAX_CODE.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=True
+        "isolated_home", auth_lifecycle=True, quota=False
     ),
     ProviderType.OPENCODE_CLI.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=False
+        "isolated_home", auth_lifecycle=True, quota=False
+    ),
+    ProviderType.KIMI_CLI.value: ProviderProfileCapabilities(
+        "unsupported",
+        auth_lifecycle=False,
+        quota=True,
+        unavailable_reason=(
+            "Kimi Code and legacy Kimi use different credential homes. CAO must persist "
+            "the CLI dialect before it can isolate accounts safely."
+        ),
+    ),
+    ProviderType.GROK_CLI.value: ProviderProfileCapabilities(
+        "unsupported",
+        auth_lifecycle=False,
+        quota=True,
+        unavailable_reason=(
+            "Grok currently links each terminal to the ambient ~/.grok credentials, so "
+            "named accounts would not be isolated."
+        ),
+    ),
+    ProviderType.COPILOT_CLI.value: ProviderProfileCapabilities(
+        "unsupported",
+        auth_lifecycle=False,
+        quota=True,
+        unavailable_reason=(
+            "Copilot supports --config-dir, but CAO has not verified that every credential "
+            "is contained there."
+        ),
+    ),
+    ProviderType.CURSOR_CLI.value: ProviderProfileCapabilities(
+        "unsupported",
+        auth_lifecycle=False,
+        quota=True,
+        unavailable_reason="Cursor CLI has no verified credential-home override.",
+    ),
+    ProviderType.KIRO_CLI.value: ProviderProfileCapabilities(
+        "unsupported",
+        auth_lifecycle=False,
+        quota=True,
+        unavailable_reason="Kiro CLI has no verified credential-home override.",
+    ),
+    ProviderType.ANTIGRAVITY_CLI.value: ProviderProfileCapabilities(
+        "unsupported",
+        auth_lifecycle=False,
+        quota=True,
+        unavailable_reason=(
+            "Antigravity uses shared ~/.gemini state and has no verified credential-home override."
+        ),
+    ),
+    ProviderType.MINIMAX_CODE.value: ProviderProfileCapabilities(
+        "unsupported",
+        auth_lifecycle=False,
+        quota=True,
+        unavailable_reason=(
+            "MiniMax currently copies ambient credentials into temporary terminal data that is "
+            "deleted during cleanup; durable account storage must be separated first."
+        ),
     ),
     ProviderType.HERMES.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=False
+        "unsupported",
+        auth_lifecycle=False,
+        quota=False,
+        unavailable_reason=(
+            "Hermes agent aliases do not provide a verified isolated credential boundary."
+        ),
     ),
     ProviderType.OMP.value: ProviderProfileCapabilities(
-        "unsupported", auth_lifecycle=False, quota=False
+        "unsupported",
+        auth_lifecycle=False,
+        quota=False,
+        unavailable_reason=(
+            "OMP config overlays do not provide a verified isolated credential boundary."
+        ),
     ),
 }
 
@@ -83,6 +125,7 @@ def public_capabilities() -> Dict[str, Dict[str, Any]]:
             "auth_lifecycle": capabilities.auth_lifecycle,
             "quota": capabilities.quota,
             "resume": capabilities.resume,
+            "unavailable_reason": capabilities.unavailable_reason,
         }
         for provider, capabilities in PROFILE_CAPABILITIES.items()
     }

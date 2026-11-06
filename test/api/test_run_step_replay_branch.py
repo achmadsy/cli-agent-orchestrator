@@ -94,7 +94,9 @@ TS = "2026-08-17T00:00:00Z"
 LEGACY_FP = "a" * 64
 # A well-formed current-scheme value that is NOT what any test body hashes to, so
 # it forces rule 6 (divergence). Also digest-shaped, for the same reason.
-FOREIGN_FP = "v2:" + "b" * 64
+# (``v2:`` would now classify as the historical scheme and land on rules 4-5
+# instead — use the CURRENT scheme's prefix.)
+FOREIGN_FP = "v3:" + "b" * 64
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +244,7 @@ def _route_fingerprint(body: dict, *, effective_working_directory: Optional[str]
             use_worktree=body.get("use_worktree", False),
             reused_terminal=body.get("reuse_terminal_id") is not None,
             timeout=body.get("timeout", 600.0),
+            provider_profile=body.get("provider_profile"),
         )
     )
 
@@ -630,7 +633,7 @@ class TestNoDigestInEitherBody:
 
         assert resp.status_code == 409
         text = resp.text
-        for digest in (stored, computed, stored.removeprefix("v2:"), computed.removeprefix("v2:")):
+        for digest in (stored, computed, stored.removeprefix("v3:"), computed.removeprefix("v3:")):
             assert digest not in text
             # Not even truncated: a 16-char prefix is still a digest.
             assert digest[:16] not in text
@@ -647,7 +650,7 @@ class TestNoDigestInEitherBody:
 
         assert resp.status_code == 409
         text = resp.text
-        for digest in (stored, computed, computed.removeprefix("v2:")):
+        for digest in (stored, computed, computed.removeprefix("v3:")):
             assert digest not in text
             assert digest[:16] not in text
 

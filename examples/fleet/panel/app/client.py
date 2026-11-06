@@ -4,6 +4,7 @@ Every function takes an httpx.AsyncClient and the machine base URL. Functions
 raise httpx.HTTPError on transport/4xx/5xx; callers decide how to isolate
 per-machine failures.
 """
+
 import httpx
 
 TIMEOUT = httpx.Timeout(8.0, connect=4.0)
@@ -42,9 +43,7 @@ async def terminal_output(c, base, terminal_id, mode="last"):
 
 
 async def get_screen(c, base, terminal_id, ansi=True):
-    return await _get(
-        c, base, f"/terminals/{terminal_id}/screen", {"ansi": str(ansi).lower()}
-    )
+    return await _get(c, base, f"/terminals/{terminal_id}/screen", {"ansi": str(ansi).lower()})
 
 
 async def send_key(c, base, terminal_id, key):

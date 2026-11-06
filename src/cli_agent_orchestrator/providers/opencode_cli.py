@@ -18,14 +18,17 @@ The provider detects the following terminal states:
 """
 
 import logging
+import os
 import re
 import shlex
-from typing import List, Optional
+import shutil
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from cli_agent_orchestrator.backends.registry import get_backend
 from cli_agent_orchestrator.constants import OPENCODE_CONFIG_DIR, OPENCODE_CONFIG_FILE
 from cli_agent_orchestrator.models.agent_profile import AgentProfile
-from cli_agent_orchestrator.models.terminal import TerminalStatus
+from cli_agent_orchestrator.models.terminal import RUNTIME_FAILURE_MESSAGE_MAX, TerminalStatus
 from cli_agent_orchestrator.providers.base import BaseProvider
 from cli_agent_orchestrator.services.settings_service import get_server_settings
 from cli_agent_orchestrator.utils.terminal import wait_for_shell, wait_until_status
@@ -63,6 +66,34 @@ PERMISSION_PROMPT_PATTERN = r"△\s+(?:Permission required|Always allow)\b"
 # Tool-call in-flight spinner (braille animation): "⠋ Read <path>" etc.
 TOOL_CALL_IN_FLIGHT_PATTERN = r"^\s+[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+\S+"
 
+# Runtime-failure chrome (#runtime). OpenCode renders a hard API / rate-limit
+# failure as an error banner above the composer while the turn dies:
+#   ✗ Error: Anthropic API error: 429 rate_limit_error ...
+#   ⚠ Usage limit reached for anthropic/claude-model. Resets at 14:00 UTC.
+# Chrome evidence is the standalone banner shape ("✗ Error:" / "⚠ " at a line
+# boundary) plus the reset/upsell wording. NEVER classify a tool-return line
+# ("└ ..."), quoted prose inside the answer block (5-space agent indent), or
+# a JSON payload echoed into scrollback — the same literal inside one of
+# those frames is not OpenCode's own chrome.
+RUNTIME_FAILURE_FRAME_ERROR_PATTERN = re.compile(r"(?m)^(?:✗|⚠)\s+.+")
+RUNTIME_FAILURE_LIMIT_WORDS_PATTERN = re.compile(
+    r"\b(?:rate.limit.error|usage limit|rate limit|quota)\b", re.IGNORECASE
+)
+RUNTIME_FAILURE_LIMIT_RESET_PATTERN = re.compile(
+    r"(?:Reset at|[Rr]esets? (?:at|in)|will reset at|Retry at)\s*[: ]?\s*(.{2,60})"
+)
+RUNTIME_FAILURE_AUTH_WORDS_PATTERN = re.compile(
+    r"\b(?:401|403|unauthorized|authentication failed|credential|api key)\b", re.IGNORECASE
+)
+
+
+def _opencode_runtime_failure_message(text: str) -> str:
+    """Collapse whitespace and bound a provider-owned failure message."""
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > RUNTIME_FAILURE_MESSAGE_MAX:
+        return text[: RUNTIME_FAILURE_MESSAGE_MAX - 1].rstrip() + "…"
+    return text
+
 
 class OpenCodeCliProvider(BaseProvider):
     """Provider for OpenCode CLI integration.
@@ -77,6 +108,10 @@ class OpenCodeCliProvider(BaseProvider):
         _agent_profile: Name of the installed OpenCode agent to launch
         _model: Optional model override (e.g. ``anthropic/claude-sonnet-4-6``)
     """
+
+    supports_profiles = True
+    profile_mode = "isolated_home"
+    supports_auth_lifecycle = True
 
     @classmethod
     def honors_model(
@@ -95,6 +130,8 @@ class OpenCodeCliProvider(BaseProvider):
         agent_profile: Optional[str] = None,
         allowed_tools: Optional[list] = None,
         model: Optional[str] = None,
+        provider_profile: Optional[str] = None,
+        provider_action: Optional[str] = None,
     ):
         """Initialize OpenCode CLI provider.
 
@@ -109,6 +146,25 @@ class OpenCodeCliProvider(BaseProvider):
         super().__init__(terminal_id, session_name, window_name, allowed_tools)
         self._agent_profile = agent_profile or ""
         self._model = model
+        self._provider_profile = provider_profile
+        self._provider_action = provider_action
+        self._profile_home: Optional[Path] = None
+        self._runtime_config_dir: Optional[Path] = None
+        if provider_profile:
+            from cli_agent_orchestrator.constants import CAO_HOME_DIR
+            from cli_agent_orchestrator.services.provider_profile_store import (
+                ProviderProfileError,
+                get_provider_profile,
+                profile_home,
+            )
+
+            account = get_provider_profile(provider_profile)
+            if account.provider.value != "opencode_cli":
+                raise ProviderProfileError(
+                    f"Provider profile '{provider_profile}' is not an OpenCode profile"
+                )
+            self._profile_home = profile_home("opencode_cli", provider_profile, create=True)
+            self._runtime_config_dir = CAO_HOME_DIR / "tmp" / f"{terminal_id}.opencode"
         self._initialized = False
 
     @property
@@ -169,8 +225,13 @@ class OpenCodeCliProvider(BaseProvider):
         if not await wait_for_shell(self.terminal_id, timeout=init_timeout):
             raise TimeoutError(f"Shell initialization timed out after {init_timeout}s")
 
+        self._prepare_profile_runtime()
         command = self._build_launch_command()
         get_backend().send_keys(self.session_name, self.window_name, command)
+
+        if self._provider_action == "auth_login":
+            self._initialized = True
+            return True
 
         # 120s covers first-run npm install (5–30s) and concurrent multi-agent launches.
         if not await wait_until_status(
@@ -183,18 +244,51 @@ class OpenCodeCliProvider(BaseProvider):
         self._initialized = True
         return True
 
+    def _prepare_profile_runtime(self) -> None:
+        """Create terminal-scoped OpenCode config while keeping credentials durable."""
+        if self._runtime_config_dir is None:
+            return
+        self._runtime_config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self._runtime_config_dir, 0o700)
+        if OPENCODE_CONFIG_FILE.exists():
+            target = self._runtime_config_dir / "opencode.json"
+            shutil.copy2(OPENCODE_CONFIG_FILE, target)
+            os.chmod(target, 0o600)
+        for name in ("agents", "skills"):
+            source = OPENCODE_CONFIG_DIR / name
+            target = self._runtime_config_dir / name
+            if source.exists() and not target.exists():
+                target.symlink_to(source, target_is_directory=True)
+
     def _build_launch_command(self) -> str:
         """Build the inline-env opencode launch command string."""
+        config_dir = self._runtime_config_dir or OPENCODE_CONFIG_DIR
+        config_file = config_dir / "opencode.json" if self._runtime_config_dir else OPENCODE_CONFIG_FILE
         env_pairs = [
-            f"OPENCODE_CONFIG={OPENCODE_CONFIG_FILE}",
-            f"OPENCODE_CONFIG_DIR={OPENCODE_CONFIG_DIR}",
+            f"OPENCODE_CONFIG={shlex.quote(str(config_file))}",
+            f"OPENCODE_CONFIG_DIR={shlex.quote(str(config_dir))}",
             "OPENCODE_DISABLE_AUTOUPDATE=1",
             "OPENCODE_DISABLE_MOUSE=1",
             "OPENCODE_DISABLE_TERMINAL_TITLE=1",
             "OPENCODE_CLIENT=cao",
             "TERM=xterm-256color",
         ]
+        if self._profile_home is not None:
+            env_pairs.extend(
+                [
+                    f"XDG_DATA_HOME={shlex.quote(str(self._profile_home / 'data'))}",
+                    f"XDG_CONFIG_HOME={shlex.quote(str(self._profile_home / 'config'))}",
+                ]
+            )
         cmd_parts = ["opencode"]
+        if self._provider_action == "auth_login":
+            cmd_parts.extend(["providers", "login"])
+            return (
+                "unset ANTHROPIC_API_KEY OPENAI_API_KEY OPENCODE_CONFIG_CONTENT; "
+                + " ".join(env_pairs)
+                + " "
+                + shlex.join(cmd_parts)
+            )
         if self._agent_profile:
             cmd_parts += ["--agent", self._agent_profile]
         if self._model:
@@ -286,6 +380,82 @@ class OpenCodeCliProvider(BaseProvider):
 
         # ── 5. UNKNOWN (fallback) ─────────────────────────────────────────────
         return TerminalStatus.UNKNOWN
+
+    def get_runtime_failure(self, buffer: str) -> Optional[Dict[str, Any]]:
+        """Classify OpenCode's own runtime failure chrome (#runtime).
+
+        Provider-owned: only this module can tell OpenCode's banner chrome
+        from response prose. Anchors:
+
+        - A standalone ``✗``/``⚠`` banner line at a line boundary (the TUI's
+          error-frame shape). Response prose quoting the same words sits in
+          the agent's indented block or inside a ``└`` tool-return line and
+          never renders as a banner.
+        - The banner must name a limit/quota (quota_exhausted or
+          rate_limited per its wording) or an auth failure; other ``✗ Error``
+          frames map to ``provider_error``.
+        - Stale rejection: a completion marker AFTER the fatal frame means
+          the terminal moved past that turn — the verdict is not published.
+
+        Returns a ``ProviderRuntimeFailure``-compatible dict; the caller
+        (StatusMonitor) owns generation validation, bounding and persistence.
+        """
+        if not buffer:
+            return None
+        clean = re.sub(ANSI_CODE_PATTERN, "", buffer)
+        if not clean.strip():
+            return None
+
+        newest_completion = 0
+        for m in re.finditer(COMPLETION_MARKER_PATTERN, clean):
+            newest_completion = max(newest_completion, m.end())
+
+        verdict: Optional[Dict[str, Any]] = None
+        newest_failure_end = -1
+        for m in RUNTIME_FAILURE_FRAME_ERROR_PATTERN.finditer(clean):
+            line_end = clean.find("\n", m.start())
+            if line_end == -1:
+                line_end = len(clean)
+            banner = clean[m.start() : line_end].rstrip()
+            if not RUNTIME_FAILURE_LIMIT_WORDS_PATTERN.search(banner) and not (
+                RUNTIME_FAILURE_AUTH_WORDS_PATTERN.search(banner)
+            ):
+                continue
+            # Check a small window AFTER the banner for the reset text.
+            window = clean[line_end : line_end + 400]
+            kind = "provider_error"
+            if RUNTIME_FAILURE_LIMIT_WORDS_PATTERN.search(banner):
+                kind = (
+                    "rate_limited"
+                    if re.search(r"rate.limit.error", banner, re.IGNORECASE) or "429" in banner
+                    else "quota_exhausted"
+                )
+            elif RUNTIME_FAILURE_AUTH_WORDS_PATTERN.search(banner):
+                kind = "auth_expired"
+            reset_at: Optional[str] = None
+            # Prefer the reset clause on the banner itself (e.g. "…Resets at
+            # 14:00 UTC." rides the same line); fall back to the lines after.
+            reset_match = RUNTIME_FAILURE_LIMIT_RESET_PATTERN.search(
+                banner
+            ) or RUNTIME_FAILURE_LIMIT_RESET_PATTERN.search(window)
+            if reset_match:
+                reset_at = reset_match.group(1).strip()[:60]
+            verdict = {
+                "kind": kind,
+                "message": _opencode_runtime_failure_message(banner),
+                "retryable": kind in ("rate_limited", "provider_error"),
+                "retry_after_s": None,
+                "reset_at": reset_at,
+            }
+            newest_failure_end = line_end
+
+        if verdict is None:
+            return None
+        # Stale-rejection: a completion marker after the fatal frame means
+        # the terminal moved past that turn.
+        if newest_completion > newest_failure_end:
+            return None
+        return verdict
 
     # ── Screen-based detection (pyte) ────────────────────────────────────────
 
@@ -466,5 +636,7 @@ class OpenCodeCliProvider(BaseProvider):
         return "/exit"
 
     def cleanup(self) -> None:
-        """Clean up OpenCode provider state."""
+        """Clean up terminal config without removing durable account credentials."""
         self._initialized = False
+        if self._runtime_config_dir is not None:
+            shutil.rmtree(self._runtime_config_dir, ignore_errors=True)

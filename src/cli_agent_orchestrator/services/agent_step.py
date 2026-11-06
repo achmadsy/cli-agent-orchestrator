@@ -73,6 +73,36 @@ _PROMPT_PICKUP_GRACE = 8.0
 _PROMPT_REDELIVER_MAX = 3
 
 
+def _step_error_for_terminal(terminal_id: str) -> "StepExecutionError":
+    """Build the canned crash error for a terminal that reached ERROR.
+
+    Reads the StatusMonitor's current boundary projection; a provider-owned
+    runtime failure published there widens ``kind`` to ``runtime_failure``
+    and carries the bounded structured verdict so callers (engine retries,
+    the operator dashboard, an account switch) act on classified evidence
+    rather than scrape message text. Raw pane output is never substituted —
+    an ERROR without a structured verdict stays a plain crash, and the
+    provider's still-visible pane is where a human looks.
+    """
+    runtime_failure = status_monitor.get_runtime_failure(terminal_id)
+    if runtime_failure:
+        detail = runtime_failure.get("message") or "no provider detail"
+        message = (
+            f"terminal {terminal_id} failed: {runtime_failure['kind']} — {detail}"
+        )
+        return StepExecutionError(
+            message,
+            kind="runtime_failure",
+            terminal_id=terminal_id,
+            runtime_failure=runtime_failure,
+        )
+    return StepExecutionError(
+        f"terminal {terminal_id} reached ERROR status",
+        kind="error",
+        terminal_id=terminal_id,
+    )
+
+
 async def _validate_reused_terminal(
     terminal_id: str,
     requested_provider: str,
@@ -120,13 +150,22 @@ class StepExecutionError(Exception):
     ``TerminalStatus.ERROR``. Narrow by design so the caller (engine) can map
     it to its retry policy and the API boundary can map it to an HTTPException.
 
-    Carries two structured fields so callers never have to scrape the message:
+    Carries three structured fields so callers never have to scrape the message:
 
     - ``kind`` distinguishes a worker that *ran long* (``"timeout"``) from one
       that *crashed* (``"error"``, i.e. the terminal reached ERROR). The two
       were previously indistinguishable — both surfaced as a 504 "timed out".
+      A terminal that reached ERROR behind a provider-owned runtime failure
+      raises ``kind="runtime_failure"`` so a retry loop can pick up the
+      bounded verdict from ``runtime_failure``.``retryable`` directly instead
+      of replying on message content.
     - ``terminal_id`` is the live terminal the step ran on (when known), so a
       failed caller can report/clean it up without regex-scraping the message.
+    - ``runtime_failure`` is the provider-owned
+      ``ProviderRuntimeFailure`` payload (bounded ``kind``/``message``, plus
+      retry/reset details) that the StatusMonitor published at the current
+      detection boundary. ``None`` for plain timeouts or a crash verdict
+      without structured detail — raw pane text is never substituted.
     """
 
     def __init__(
@@ -135,10 +174,12 @@ class StepExecutionError(Exception):
         *,
         kind: str = "timeout",
         terminal_id: Optional[str] = None,
+        runtime_failure: Optional[dict] = None,
     ) -> None:
         super().__init__(message)
         self.kind = kind
         self.terminal_id = terminal_id
+        self.runtime_failure = runtime_failure
 
 
 class StepCancelledError(Exception):
@@ -227,11 +268,7 @@ async def _wait_for_completion(
         # subprocess (status_monitor.py's stale-PROCESSING fallback) or a herdr CLI call.
         current = await asyncio.to_thread(status_monitor.get_status, terminal_id)
         if current == TerminalStatus.ERROR:
-            raise StepExecutionError(
-                f"terminal {terminal_id} reached ERROR status",
-                kind="error",
-                terminal_id=terminal_id,
-            )
+            raise _step_error_for_terminal(terminal_id)
         if current == TerminalStatus.COMPLETED:
             return
         if current == TerminalStatus.IDLE:
@@ -262,11 +299,7 @@ async def _wait_for_completion(
             if (
                 await asyncio.to_thread(status_monitor.get_status, terminal_id)
             ) == TerminalStatus.ERROR:
-                raise StepExecutionError(
-                    f"terminal {terminal_id} reached ERROR status",
-                    kind="error",
-                    terminal_id=terminal_id,
-                )
+                raise _step_error_for_terminal(terminal_id)
             raise StepExecutionError(
                 f"step on terminal {terminal_id} did not complete within {timeout}s",
                 kind="timeout",
@@ -635,6 +668,7 @@ async def run_agent_step(
             use_worktree=use_worktree,
             reused_terminal=not created_here,
             timeout=timeout,
+            provider_profile=provider_profile,
         )
     )
 

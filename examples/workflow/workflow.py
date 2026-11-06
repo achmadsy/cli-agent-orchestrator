@@ -12,6 +12,13 @@ Run standalone via `cao workflow run workflow --run-id <id> --input target=<name
 after copying this file to `~/.aws/cli-agent-orchestrator/workflows/workflow.py`
 — see examples/workflow/README.md for the full lifecycle (validate/run/status/
 cancel) and examples/workflow/run.sh for a non-interactive entry point.
+
+Every call uses the reusable role name ``reviewer``. Server resolution applies
+run-level ``role_providers.reviewer`` and ``role_provider_profiles.reviewer``
+before dispatch, so reusable workflow source never hardcodes a local account ID.
+Precedence: an explicit call profile (none here), run role account policy,
+``AgentProfile.providerProfile``, then provider default. No failure detector or
+retry automatically rotates accounts.
 """
 
 from __future__ import annotations

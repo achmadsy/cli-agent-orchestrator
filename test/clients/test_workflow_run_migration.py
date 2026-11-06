@@ -186,6 +186,8 @@ def test_workflow_run_event_columns(patched_db):
         "output_ref",
         "iteration",
         "which_guard_fired",
+        # #runtime provider-owned runtime failure payload (additive).
+        "runtime_failure_json",
     }
     # Composite PRIMARY KEY (run_id, seq): both carry pk>0.
     assert cols["run_id"][5] > 0

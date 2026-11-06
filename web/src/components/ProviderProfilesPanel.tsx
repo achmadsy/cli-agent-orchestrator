@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { KeyRound, Loader2, LogOut, Plus, RefreshCw, ShieldCheck, Star, Trash2 } from 'lucide-react'
 import { api, ProviderInfo, ProviderProfile, ProviderProfileCapabilities } from '../api'
 import { useStore } from '../store'
@@ -37,16 +37,6 @@ export function ProviderProfilesPanel() {
   useEffect(() => { load() }, [])
 
   const selectedCapability = capabilities[provider]
-  const supportedProviders = useMemo(
-    () => providers.filter(item => capabilities[item.name]?.supported),
-    [providers, capabilities],
-  )
-
-  useEffect(() => {
-    if (supportedProviders.length > 0 && !supportedProviders.some(item => item.name === provider)) {
-      setProvider(supportedProviders[0].name)
-    }
-  }, [provider, supportedProviders])
 
   const create = async () => {
     if (!id.trim() || !label.trim() || !selectedCapability?.supported) return
@@ -114,18 +104,30 @@ export function ProviderProfilesPanel() {
 
   return <div className="space-y-6">
     <section className="rounded-xl border border-gray-700/50 bg-gray-800/60 p-5">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-300">New Provider Profile</h2>
-      <p className="mt-2 text-xs text-gray-500">Profiles appear for every provider. Creation stays disabled until CAO verifies credential isolation for that CLI. Tokens never enter this form.</p>
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <select aria-label="Provider" className={inputClass} value={provider} onChange={event => setProvider(event.target.value)}>
-          {providers.map(item => <option key={item.name} value={item.name} disabled={!capabilities[item.name]?.supported}>{item.name}{capabilities[item.name]?.supported ? '' : ' (unavailable)'}</option>)}
-        </select>
-        <input aria-label="Profile ID" className={inputClass} value={id} onChange={event => setId(event.target.value)} placeholder="claude-code-profile1" />
-        <input aria-label="Display label" className={inputClass} value={label} onChange={event => setLabel(event.target.value)} placeholder="Work account" />
+      <h2 className="text-sm font-semibold text-gray-200">Add provider account</h2>
+      <p className="mt-2 max-w-3xl text-xs leading-5 text-gray-500">Create a named login for one provider CLI. Credentials stay in that CLI's isolated config directory and never enter this form.</p>
+      <div className="mt-5 grid gap-4 sm:grid-cols-3">
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-gray-300">Provider CLI</span>
+          <select aria-label="Provider CLI" className={inputClass} value={provider} onChange={event => setProvider(event.target.value)}>
+            {providers.map(item => <option key={item.name} value={item.name}>{item.name}{capabilities[item.name]?.supported ? '' : ' — account isolation unavailable'}</option>)}
+          </select>
+          <span className="mt-1.5 block text-[11px] leading-4 text-gray-500">Command-line provider that owns this login.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-gray-300">Account profile ID</span>
+          <input aria-label="Account profile ID" className={inputClass} value={id} onChange={event => setId(event.target.value)} placeholder="claude-work" />
+          <span className="mt-1.5 block text-[11px] leading-4 text-gray-500">Stable internal ID used by agents, flows, and workflows.</span>
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium text-gray-300">Display name</span>
+          <input aria-label="Display name" className={inputClass} value={label} onChange={event => setLabel(event.target.value)} placeholder="Work account" />
+          <span className="mt-1.5 block text-[11px] leading-4 text-gray-500">Human-readable name shown in account selectors.</span>
+        </label>
       </div>
-      <p className="mt-2 text-xs text-gray-500">Isolation: {selectedCapability?.profile_mode ?? 'unavailable'}</p>
-      <label className="mt-3 flex items-center gap-2 text-xs text-gray-400"><input type="checkbox" checked={makeDefault} onChange={event => setMakeDefault(event.target.checked)} />Use for unpinned {provider} launches</label>
-      <button onClick={create} disabled={busy !== null || !id.trim() || !label.trim() || !selectedCapability?.supported} className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white disabled:opacity-50"><Plus size={14} />Create profile</button>
+      {selectedCapability?.supported ? <p className="mt-3 rounded-lg border border-emerald-900/60 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300">Account isolation available: CAO gives this login its own config home.</p> : <p className="mt-3 rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs leading-5 text-amber-300">{selectedCapability?.unavailable_reason || `Account isolation is not available for ${provider} yet.`} CAO will not create a profile that shares the CLI's existing credentials. Quota support is separate from isolated login support.</p>}
+      <label className="mt-3 flex items-center gap-2 text-xs text-gray-300"><input type="checkbox" checked={makeDefault} onChange={event => setMakeDefault(event.target.checked)} />Use as default account for this provider</label>
+      <button onClick={create} disabled={busy !== null || !id.trim() || !label.trim() || !selectedCapability?.supported} title={selectedCapability?.supported ? undefined : `Isolated login is not available for ${provider}`} className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-50"><Plus size={14} />Add account profile</button>
     </section>
 
     <section className="rounded-xl border border-gray-700/50 bg-gray-800/60 p-5">

@@ -22,6 +22,7 @@ export function StepSummary({ run }: StepSummaryProps) {
           <th className="py-1 font-medium">State</th>
           <th className="py-1 font-medium">Attempts</th>
           <th className="py-1 font-medium">Provider</th>
+          <th className="py-1 font-medium">Account</th>
           <th className="py-1 font-medium">Error kind</th>
         </tr>
       </thead>
@@ -41,6 +42,7 @@ export function StepSummary({ run }: StepSummaryProps) {
               </td>
               <td className="py-1.5 text-gray-400 tabular-nums">{step.attempts}</td>
               <td className="py-1.5"><span className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-gray-300">{step.effective_provider || '—'}</span></td>
+              <td className="py-1.5"><span className="rounded bg-sky-950/40 px-1.5 py-0.5 font-mono text-sky-300">{step.effective_provider_profile || 'default'}</span></td>
               <td className="py-1.5 text-gray-400 font-mono">{step.error_kind || '—'}</td>
             </tr>
           )

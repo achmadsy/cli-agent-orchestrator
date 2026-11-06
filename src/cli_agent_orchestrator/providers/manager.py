@@ -119,6 +119,8 @@ class ProviderManager:
                     allowed_tools,
                     skill_prompt=skill_prompt,
                     model=model,
+                    provider_profile=provider_profile,
+                    provider_action=provider_action,
                 )
             elif provider_type == ProviderType.COPILOT_CLI.value:
                 provider = CopilotCliProvider(
@@ -149,6 +151,8 @@ class ProviderManager:
                     agent_profile,
                     allowed_tools,
                     model=model,
+                    provider_profile=provider_profile,
+                    provider_action=provider_action,
                 )
             elif provider_type == ProviderType.OMP.value:
                 provider = OmpProvider(
@@ -231,6 +235,22 @@ class ProviderManager:
                 f"Failed to create provider {provider_type} for terminal {terminal_id}: {e}"
             )
             raise
+
+    def is_profile_supported(self, provider_type: Optional[str]) -> bool:
+        """Whether ``provider_type``'s CLI supports named account profiles.
+
+        Reads the capability declaration the providers already own
+        (``supports_profiles``) so switch-account callers validate from the
+        same table SpawnerPanel shows, without importing provider classes
+        themselves.
+        """
+        if not provider_type:
+            return False
+        try:
+            provider_class = self.provider_class(provider_type)
+        except ValueError:
+            return False
+        return bool(getattr(provider_class, "supports_profiles", False))
 
     def get_provider(self, terminal_id: str) -> Optional[BaseProvider]:
         """Get provider instance, creating on-demand if not found.

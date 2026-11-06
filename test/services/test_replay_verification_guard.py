@@ -43,7 +43,7 @@ Manufactured row                                 If it landed in a real database
 ===============================================  ==========================================
 settled with ``result_json`` ``NULL``            every later resume of that run HALTS at
                                                  rule 3
-``call_fingerprint`` without a ``v2:`` prefix    that step HALTS at rule 5, permanently
+``call_fingerprint`` without a current-scheme prefix    that step HALTS at rule 5, permanently
 ===============================================  ==========================================
 
 ``run-step-replay-branch``'s Finding 3 found real rows in the developer's own database from
@@ -102,7 +102,7 @@ TS = "2026-08-17T00:00:00Z"
 # The ten execution-affecting components of the one call every test in this file decides
 # about. A REAL ``StepCallFields`` run through the REAL ``compute``, so "resumed under the
 # current scheme" is genuinely what the incoming fingerprint is, rather than a hand-written
-# string that merely starts with ``v2:``.
+# string that merely starts with the current-scheme prefix.
 _CALL_FIELDS = StepCallFields(
     provider="kiro_cli",
     agent="developer",
@@ -369,7 +369,7 @@ class TestGuardTwoStandingAlone:
         assert row.state != StepState.RUNNING.value
         assert row.result_json is None
         assert parse_envelope(row.result_json) is None
-        assert scheme_of(row.call_fingerprint) == "v2"
+        assert scheme_of(row.call_fingerprint) == "v3"
 
     def test_the_gate_halts_with_envelope_absent_specifically(self, _isolated_journal):
         """BR-3's verification: the ``rule`` is ``ENVELOPE_ABSENT``, asserted by MEMBER and
@@ -831,7 +831,7 @@ class TestTheUpgradeWindow:
     named this scenario as the single risk no unit had been assigned.
 
     THE LEGACY ROW IS MANUFACTURED BY PREFIX (BR-6/TD-6). ``scheme_of`` classifies by prefix,
-    so any 64-hex without ``v2:`` IS a legacy row — no old hash function, no old commit. That
+    so any 64-hex without a scheme prefix IS a legacy row — no old hash function, no old commit. That
     is what makes this deliverable cheap, and it was plausibly expensive.
     """
 
@@ -855,7 +855,7 @@ class TestTheUpgradeWindow:
         assert scheme_of(FP_LEGACY) != "absent"
         assert scheme_of(FP_LEGACY) != "v2"
         assert len(FP_LEGACY) == 64
-        assert not FP_LEGACY.startswith("v2:")
+        assert not FP_LEGACY.startswith("v3:")
         assert all(c in "0123456789abcdef" for c in FP_LEGACY)
 
     def test_the_fixture_is_not_a_real_digest_of_this_call(self):
@@ -864,7 +864,7 @@ class TestTheUpgradeWindow:
         the second fingerprint implementation ``step-fingerprint`` deleted a helper to prevent
         gets reintroduced inside a test."""
         assert FP_LEGACY != FP_CURRENT
-        assert FP_LEGACY != FP_CURRENT.removeprefix("v2:")
+        assert FP_LEGACY != FP_CURRENT.removeprefix("v3:")
         # A repeating 8-character pattern: no digest function produces this.
         assert FP_LEGACY == FP_LEGACY[:8] * 8
 

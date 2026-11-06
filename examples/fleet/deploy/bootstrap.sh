@@ -56,6 +56,74 @@ command -v tmux >/dev/null 2>&1 || warn "tmux missing — install tmux >= 3.3 be
 log "installing/upgrading CAO from $CAO_REPO"
 uv tool install "$CAO_REPO" --upgrade
 
+# 4b. workspace-mcp (repo + runtime deps for the Quick Tunnel launcher).
+# Pre-installed non-interactively so scripts/start-tunnel.sh never needs its
+# missing-dependency TTY gate at spawn time. Idempotent: upgrades an existing
+# clone instead of failing.
+WORKSPACE_MCP_DIR="${WORKSPACE_MCP_DIR:-$HOME/workspace-mcp}"
+WORKSPACE_MCP_REPO="${WORKSPACE_MCP_REPO:-https://github.com/achmadsy/workspace-mcp.git}"
+if command -v git >/dev/null 2>&1; then
+  log "installing workspace-mcp (repo + Quick Tunnel deps)"
+  if [ -d "$WORKSPACE_MCP_DIR/.git" ]; then
+    git -C "$WORKSPACE_MCP_DIR" pull --ff-only >/dev/null 2>&1 ||
+      warn "workspace-mcp git pull failed — keeping existing clone"
+  elif [ -d "$WORKSPACE_MCP_DIR" ]; then
+    warn "$WORKSPACE_MCP_DIR exists but is not a git clone — leaving it untouched"
+  else
+    git clone --depth 1 "$WORKSPACE_MCP_REPO" "$WORKSPACE_MCP_DIR" ||
+      warn "workspace-mcp clone failed — instances cannot be spawned here"
+  fi
+  if command -v apt-get >/dev/null 2>&1 && [ -r /etc/os-release ] &&
+     /bin/sh -c '. /etc/os-release; case " $ID $ID_LIKE " in *" debian "*|*" ubuntu "*) exit 0;; *) exit 1;; esac'; then
+    run_privileged() {
+      if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
+    }
+    # cloudflared apt repo + key + the agentic sandbox packages, mirroring what
+    # start-tunnel.sh would otherwise install behind an interactive prompt.
+    run_privileged true >/dev/null 2>&1 || true
+    run_privileged env DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1 ||
+      warn "apt-get update failed — cloudflared/bwrap install may be incomplete"
+    run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap slirp4netns >/dev/null 2>&1 ||
+      warn "bubblewrap/slirp4netns install failed — agentic mode may be unavailable"
+    if ! command -v cloudflared >/dev/null 2>&1; then
+      run_privileged mkdir -p --mode=0755 /usr/share/keyrings
+      CLOUDFLARE_KEY="$(mktemp)"
+      if curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o "$CLOUDFLARE_KEY"; then
+        if run_privileged tee /usr/share/keyrings/cloudflare-main.gpg < "$CLOUDFLARE_KEY" >/dev/null; then
+          printf '%s\n' "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" |
+            run_privileged tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
+          run_privileged env DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1 || true
+          run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y cloudflared >/dev/null 2>&1 ||
+            warn "cloudflared install failed — Quick Tunnels cannot start here"
+        else
+          warn "could not add the Cloudflare signing key — install cloudflared manually"
+        fi
+      else
+        warn "could not download the Cloudflare signing key — install cloudflared manually"
+      fi
+      rm -f "$CLOUDFLARE_KEY"
+    fi
+    # --agentic spawns need a running user manager for systemd-run --user.
+    if command -v loginctl >/dev/null 2>&1; then
+      run_privileged loginctl enable-linger "${USER:-$(id -un)}" >/dev/null 2>&1 || true
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      run_privileged systemctl start "user@$(id -u).service" >/dev/null 2>&1 || true
+    fi
+  else
+    warn "not Debian/Ubuntu or no apt-get — install cloudflared/bwrap/slirp4netns manually"
+  fi
+  _wmcp_ready=""
+  command -v cloudflared >/dev/null 2>&1 && _wmcp_ready="${_wmcp_ready:+ }cloudflared"
+  command -v bwrap >/dev/null 2>&1 && _wmcp_ready="${_wmcp_ready:+ }bwrap"
+  command -v slirp4netns >/dev/null 2>&1 && _wmcp_ready="${_wmcp_ready:+ }slirp4netns"
+  [ -d "$WORKSPACE_MCP_DIR" ] && _wmcp_ready="${_wmcp_ready:+ }repo"
+  log "workspace-mcp ready:${_wmcp_ready:- (nothing provisioned)}"
+  unset _wmcp_ready
+else
+  warn "git missing — workspace-mcp cannot be installed"
+fi
+
 # 5. agent CLI (example uses Claude Code; any supported provider works)
 command -v claude >/dev/null 2>&1 || warn "claude CLI missing — install (npm i -g @anthropic-ai/claude-code) and authenticate (claude setup-token)"
 

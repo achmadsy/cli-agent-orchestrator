@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from unittest.mock import AsyncMock
 
 from cli_agent_orchestrator.clients.database import (
     _migrate_workflow_index,
@@ -407,6 +408,55 @@ class TestResumeTierDispatch:
         resp = client.post("/workflows/runs/run1/resume")
         assert resp.status_code == 200
         assert resp.json()["state"] == "completed"
+
+    def test_script_tier_forwards_provider_profile_overrides(self, client, monkeypatch):
+        self._seed_row(monkeypatch, "script")
+        captured = {}
+
+        async def _ok(run_id, decisions=None, provider_profile_overrides=None):
+            captured.update(
+                run_id=run_id,
+                decisions=decisions,
+                provider_profile_overrides=provider_profile_overrides,
+            )
+            from cli_agent_orchestrator.models.workflow_runtime import (
+                RunState,
+                WorkflowRunResult,
+            )
+
+            return WorkflowRunResult(
+                run_id=run_id, workflow_name="wf", state=RunState.COMPLETED, started_at="t"
+            )
+
+        monkeypatch.setattr(script_runner, "resume_script_run", _ok)
+        resp = client.post(
+            "/workflows/runs/run1/resume",
+            json={
+                "decisions": {"review": "retry"},
+                "provider_profile_overrides": {"review": "claude-new"},
+            },
+        )
+        assert resp.status_code == 200
+        assert captured == {
+            "run_id": "run1",
+            "decisions": {"review": "retry"},
+            "provider_profile_overrides": {"review": "claude-new"},
+        }
+
+    def test_non_script_rejects_provider_profile_overrides(self, client, monkeypatch):
+        self._seed_row(monkeypatch, "yaml")
+        script = AsyncMock()
+        yaml = AsyncMock()
+        monkeypatch.setattr(script_runner, "resume_script_run", script)
+        monkeypatch.setattr(workflow_service, "resume_from_last_completed", yaml)
+
+        resp = client.post(
+            "/workflows/runs/run1/resume",
+            json={"provider_profile_overrides": {"review": "claude-new"}},
+        )
+        assert resp.status_code == 400
+        script.assert_not_called()
+        yaml.assert_not_called()
 
     def test_script_tier_resume_not_allowed_409(self, client, monkeypatch):
         self._seed_row(monkeypatch, "script")

@@ -1799,3 +1799,224 @@ class TestStatusObservationIsStampedWhenEarned:
         sm._status_generation["t1"] = 5
         sm.reset_buffer("t1")
         assert "t1" not in sm._status_generation
+
+
+class TestRuntimeFailureClassification:
+    """#runtime: _classify_runtime_failure must persist + publish only a
+    current-generation provider verdict, and only on a new dispatch lifecycle
+    may the failure be cleared."""
+
+    @patch("cli_agent_orchestrator.backends.registry.get_backend")
+    @patch("cli_agent_orchestrator.services.status_monitor.update_terminal_runtime_failure")
+    @patch("cli_agent_orchestrator.services.status_monitor.bus")
+    @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
+    def test_verdict_persisted_and_published(
+        self, mock_pm, mock_bus, mock_persist, mock_get_backend
+    ):
+        mock_get_backend.return_value = _backend(event_inbox=False)
+        provider = MagicMock()
+        provider.supports_screen_detection = False
+        provider.get_runtime_failure.return_value = {
+            "kind": "rate_limited",
+            "message": "API Error: 429 rate limit",
+            "retryable": True,
+            "retry_after_s": None,
+            "reset_at": None,
+        }
+        mock_pm.get_provider.return_value = provider
+        mock_persist.return_value = True
+
+        sm = StatusMonitor()
+        sm._detect_status = lambda tid, buf: TerminalStatus.PROCESSING
+        sm._process_chunk("t1", "API Error: 429 rate limit")
+
+        mock_persist.assert_called_once()
+        persisted = mock_persist.call_args.args[1]
+        assert persisted["kind"] == "rate_limited"
+        assert persisted["observed_generation"]
+        assert sm.get_runtime_failure("t1")["kind"] == "rate_limited"
+        # The publish keeps the coarse status key and adds only the verdict.
+        topic, payload = mock_bus.publish.call_args.args
+        assert topic == "terminal.t1.status"
+        assert "status" in payload and "runtime_failure" in payload
+
+    @patch("cli_agent_orchestrator.backends.registry.get_backend")
+    @patch("cli_agent_orchestrator.services.status_monitor.update_terminal_runtime_failure")
+    @patch("cli_agent_orchestrator.services.status_monitor.bus")
+    @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
+    def test_stale_generation_is_not_persisted(
+        self, mock_pm, mock_bus, mock_persist, mock_get_backend
+    ):
+        mock_get_backend.return_value = _backend(event_inbox=False)
+        provider = MagicMock()
+        provider.supports_screen_detection = False
+        provider.get_runtime_failure.return_value = {
+            "kind": "rate_limited",
+            "message": "stale",
+            "retryable": True,
+        }
+        mock_pm.get_provider.return_value = provider
+
+        sm = StatusMonitor()
+        sm._detect_status = lambda tid, buf: TerminalStatus.UNKNOWN
+        # Simulate newer output landing between the read and the apply: the
+        # hook returns against generation 0 and the counter advances BEFORE
+        # the apply guard re-reads it (the _process_chunk ordering).
+        real_hook = provider.get_runtime_failure
+        land = {"landed": False}
+
+        def hook_that_lands_newer_output(buffer):
+            verdict = real_hook.return_value
+            land["landed"] = True
+            return verdict
+
+        sm._output_generation["t1"] = 0
+        # Land the “new chunk” between hook() return and the apply lock.
+        gen_bump = {"bumped": False}
+
+        def classify_with_bump():
+            # Read at generation 0, then pretend a chunk arrived.
+            import threading
+
+            original_lock = sm._lock
+
+            def bump_on_first_block(*a, **kw):
+                if not gen_bump["bumped"] and land["landed"]:
+                    gen_bump["bumped"] = True
+                    sm._output_generation["t1"] += 1
+                return original_lock.__enter__(), None
+
+            # Simpler: monkeypatch the provider hook to advance the counter
+            # at the moment the classifier samples it (sen a newer chunk).
+            return sm._classify_runtime_failure("t1", "stale buffer")
+
+        # Implement staleness exactly as _process_chunk produces it: a chunk
+        # arrives after the classifier sampled (both reads inside classify).
+        def advancing_hook(buffer):
+            hook_raised = real_hook(buffer)
+            # A later chunk lands while the classifier is between sample and
+            # apply — nudge the generation now.
+            sm._output_generation["t1"] += 1
+            return hook_raised
+
+        provider.get_runtime_failure.side_effect = advancing_hook
+        sm._classify_runtime_failure("t1", "stale buffer")
+        # The apply guard re-read the counter and refused the stale verdict.
+        mock_persist.assert_not_called()
+        assert sm.get_runtime_failure("t1") is None
+
+    @patch("cli_agent_orchestrator.backends.registry.get_backend")
+    @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
+    def test_no_verdict_leaves_failure_untouched(self, mock_pm, mock_get_backend):
+        mock_get_backend.return_value = _backend(event_inbox=False)
+        provider = MagicMock()
+        provider.supports_screen_detection = False
+        provider.get_runtime_failure.return_value = None
+        mock_pm.get_provider.return_value = provider
+
+        sm = StatusMonitor()
+        sm._runtime_failures["t1"] = {"kind": "rate_limited", "message": "kept"}
+        sm._detect_status = lambda tid, buf: TerminalStatus.UNKNOWN
+        sm._classify_runtime_failure("t1", "repaired pane")
+        # Polling never clears: a repair must have been ORDERED (clear on
+        # lifecycle), not inferred from a quiet reading.
+        assert sm.get_runtime_failure("t1") == {"kind": "rate_limited", "message": "kept"}
+
+    @patch("cli_agent_orchestrator.backends.registry.get_backend")
+    @patch("cli_agent_orchestrator.services.status_monitor.update_terminal_runtime_failure")
+    @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
+    def test_new_dispatch_clears_failure(self, mock_pm, mock_persist, mock_get_backend):
+        mock_get_backend.return_value = _backend(event_inbox=False)
+        mock_pm.get_provider.return_value = None
+        mock_persist.return_value = True
+
+        sm = StatusMonitor()
+        sm._runtime_failures["t1"] = {"kind": "rate_limited", "message": "old"}
+        sm.notify_input_sent("t1")
+        assert sm.get_runtime_failure("t1") is None
+        mock_persist.assert_called_once_with("t1", None)
+
+    @patch("cli_agent_orchestrator.services.status_monitor.CAO_PYTE_STATUS", True)
+    @patch("cli_agent_orchestrator.backends.registry.get_backend")
+    @patch("cli_agent_orchestrator.services.status_monitor.update_terminal_runtime_failure")
+    @patch("cli_agent_orchestrator.services.status_monitor.bus")
+    @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
+    def test_screen_status_path_still_classifies_raw_runtime_failure(
+        self, mock_pm, mock_bus, mock_persist, mock_get_backend
+    ):
+        mock_get_backend.return_value = _backend(event_inbox=False)
+        provider = MagicMock()
+        provider.supports_screen_detection = True
+        provider.get_status_from_screen.return_value = TerminalStatus.ERROR
+        provider.get_runtime_failure.return_value = {
+            "kind": "rate_limited",
+            "message": "API Error: 429 rate limit",
+            "retryable": True,
+        }
+        mock_pm.get_provider.return_value = provider
+        mock_persist.return_value = True
+
+        sm = StatusMonitor()
+        sm._process_chunk("t1", "raw API Error: 429 rate limit")
+
+        provider.get_runtime_failure.assert_called_once_with(
+            "raw API Error: 429 rate limit"
+        )
+        mock_persist.assert_called_once()
+        assert sm.get_runtime_failure("t1")["kind"] == "rate_limited"
+        assert mock_bus.publish.call_args.args[1]["runtime_failure"]["kind"] == "rate_limited"
+
+    @patch("cli_agent_orchestrator.backends.registry.get_backend")
+    @patch("cli_agent_orchestrator.services.status_monitor.update_terminal_runtime_failure")
+    @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
+    def test_new_dispatch_invalidates_in_flight_classifier(
+        self, mock_pm, mock_persist, mock_get_backend
+    ):
+        mock_get_backend.return_value = _backend(event_inbox=False)
+        provider = MagicMock()
+        provider.supports_screen_detection = False
+        sm = StatusMonitor()
+
+        def dispatch_during_hook(_buffer):
+            sm.notify_input_sent("t1")
+            return {
+                "kind": "rate_limited",
+                "message": "old turn",
+                "retryable": True,
+            }
+
+        provider.get_runtime_failure.side_effect = dispatch_during_hook
+        mock_pm.get_provider.return_value = provider
+        mock_persist.return_value = True
+
+        sm._classify_runtime_failure("t1", "old turn")
+
+        mock_persist.assert_called_once_with("t1", None)
+        assert sm.get_runtime_failure("t1") is None
+
+    @patch("cli_agent_orchestrator.backends.registry.get_backend")
+    @patch("cli_agent_orchestrator.services.status_monitor.update_terminal_runtime_failure")
+    @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
+    def test_new_dispatch_clears_durable_failure_after_restart(
+        self, mock_pm, mock_persist, mock_get_backend
+    ):
+        mock_get_backend.return_value = _backend(event_inbox=False)
+        mock_pm.get_provider.return_value = None
+        sm = StatusMonitor()
+
+        sm.notify_input_sent("t1")
+
+        mock_persist.assert_called_once_with("t1", None)
+
+    @patch("cli_agent_orchestrator.backends.registry.get_backend")
+    @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
+    def test_non_opting_provider_never_classified(self, mock_pm, mock_get_backend):
+        mock_get_backend.return_value = _backend(event_inbox=False)
+        provider = MagicMock(spec=["get_status", "supports_screen_detection"])
+        provider.supports_screen_detection = False
+        mock_pm.get_provider.return_value = provider
+
+        sm = StatusMonitor()
+        sm._detect_status = lambda tid, buf: TerminalStatus.UNKNOWN
+        sm._process_chunk("t1", "anything")
+        assert getattr(provider, "get_runtime_failure", None) is None

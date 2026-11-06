@@ -239,6 +239,21 @@ class BaseProvider(ABC):
 
         return None
 
+    def get_runtime_failure(self, buffer: str) -> Optional[Dict[str, Any]]:
+        """Return a provider-owned structured runtime failure verdict.
+
+        Providers call this against the same rolling buffer get_status() sees;
+        the caller owns generation validation, bounding, and persistence. The
+        default is no structured verdict — matching get_error_message()'s
+        conservative posture — so a provider must opt in explicitly.
+
+        Returns a dict (ProviderRuntimeFailure-compatible, see
+        models/terminal.py) with keys: kind, message, retryable, and optional
+        retry_after / reset_at. Implementations MUST only classify provider
+        chrome, never assistant prose, quoted text, or stale erased frames.
+        """
+        return None
+
     # Opt-in flag for pyte-rendered status detection. A provider sets this True
     # ONLY when it ships a purpose-built get_status_from_screen() calibrated for
     # a composited fixed-height viewport (not the raw byte stream). When False,

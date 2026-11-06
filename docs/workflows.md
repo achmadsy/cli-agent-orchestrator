@@ -200,6 +200,71 @@ Choose the shape by how the run is triggered, because the client-side ceilings d
 Always **pre-announce the run-id** before starting, so you (or the user) can
 `cao workflow status <id>` and `cao workflow cancel <id>`.
 
+## Role provider and account routing
+
+Workflow runs can route recognized roles (`supervisor`, `developer`, `reviewer`) to both a
+provider CLI and one named provider-account profile:
+
+```bash
+cao workflow run review \
+  --role-provider supervisor=claude_code \
+  --role-provider developer=claude_code \
+  --role-provider reviewer=claude_code \
+  --role-provider-profile supervisor=claude-supervisor \
+  --role-provider-profile developer=claude-work \
+  --role-provider-profile reviewer=claude-review
+```
+
+Both options are repeatable `ROLE=VALUE` pairs and work on default async, `--detach`, and
+`--wait` paths. REST shape:
+
+```json
+{
+  "role_providers": {
+    "supervisor": "claude_code",
+    "developer": "claude_code",
+    "reviewer": "claude_code"
+  },
+  "role_provider_profiles": {
+    "supervisor": "claude-supervisor",
+    "developer": "claude-work",
+    "reviewer": "claude-review"
+  }
+}
+```
+
+`role_provider_profiles` values are provider-profile IDs, not provider names. Every selected
+ID must exist on the node that launches the terminal, belong to that role's effective
+provider, and be authenticated. Credentials never travel in workflow payloads or between
+nodes.
+
+| Priority | Account source |
+| --- | --- |
+| 1 | Explicit call/step `provider_profile` |
+| 2 | Run or supervisor `role_provider_profiles[role]` |
+| 3 | `AgentProfile.providerProfile` |
+| 4 | Provider default profile |
+
+Provider and account are frozen per step in the journal. Retry, replay, and ordinary resume
+use those frozen values; they never rotate accounts automatically. Inspection returns both
+requested `role_provider_profiles` and each step's `effective_provider_profile`.
+
+A script-tier run whose provider-owned failure is `rate_limited` or `quota_exhausted` can be
+resumed with explicit operator overrides keyed by failed step ID:
+
+```json
+POST /workflows/runs/review-1/resume
+{
+  "provider_profile_overrides": {
+    "review": "claude-review-backup"
+  }
+}
+```
+
+CAO rejects unknown/non-failed steps, unstructured or non-quota failures, wrong-provider
+profiles, unsupported adapters, and unauthenticated profiles. Accepted switches are journaled
+before the new generation spawns. Normal resume without this field keeps frozen accounts.
+
 ## Fan-out (concurrency)
 
 To run steps concurrently, use a `concurrent.futures.ThreadPoolExecutor` and give

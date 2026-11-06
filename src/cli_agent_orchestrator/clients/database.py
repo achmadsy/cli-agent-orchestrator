@@ -188,6 +188,16 @@ class TerminalModel(Base):
     # Server-owned durable deferred-init failure. Kept separate from consumer
     # metadata so PATCH /metadata cannot erase or forge lifecycle truth.
     deferred_init_failure_json = Column("deferred_init_failure", Text, nullable=True)
+    # Server-owned structured provider runtime failure (rate limit, quota, auth).
+    # Written/cleared only at StatusMonitor-detected lifecycle boundaries so
+    # polling cannot invent or erase lifecycle truth. Sharing the
+    # deferred_init_failure persistence shape keeps callers uniform (#runtime).
+    runtime_failure_json = Column("runtime_failure", Text, nullable=True)
+    # Server-owned reciprocal linkage for explicit successor-first account
+    # switching. Kept outside consumer metadata so agents cannot forge or erase
+    # lifecycle ownership.
+    switch_predecessor_id = Column(String, nullable=True)
+    switch_successor_id = Column(String, nullable=True)
     # Server-owned durable outcome of the INITIAL message a deferred-init terminal
     # was created with (PR #566): JSON ``{"state": "pending"|"delivered"|"failed",
     # "kind": ..., "message": ...}``. Written at creation, settled by the deferred
@@ -1888,9 +1898,15 @@ def _migrate_workflow_run_event() -> None:
                 "output_ref TEXT, "
                 "iteration INTEGER, "
                 "which_guard_fired TEXT, "
+                "runtime_failure_json TEXT, "
                 "PRIMARY KEY (run_id, seq)"
                 ")"
             )
+            # Additive column for the provider-owned runtime failure payload
+            # (#runtime): pre-migration installs created the table without it.
+            _existing = {row[1] for row in conn.execute("PRAGMA table_info(workflow_run_event)")}
+            if "runtime_failure_json" not in _existing:
+                conn.execute("ALTER TABLE workflow_run_event ADD COLUMN runtime_failure_json TEXT")
     except Exception as e:  # noqa: BLE001 — derived/recoverable; logged at debug
         logger.debug(f"workflow_run_event migration skipped: {e}")
 
@@ -2015,6 +2031,18 @@ def _migrate_terminals_schema() -> None:
             conn.execute("ALTER TABLE terminals ADD COLUMN initial_delivery TEXT")
             conn.commit()
             logger.info("Migration: added initial_delivery column to terminals table")
+        if "runtime_failure" not in columns:
+            conn.execute("ALTER TABLE terminals ADD COLUMN runtime_failure TEXT")
+            conn.commit()
+            logger.info("Migration: added runtime_failure column to terminals table")
+        if "switch_predecessor_id" not in columns:
+            conn.execute("ALTER TABLE terminals ADD COLUMN switch_predecessor_id TEXT")
+            conn.commit()
+            logger.info("Migration: added switch_predecessor_id column to terminals table")
+        if "switch_successor_id" not in columns:
+            conn.execute("ALTER TABLE terminals ADD COLUMN switch_successor_id TEXT")
+            conn.commit()
+            logger.info("Migration: added switch_successor_id column to terminals table")
         if "deferred_init_external_owner" not in columns:
             conn.execute(
                 "ALTER TABLE terminals ADD COLUMN deferred_init_external_owner "
@@ -2076,6 +2104,7 @@ def create_terminal(
     model: Optional[str] = None,
     model_honored: Optional[bool] = None,
     initial_delivery: Optional[Dict[str, Any]] = None,
+    switch_predecessor_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create terminal metadata record.
 
@@ -2111,6 +2140,20 @@ def create_terminal(
                 )
             else:
                 incarnation.incarnation_id = session_incarnation_id
+        predecessor = None
+        if switch_predecessor_id is not None:
+            predecessor = (
+                db.query(TerminalModel)
+                .filter(TerminalModel.id == switch_predecessor_id)
+                .first()
+            )
+            if predecessor is None:
+                raise ValueError(f"switch predecessor '{switch_predecessor_id}' not found")
+            if predecessor.switch_successor_id is not None:
+                raise ValueError(
+                    f"terminal '{switch_predecessor_id}' already has a successor"
+                )
+
         terminal = TerminalModel(
             id=terminal_id,
             tmux_session=tmux_session,
@@ -2134,8 +2177,25 @@ def create_terminal(
             deferred_init_external_owner=bool(deferred_init_external_owner),
             session_incarnation_id=session_incarnation_id,
             initial_delivery_json=_json.dumps(initial_delivery) if initial_delivery else None,
+            switch_predecessor_id=switch_predecessor_id,
         )
         db.add(terminal)
+        if predecessor is not None:
+            # Same transaction as successor insertion. SQLite serializes writers;
+            # ORM state is checked again by a conditional UPDATE so a future DB
+            # with row-level concurrency retains the one-successor invariant.
+            claimed = (
+                db.query(TerminalModel)
+                .filter(
+                    TerminalModel.id == switch_predecessor_id,
+                    TerminalModel.switch_successor_id.is_(None),
+                )
+                .update({TerminalModel.switch_successor_id: terminal_id})
+            )
+            if claimed != 1:
+                raise ValueError(
+                    f"terminal '{switch_predecessor_id}' already has a successor"
+                )
         if idempotency_key:
             # `or ""` keeps this insert in the SAME transaction as the terminal
             # row (the property haofeif approved) without a nullable column: a
@@ -2177,6 +2237,8 @@ def create_terminal(
             "metadata": metadata if metadata else None,
             "deferred_init_external_owner": bool(deferred_init_external_owner),
             "initial_delivery": initial_delivery if initial_delivery else None,
+            "switch_predecessor_id": switch_predecessor_id,
+            "switch_successor_id": None,
             "deferred_init_runtime_reclaimed": False,
             "session_incarnation_id": session_incarnation_id,
         }
@@ -2272,6 +2334,10 @@ def get_terminal_metadata(terminal_id: str) -> Optional[Dict[str, Any]]:
         initial_delivery = (
             _json.loads(raw_initial_delivery) if isinstance(raw_initial_delivery, str) else None
         )
+        raw_runtime_failure = getattr(terminal, "runtime_failure_json", None)
+        runtime_failure = (
+            _json.loads(raw_runtime_failure) if isinstance(raw_runtime_failure, str) else None
+        )
         return {
             "id": terminal.id,
             "tmux_session": terminal.tmux_session,
@@ -2292,6 +2358,9 @@ def get_terminal_metadata(terminal_id: str) -> Optional[Dict[str, Any]]:
             "metadata": metadata,
             "deferred_init_failure": deferred_init_failure,
             "initial_delivery": initial_delivery,
+            "runtime_failure": runtime_failure,
+            "switch_predecessor_id": getattr(terminal, "switch_predecessor_id", None),
+            "switch_successor_id": getattr(terminal, "switch_successor_id", None),
             "deferred_init_external_owner": bool(
                 getattr(terminal, "deferred_init_external_owner", False)
             ),
@@ -2341,6 +2410,27 @@ def update_terminal_deferred_init_failure(
         if not terminal:
             return False
         terminal.deferred_init_failure_json = _json.dumps(failure) if failure else None
+        db.commit()
+        return True
+
+
+def update_terminal_runtime_failure(
+    terminal_id: str, failure: Optional[Dict[str, Any]]
+) -> bool:
+    """Replace CAO-owned structured runtime failure for one terminal.
+
+    ``None`` clears the field (a genuinely new dispatch lifecycle). Written
+    only from the StatusMonitor boundary or lifecycle operations, never from
+    an API caller, so polling cannot forge lifecycle truth (#runtime).
+    """
+
+    import json as _json
+
+    with SessionLocal() as db:
+        terminal = db.query(TerminalModel).filter(TerminalModel.id == terminal_id).first()
+        if not terminal:
+            return False
+        terminal.runtime_failure_json = _json.dumps(failure) if failure else None
         db.commit()
         return True
 
@@ -2707,6 +2797,14 @@ def list_terminals_by_session(tmux_session: str) -> List[Dict[str, Any]]:
                 ),
                 "deferred_init_external_owner": bool(t.deferred_init_external_owner),
                 "deferred_init_runtime_reclaimed": bool(t.deferred_init_runtime_reclaimed),
+                "runtime_failure": (
+                    _json.loads(t.runtime_failure_json)
+                    if isinstance(t.runtime_failure_json, str)
+                    and t.runtime_failure_json
+                    else None
+                ),
+                "switch_predecessor_id": getattr(t, "switch_predecessor_id", None),
+                "switch_successor_id": getattr(t, "switch_successor_id", None),
                 "session_incarnation_id": t.session_incarnation_id,
                 "last_active": t.last_active,
             }
@@ -2812,6 +2910,14 @@ def list_terminals_in_sessions(tmux_sessions: List[str]) -> List[Dict[str, Any]]
                 ),
                 "deferred_init_external_owner": bool(t.deferred_init_external_owner),
                 "deferred_init_runtime_reclaimed": bool(t.deferred_init_runtime_reclaimed),
+                "runtime_failure": (
+                    _json.loads(t.runtime_failure_json)
+                    if isinstance(t.runtime_failure_json, str)
+                    and t.runtime_failure_json
+                    else None
+                ),
+                "switch_predecessor_id": getattr(t, "switch_predecessor_id", None),
+                "switch_successor_id": getattr(t, "switch_successor_id", None),
                 "session_incarnation_id": t.session_incarnation_id,
                 "last_active": t.last_active,
             }
@@ -2845,6 +2951,14 @@ def list_all_terminals() -> List[Dict[str, Any]]:
                 ),
                 "deferred_init_external_owner": bool(t.deferred_init_external_owner),
                 "deferred_init_runtime_reclaimed": bool(t.deferred_init_runtime_reclaimed),
+                "runtime_failure": (
+                    _json.loads(t.runtime_failure_json)
+                    if isinstance(t.runtime_failure_json, str)
+                    and t.runtime_failure_json
+                    else None
+                ),
+                "switch_predecessor_id": getattr(t, "switch_predecessor_id", None),
+                "switch_successor_id": getattr(t, "switch_successor_id", None),
                 "session_incarnation_id": t.session_incarnation_id,
                 "last_active": t.last_active,
             }

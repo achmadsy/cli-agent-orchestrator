@@ -17,11 +17,15 @@ from cli_agent_orchestrator.constants import (
     PYTE_SCREEN_COLS,
     PYTE_SCREEN_ROWS,
 )
-from cli_agent_orchestrator.models.terminal import TerminalStatus
+from cli_agent_orchestrator.models.terminal import ProviderRuntimeFailure, TerminalStatus
 from cli_agent_orchestrator.providers.manager import provider_manager
 from cli_agent_orchestrator.services.event_bus import bus
 from cli_agent_orchestrator.services.settings_service import get_server_settings
 from cli_agent_orchestrator.utils.event import terminal_id_from_topic
+
+# Runtime-failure plumbing imports live at module level (all imports safe,
+# no circular risk: clients.database depends on the model only).
+from cli_agent_orchestrator.clients.database import update_terminal_runtime_failure  # noqa: E402
 
 if TYPE_CHECKING:
     import pyte
@@ -106,6 +110,11 @@ class StatusMonitor:
         # not interleave with notify_input_sent, or a freshly-armed gate can
         # be consumed by a decision taken against stale state.
         self._lock = threading.RLock()
+        # Fixed lock striping orders runtime-failure persistence against new
+        # dispatch/reset/delete boundaries without holding ``_lock`` across DB
+        # I/O. A fixed tuple avoids an unbounded per-terminal lock registry and
+        # locks disappearing while another thread still holds a reference.
+        self._runtime_failure_locks = tuple(threading.RLock() for _ in range(64))
         self._buffers: Dict[str, str] = {}
         # Monotonic per-terminal byte-buffer generation.  A provider that
         # remembers positions across get_status() calls needs an explicit reset
@@ -126,6 +135,10 @@ class StatusMonitor:
         # IDLE/COMPLETED would freeze the terminal forever even when the
         # agent is genuinely processing new work.
         self._allow_processing_revert: Dict[str, bool] = {}
+        # Per-terminal structured runtime failure last published by the raw
+        # detection boundary (#runtime). CAO-owned projection cache only — the
+        # durable truth lives in the ``terminals.runtime_failure`` column.
+        self._runtime_failures: Dict[str, dict] = {}
         # Per-terminal monotonic timestamp of the last mid-burst PROCESSING probe
         # (PYTE_MIDBURST_PROBE_S rate limit); absent until the first probe.
         self._midburst_probe_at: Dict[str, float] = {}
@@ -320,9 +333,14 @@ class StatusMonitor:
             # before re-detecting (catches IDLE/COMPLETED without running costly
             # regex on every single chunk during bursts).
             self._schedule_raw_detection(terminal_id, buffer)
-            return
+        else:
+            self._schedule_screen_detection(terminal_id, provider)
 
-        self._schedule_screen_detection(terminal_id, provider)
+        # Runtime-failure classification is provider-owned over the RAW rolling
+        # stream, independent of whether coarse status uses that stream or a
+        # composited pyte screen. Keeping this after status scheduling preserves
+        # the existing apply order while making screen-enabled providers visible.
+        self._classify_runtime_failure(terminal_id, buffer)
 
     def _apply_detection(
         self,
@@ -777,6 +795,99 @@ class StatusMonitor:
         else:
             self._spawn_tracked(loop, _detect_and_apply())
 
+    def _runtime_failure_lock(self, terminal_id: str) -> threading.RLock:
+        """Return the fixed stripe serializing one terminal's failure lifecycle."""
+        stripe = sum(terminal_id.encode("utf-8")) % len(self._runtime_failure_locks)
+        return self._runtime_failure_locks[stripe]
+
+    def _classify_runtime_failure(self, terminal_id: str, buffer: str) -> None:
+        """Classify and publish one current-lifecycle provider failure.
+
+        Coarse status may use raw bytes or a rendered pyte screen; failure
+        classifiers always receive the bounded raw rolling stream promised by
+        ``BaseProvider``. Both output and capture generations fence the verdict:
+        output rejects newer bytes, while capture also rejects a new dispatch
+        that arrived without output. Persistence and lifecycle clearing share a
+        per-terminal stripe, so an old verdict cannot repopulate state after a
+        dispatch clear. Runtime failure remains additive to coarse status.
+        """
+        try:
+            provider = provider_manager.get_provider(terminal_id)
+        except Exception as exc:  # noqa: BLE001 - classification failure is diagnostic
+            logger.debug(f"runtime failure lookup for {terminal_id}: {exc}")
+            return
+        if provider is None:
+            return
+        hook = getattr(provider, "get_runtime_failure", None)
+        if not callable(hook):
+            return
+
+        with self._lock:
+            output_generation = self._output_generation.get(terminal_id, 0)
+            capture_generation = self._capture_generation.get(terminal_id, 0)
+        try:
+            verdict = hook(buffer)
+        except Exception as exc:  # noqa: BLE001 - classification failure is diagnostic
+            logger.debug(f"get_runtime_failure for {terminal_id} raised: {exc}")
+            return
+        if verdict is None:
+            # A repaired pane does not erase durable failure. Only an ordered
+            # dispatch/reset lifecycle boundary clears it.
+            return
+
+        try:
+            failure = ProviderRuntimeFailure(
+                kind=verdict["kind"],
+                message=verdict["message"],
+                retryable=bool(verdict.get("retryable", False)),
+                retry_after_s=verdict.get("retry_after_s"),
+                reset_at=verdict.get("reset_at"),
+                observed_generation=output_generation,
+            )
+        except Exception as exc:  # noqa: BLE001 - malformed verdict must never leak
+            logger.debug(f"invalid runtime failure for {terminal_id}: {exc}")
+            return
+        payload = failure.model_dump(mode="json")
+
+        with self._runtime_failure_lock(terminal_id):
+            with self._lock:
+                if (
+                    self._output_generation.get(terminal_id, 0) != output_generation
+                    or self._capture_generation.get(terminal_id, 0) != capture_generation
+                ):
+                    return
+                current = self._last_status.get(terminal_id)
+
+            try:
+                updated = update_terminal_runtime_failure(terminal_id, payload)
+            except Exception as exc:  # noqa: BLE001 - durable truth required before publish
+                logger.warning(f"runtime failure persistence failed for {terminal_id}: {exc}")
+                return
+            if not updated:
+                return
+
+            with self._lock:
+                # Dispatch/reset cannot cross this stripe. Recheck defensively
+                # for direct generation mutation and keep cache writes ordered.
+                if (
+                    self._output_generation.get(terminal_id, 0) != output_generation
+                    or self._capture_generation.get(terminal_id, 0) != capture_generation
+                ):
+                    update_terminal_runtime_failure(terminal_id, None)
+                    return
+                self._runtime_failures[terminal_id] = payload
+
+            # Publish outside the monitor lock but inside the lifecycle stripe:
+            # subscribers cannot re-enter half-mutated state, and a dispatch
+            # clear cannot overtake this event.
+            bus.publish(
+                f"terminal.{terminal_id}.status",
+                {
+                    "status": current.value if current is not None else "unknown",
+                    "runtime_failure": payload,
+                },
+            )
+
     def _spawn_tracked(self, loop, coro) -> None:
         """Create a task on ``loop`` and hold a strong reference until it
         finishes, so asyncio's weak task references can't GC it mid-run."""
@@ -905,28 +1016,26 @@ class StatusMonitor:
         and CLI-launch keystrokes). Without this, a previously-latched
         IDLE/COMPLETED would block the genuine PROCESSING transition.
         """
-        with self._lock:
-            self._allow_processing_revert[terminal_id] = True
-            # A new turn is starting: whatever ready state a stale-PROCESSING capture saw
-            # before this input no longer describes the terminal. Left armed, that candidate
-            # could be "confirmed" by a single post-input read and latch ready against the
-            # new turn's genuine PROCESSING. The generation bump additionally invalidates
-            # any capture verdict already CONFIRMED but not yet applied — an in-flight
-            # get_status() that sampled the pane before this input must not stamp its
-            # stale verdict over the new turn (and consume the revert arm just set).
-            self._pending_stale_capture.pop(terminal_id, None)
-            self._confirmed_stale_capture_commit.pop(terminal_id, None)
-            self._capture_generation[terminal_id] = self._capture_generation.get(terminal_id, 0) + 1
-            # ``_idle_from_completed`` is deliberately NOT cleared here. The marker
-            # says the current IDLE is a previous COMPLETED with its box scrolled
-            # off, and arming does not change what is on screen. Clearing it on
-            # every arm made the flap guard cover only the first attempt: after a
-            # swallowed Enter the deferred path re-sends the task, that re-send
-            # arms again, and a repaint of the startup completion box then
-            # re-stamped the old COMPLETED past the redelivery's boundary and
-            # confirmed a task that never ran. Any stamped transition still
-            # clears it, and a post-init IDLE never carries it, so a fresh
-            # worker's first IDLE -> COMPLETED is still earned.
+        with self._runtime_failure_lock(terminal_id):
+            with self._lock:
+                self._allow_processing_revert[terminal_id] = True
+                # A new turn invalidates every pane/runtime verdict sampled before
+                # this boundary, even when no new provider output has arrived.
+                self._pending_stale_capture.pop(terminal_id, None)
+                self._confirmed_stale_capture_commit.pop(terminal_id, None)
+                self._capture_generation[terminal_id] = (
+                    self._capture_generation.get(terminal_id, 0) + 1
+                )
+                # Clear memory regardless of whether this process observed the
+                # original failure; durable truth may have survived a restart.
+                self._runtime_failures.pop(terminal_id, None)
+                # ``_idle_from_completed`` deliberately survives arming. It
+                # identifies the same old completion box across a redelivery.
+            try:
+                update_terminal_runtime_failure(terminal_id, None)
+            except Exception as exc:  # noqa: BLE001 - clear is best-effort
+                logger.warning(f"Failed to clear runtime failure for {terminal_id}: {exc}")
+
         if assume_processing:
             # Optimistic dispatch latch only; this is not provider evidence and
             # must not authorize stale-pane recovery for the new generation.
@@ -1027,6 +1136,7 @@ class StatusMonitor:
             self._output_generation.pop(terminal_id, None)
             self._status_generation.pop(terminal_id, None)
             self._idle_from_completed.pop(terminal_id, None)
+            self._runtime_failures.pop(terminal_id, None)
             handle = self._quiesce_handle.pop(terminal_id, None)
         self._cancel_quiesce_handle(handle)
 
@@ -1038,27 +1148,41 @@ class StatusMonitor:
         ``terminal_id`` (e.g. Kiro's TUI -> ``--legacy-ui`` fallback). Without
         this, the retry re-derives status from a buffer still full of stale bytes
         from the failed first attempt and can spuriously time out.
+
+        A relaunch IS a genuinely new dispatch lifecycle: any prior structured
+        runtime failure belongs to the previous mode and is cleared here (and
+        in the DB) — restart of the whole CLI is a new lifecycle.
         """
-        with self._lock:
-            self._buffers[terminal_id] = ""
-            self._last_status.pop(terminal_id, None)
-            self._processing_generation.pop(terminal_id, None)
-            self._allow_processing_revert.pop(terminal_id, None)
-            self._midburst_probe_at.pop(terminal_id, None)
-            # Drop the rendered screen too so the relaunched CLI mode is
-            # detected against a fresh viewport, not the failed attempt's.
-            self._screens.pop(terminal_id, None)
-            self._bursting.pop(terminal_id, None)
-            self._recheck_cache.pop(terminal_id, None)
-            self._last_stale_capture_check.pop(terminal_id, None)
-            self._buffer_changed_at.pop(terminal_id, None)
-            self._pending_stale_capture.pop(terminal_id, None)
-            self._confirmed_stale_capture_commit.pop(terminal_id, None)
-            self._capture_generation.pop(terminal_id, None)
-            self._output_generation.pop(terminal_id, None)
-            self._status_generation.pop(terminal_id, None)
-            self._idle_from_completed.pop(terminal_id, None)
-            handle = self._quiesce_handle.pop(terminal_id, None)
+        with self._runtime_failure_lock(terminal_id):
+            with self._lock:
+                self._runtime_failures.pop(terminal_id, None)
+                self._buffers[terminal_id] = ""
+                self._last_status.pop(terminal_id, None)
+                self._processing_generation.pop(terminal_id, None)
+                self._allow_processing_revert.pop(terminal_id, None)
+                self._midburst_probe_at.pop(terminal_id, None)
+                # Drop the rendered screen too so the relaunched CLI mode is
+                # detected against a fresh viewport, not the failed attempt's.
+                self._screens.pop(terminal_id, None)
+                self._bursting.pop(terminal_id, None)
+                self._recheck_cache.pop(terminal_id, None)
+                self._last_stale_capture_check.pop(terminal_id, None)
+                self._buffer_changed_at.pop(terminal_id, None)
+                self._pending_stale_capture.pop(terminal_id, None)
+                self._confirmed_stale_capture_commit.pop(terminal_id, None)
+                # Increment instead of deleting: an in-flight classifier may
+                # have sampled zero before reset and must not see zero again.
+                self._capture_generation[terminal_id] = (
+                    self._capture_generation.get(terminal_id, 0) + 1
+                )
+                self._output_generation.pop(terminal_id, None)
+                self._status_generation.pop(terminal_id, None)
+                self._idle_from_completed.pop(terminal_id, None)
+                handle = self._quiesce_handle.pop(terminal_id, None)
+            try:
+                update_terminal_runtime_failure(terminal_id, None)
+            except Exception as exc:  # noqa: BLE001 - clear is best-effort
+                logger.warning(f"Failed to clear runtime failure for {terminal_id}: {exc}")
         self._cancel_quiesce_handle(handle)
 
     def get_status(self, terminal_id: str) -> TerminalStatus:
@@ -1445,6 +1569,20 @@ class StatusMonitor:
         """Get accumulated output buffer for a terminal."""
         with self._lock:
             return self._buffers.get(terminal_id, "")
+
+    def get_runtime_failure(self, terminal_id: str) -> Optional[dict]:
+        """Return the last structured runtime failure published for ``terminal_id``.
+
+        Reads the in-memory projection only. The durable source (the DB
+        ``runtime_failure`` column) survives a restart and is what the public
+        terminal projection reports; this accessor is for in-process callers
+        (``agent_step`` raising a structured
+        :class:`StepExecutionError`, the switch-account flow) that need the
+        verdict of the CURRENT process's detection boundary, not history.
+        """
+        with self._lock:
+            failure = self._runtime_failures.get(terminal_id)
+        return dict(failure) if failure else None
 
     def probe_execution_evidence(self, terminal_id: str, provider) -> bool:
         """Atomically inspect current-generation execution evidence.

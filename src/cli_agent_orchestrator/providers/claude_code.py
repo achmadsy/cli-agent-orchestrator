@@ -11,7 +11,7 @@ import stat
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from cli_agent_orchestrator.models.agent_profile import AgentProfile
@@ -19,7 +19,11 @@ if TYPE_CHECKING:
 from cli_agent_orchestrator.agent_plugins.mcp_delivery import with_plugin_mcp as _with_plugin_mcp
 from cli_agent_orchestrator.backends.registry import get_backend
 from cli_agent_orchestrator.constants import CAO_HOME_DIR
-from cli_agent_orchestrator.models.terminal import TerminalInputBlockedError, TerminalStatus
+from cli_agent_orchestrator.models.terminal import (
+    RUNTIME_FAILURE_MESSAGE_MAX,
+    TerminalInputBlockedError,
+    TerminalStatus,
+)
 from cli_agent_orchestrator.providers.base import BaseProvider
 from cli_agent_orchestrator.services.settings_service import get_server_settings
 from cli_agent_orchestrator.utils import agent_profiles
@@ -253,6 +257,37 @@ NEW_TUI_SPINNER_PATTERN = r"[✶✢✽✻✳·*][^\n]*ing…"
 # ("* Remember to deploy…") or the version footer ("· latest: … update…")
 # sitting directly above the box from being misread as a live spinner.
 NEW_TUI_BOX_SPINNER_PATTERN = re.compile(r"^[ \t]*[✶✢✽✻✳·*][ \t]+\w*ing\b.*…")
+
+# Response-line API error banner. Anchored to line start + the exact
+# "API Error" literal; a Markdown quote of it inside a bullet/fence never
+# starts the line with the plain literal after Claude's own bullet prefix.
+RUNTIME_FAILURE_API_ERROR_PATTERN = re.compile(r"(?m)^API Error:[^\n]*\n?")
+# The retry/attempt continuation Claude paints NEXT to a banner. Recognized
+# only together with banner evidence above — never a standalone signal.
+_run_retry_re = re.compile(r"Retrying\b[^\n]*", re.IGNORECASE)
+
+
+def _bound_failure_message(text: str) -> str:
+    """Bound a provider-owned failure message for persistence."""
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > RUNTIME_FAILURE_MESSAGE_MAX:
+        return text[: RUNTIME_FAILURE_MESSAGE_MAX - 1].rstrip() + "…"
+    return text
+
+
+# Claude usage-limit notice. Require the reset clause so the bare word
+# "limit" can never fire, and require the sentence to start the line.
+RUNTIME_FAILURE_LIMIT_REACHED_PATTERN = re.compile(
+    r"(?m)^(?:Claude usage limit reached|"
+    r"Weekly limit reached|"
+    r"You've (?:hit|used) your (?:weekly |)usage limit|"
+    r"Approaching \S+ usage limit"
+    r")[^\n]*"
+)
+# The reset/slash-commands that ride along with the notice.
+RUNTIME_FAILURE_LIMIT_CHROME_PATTERN = re.compile(
+    r"(?:resets?\s+(?:[A-Z][a-z]{1,2}\s+\d{1,2}|\d)|will reset at|/upgrade\b|/model\b)"
+)
 
 
 class ClaudeCodeProvider(BaseProvider):
@@ -1374,8 +1409,155 @@ class ClaudeCodeProvider(BaseProvider):
 
         return TerminalStatus.UNKNOWN
 
-    @property
-    def paste_submit_delay(self) -> float:
+    def get_error_message(self, buffer: str) -> Optional[str]:
+        """Return Claude Code's own fatal error chrome for ``buffer``.
+
+        Reuses :meth:`get_runtime_failure`'s banner locator so the ERROR
+        ``_surface_deferred_init_failure`` message carries the same red banner
+        text a human sees in the TUI — never assistant prose that merely
+        quoted it.
+        """
+        failure = self.get_runtime_failure(buffer)
+        if failure is not None:
+            return failure["message"]
+        return None
+
+    def get_runtime_failure(self, buffer: str) -> Optional[Dict[str, Any]]:
+        """Classify Claude Code's own runtime failure chrome (429 / quota).
+
+        Provider-owned (#runtime): only this module can tell Claude Code's
+        error chrome from assistant prose discussing limits. Anchors:
+
+        - The turn-level banner always begins at column 0 with ``API Error``,
+          rendered case-sensitively by the CLI. Prose that quotes the same
+          sentence virtually always carries leading decoration (a bullet,
+          quote glyph or fence opener with indentation), and a column-0
+          ``⏺``-response line never starts with the literal, so a strict
+          line-start anchor rejects both.
+        - The reach-limit notice renders as a dim standalone sentence at
+          column 0 with Claude's own reset/``/upgrade`` chrome nearby; an
+          assistant answer mentioning a limit never draws that pair.
+        - A stale banner followed by LATER live-completion evidence in the
+          same buffer is superseded: the verdict publishes only while the
+          failure is the newest activity in the reading (a repeated-error
+          retry loop keeps it current forever; the banner itself is the turn's
+          terminal state, and Claude parks it above the ❯ box).
+
+        Returns a ``ProviderRuntimeFailure``-compatible dict; the caller owns
+        bounding and persistence.
+        """
+        if not buffer:
+            return None
+        clean_text = re.sub(ANSI_CODE_PATTERN, "", strip_terminal_escapes(buffer))
+        if not clean_text.strip():
+            return None
+
+        verdict: Optional[Dict[str, Any]] = None
+        newest_failure_end = -1
+
+        # Live-completion evidence: a "✻ <Verb>ed for Ns" summary AFTER the
+        # failure means the terminal moved past that turn — the verdict is
+        # stale, not current. Card processing spinners do NOT supersede: the
+        # retry loop paints a fresh spinner below the banner every attempt,
+        # and reading that as "newer activity" would hide a live failure.
+        newest_completion = 0
+        for m in re.finditer(COMPLETION_SUMMARY_PATTERN, clean_text):
+            newest_completion = max(newest_completion, m.end())
+
+        for match in RUNTIME_FAILURE_API_ERROR_PATTERN.finditer(clean_text):
+            line_end = clean_text.find("\n", match.start())
+            if line_end == -1:
+                line_end = len(clean_text)
+            continuation = clean_text[match.end() : line_end]
+            banner_line = match.group(0).rstrip("\n").rstrip()
+
+            kind = "provider_error"
+            retryable = False
+            retry_after_s: Optional[int] = None
+
+            # Status-code form: "API Error: 429 {json}" / without the colon.
+            code_match = re.match(r"API Error[:\s]+([0-9]{3})\b", banner_line)
+            aborted_match = re.match(r"API Error[:\s]+Request was aborted", banner_line)
+            timeout_match = re.match(r"API Error[:\s]+Request timed out", banner_line)
+            if code_match:
+                code = int(code_match.group(1))
+                if code == 429:
+                    kind = "rate_limited"
+                    retryable = True
+                elif code in (401, 403):
+                    kind = "auth_expired"
+                elif code in (500, 502, 503, 504, 529):
+                    kind = "provider_error"
+                    retryable = True
+            elif re.match(r"API Error[:\s]+(?=would exceed)", banner_line):
+                # Claude Code renders the un-prefixed sentence on its own when
+                # the JSON body is truncated: "API Error: This request would
+                # exceed ... rate limit ...".
+                kind = "rate_limited"
+                retryable = True
+            elif aborted_match:
+                # Aborted mid-turn. Not a quota classification. Retryable only
+                # when Claude itself advertises a retry (the "Retrying
+                # (attempt N/M)" continuation).
+                kind = "provider_error"
+                retryable = bool(_run_retry_re.search(banner_line)) or bool(
+                    _run_retry_re.search(continuation)
+                )
+            elif timeout_match:
+                kind = "provider_error"
+                retryable = True
+
+            if retry_after_s is None:
+                # The retry note may ride on the banner line itself
+                # ("API Error: 529 · Retrying in 2 seconds…") or on the
+                # continuation line below it ("└─ Retrying (attempt 2/5) …").
+                retry_after_line = _run_retry_re.search(banner_line) or _run_retry_re.search(
+                    continuation
+                )
+                if retry_after_line:
+                    retry_after_match = re.search(r"Retrying in[^\d]*(\d+)\s*s", retry_after_line.group(0))
+                    if retry_after_match:
+                        retry_after_s = int(retry_after_match.group(1))
+                        retryable = True
+
+            verdict = {
+                "kind": kind,
+                "message": _bound_failure_message(banner_line),
+                "retryable": retryable,
+                "retry_after_s": retry_after_s,
+                "reset_at": None,
+            }
+            newest_failure_end = line_end
+
+        for notice_match in RUNTIME_FAILURE_LIMIT_REACHED_PATTERN.finditer(clean_text):
+            limit_tail = clean_text[notice_match.start() : notice_match.start() + 400]
+            if not RUNTIME_FAILURE_LIMIT_CHROME_PATTERN.search(limit_tail):
+                continue  # bare limit-literate prose without upgrade/reset chrome
+            line_end = clean_text.find("\n", notice_match.start())
+            if line_end == -1:
+                line_end = len(clean_text)
+            notice_body = clean_text[notice_match.start() : line_end].rstrip()
+            reset_at: Optional[str] = None
+            reset_match = re.search(r"will reset at\s+(.{2,60})", notice_body)
+            if reset_match:
+                reset_at = reset_match.group(1).strip()[:60]
+            verdict = {
+                "kind": "quota_exhausted",
+                "message": _bound_failure_message(notice_body),
+                "retryable": False,
+                "retry_after_s": None,
+                "reset_at": reset_at,
+            }
+            newest_failure_end = line_end
+
+        if verdict is None:
+            return None
+        # Superseded: a completion summary AFTER the failure means the same
+        # buffer has moved past the failing turn — the verdict's render is
+        # stale evidence for a terminal that now shows a finished answer.
+        if newest_completion > newest_failure_end:
+            return None
+        return verdict
         # The newest Claude Code Ink TUI needs noticeably longer than the 0.3s
         # default to settle a bracketed paste before an Enter counts as "submit"
         # rather than a literal newline; a too-early Enter is swallowed and the

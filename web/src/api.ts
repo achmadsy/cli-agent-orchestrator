@@ -108,6 +108,15 @@ export interface Session {
   status: string
 }
 
+export interface RuntimeFailure {
+  kind: 'rate_limited' | 'quota_exhausted' | 'auth_expired' | 'provider_error'
+  message: string
+  retryable: boolean
+  retry_after_s?: number | null
+  reset_at?: string | null
+  observed_generation?: number | null
+}
+
 export interface Terminal {
   id: string
   name: string
@@ -116,6 +125,7 @@ export interface Terminal {
   agent_profile: string | null
   status: string | null
   last_active: string | null
+  runtime_failure?: RuntimeFailure | null
 }
 
 export interface SessionDetail {
@@ -265,6 +275,7 @@ export interface ProviderProfileCapabilities {
   auth_lifecycle: boolean
   quota: boolean
   resume: boolean
+  unavailable_reason?: string | null
 }
 
 export interface ProviderProfile {
@@ -481,6 +492,7 @@ export interface StepInspection {
   reprompted?: number | null
   call_fingerprint?: string | null
   effective_provider?: string | null
+  effective_provider_profile?: string | null
 }
 
 /** Enriched single-run inspection (server RunInspection, FR-5.1). */
@@ -493,6 +505,7 @@ export interface RunInspection {
   finished_at?: string | null
   tier: string
   role_providers?: RoleProviderPolicy
+  role_provider_profiles?: RoleProviderProfilePolicy
   steps: StepInspection[]
 }
 
@@ -692,6 +705,34 @@ export interface PluginInstallBody {
   force?: boolean
 }
 
+// ── Workspace MCP ───────────────────────────────────────────────────────────
+
+export interface WorkspaceMcpInstance {
+  id: string
+  folder_path: string
+  agentic: boolean
+  port: number
+  state_dir: string
+  tmux_socket: string
+  tmux_session: string
+  status: 'starting' | 'running' | 'failed' | 'stopped'
+  tunnel_url?: string | null
+  admin_password?: string | null
+  created_at: string
+  error?: string | null
+}
+
+export interface BrowseDirectoryItem {
+  name: string
+  path: string
+}
+
+export interface BrowseDirectoriesResponse {
+  current_path: string
+  parent_path?: string | null
+  directories: BrowseDirectoryItem[]
+}
+
 export const api = {
   // Agent Profiles & Providers
   listProfiles: () => fetchJSON<AgentProfileInfo[]>('/agents/profiles'),
@@ -795,14 +836,23 @@ export const api = {
     workingDirectory?: string,
     roleProviders?: RoleProviderPolicy,
     providerProfile?: string,
+    roleProviderProfiles?: RoleProviderProfilePolicy,
   ) => fetchJSON<Terminal>(
     `/sessions?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${providerProfile ? `&provider_profile=${encodeURIComponent(providerProfile)}` : ''}${sessionName ? `&session_name=${encodeURIComponent(sessionName)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
-        roleProviders && Object.keys(roleProviders).length > 0
-          ? { metadata: { role_providers: roleProviders } }
+        Object.keys(roleProviders ?? {}).length > 0 ||
+        Object.keys(roleProviderProfiles ?? {}).length > 0
+          ? {
+              ...(roleProviders && Object.keys(roleProviders).length > 0
+                ? { metadata: { role_providers: roleProviders } }
+                : {}),
+              ...(roleProviderProfiles && Object.keys(roleProviderProfiles).length > 0
+                ? { role_provider_profiles: roleProviderProfiles }
+                : {}),
+            }
           : {},
       ),
       timeoutMs: 90000,
@@ -822,6 +872,17 @@ export const api = {
   // Terminals
   getTerminalStatus: (id: string) =>
     fetchJSON<Terminal>(`/terminals/${id}`).then(t => t.status),
+  getTerminal: (id: string) => fetchJSON<Terminal>(`/terminals/${id}`),
+  switchProviderProfile: (id: string, providerProfile: string, continuationNote?: string) =>
+    fetchJSON<{ predecessor_id: string; successor_id: string; status: string }>(
+      `/terminals/${id}/switch-provider-profile`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_profile: providerProfile, continuation_note: continuationNote || undefined }),
+        timeoutMs: 120000,
+      },
+    ),
   getTerminalOutput: (id: string, mode: 'full' | 'last' = 'full') =>
     fetchJSON<{ output: string; mode: string }>(`/terminals/${id}/output?mode=${mode}`),
   sendInput: (id: string, message: string) =>
@@ -1041,5 +1102,24 @@ export const api = {
     fetchJSON<PluginUninstallOutcome>(
       `/plugins/${encodeURIComponent(name)}${purgeData ? '?purge_data=true' : ''}`,
       { method: 'DELETE', timeoutMs: 60000 },
+    ),
+
+  // Workspace MCP (folder-backed Quick Tunnel instances)
+  listWorkspaceMcps: () => fetchJSON<WorkspaceMcpInstance[]>('/workspace-mcp'),
+  getWorkspaceMcp: (id: string) => fetchJSON<WorkspaceMcpInstance>(`/workspace-mcp/${encodeURIComponent(id)}`),
+  createWorkspaceMcp: (folderPath: string, agentic = true) =>
+    fetchJSON<WorkspaceMcpInstance>('/workspace-mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder_path: folderPath, agentic }),
+      timeoutMs: 70000,
+    }),
+  deleteWorkspaceMcp: (id: string) =>
+    fetchJSON<WorkspaceMcpInstance>(`/workspace-mcp/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  browseDirectories: (path?: string) =>
+    fetchJSON<BrowseDirectoriesResponse>(
+      `/workspace-mcp/browse-directories${path ? `?path=${encodeURIComponent(path)}` : ''}`,
     ),
 }

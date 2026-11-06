@@ -32,7 +32,10 @@ def load_ansi_fixture(name: str) -> str:
 
 
 def make_provider(
-    agent_profile: str = "developer", model: str | None = None
+    agent_profile: str = "developer",
+    model: str | None = None,
+    provider_profile: str | None = None,
+    provider_action: str | None = None,
 ) -> OpenCodeCliProvider:
     return OpenCodeCliProvider(
         terminal_id="test-tid",
@@ -40,6 +43,8 @@ def make_provider(
         window_name="window-0",
         agent_profile=agent_profile,
         model=model,
+        provider_profile=provider_profile,
+        provider_action=provider_action,
     )
 
 
@@ -564,6 +569,43 @@ class TestInitialize:
         assert "TERM=xterm-256color" in sent_cmd
         assert "OPENCODE_CONFIG=" in sent_cmd
         assert "OPENCODE_CONFIG_DIR=" in sent_cmd
+
+    @patch("cli_agent_orchestrator.services.provider_profile_store.profile_home")
+    @patch("cli_agent_orchestrator.services.provider_profile_store.get_provider_profile")
+    def test_profiled_launch_uses_isolated_xdg_home(
+        self, mock_get_profile, mock_profile_home, tmp_path
+    ):
+        mock_get_profile.return_value.provider.value = "opencode_cli"
+        mock_profile_home.return_value = tmp_path / "opencode-work"
+        with patch(
+            "cli_agent_orchestrator.constants.CAO_HOME_DIR", tmp_path / "cao"
+        ):
+            provider = make_provider(provider_profile="opencode-work")
+
+        command = provider._build_launch_command()
+
+        assert f"XDG_DATA_HOME={tmp_path / 'opencode-work' / 'data'}" in command
+        assert f"XDG_CONFIG_HOME={tmp_path / 'opencode-work' / 'config'}" in command
+        assert "OPENCODE_CONFIG_CONTENT" not in command
+
+    @patch("cli_agent_orchestrator.services.provider_profile_store.profile_home")
+    @patch("cli_agent_orchestrator.services.provider_profile_store.get_provider_profile")
+    def test_profiled_auth_action_uses_provider_login(
+        self, mock_get_profile, mock_profile_home, tmp_path
+    ):
+        mock_get_profile.return_value.provider.value = "opencode_cli"
+        mock_profile_home.return_value = tmp_path / "opencode-work"
+        with patch(
+            "cli_agent_orchestrator.constants.CAO_HOME_DIR", tmp_path / "cao"
+        ):
+            provider = make_provider(
+                provider_profile="opencode-work", provider_action="auth_login"
+            )
+
+        command = provider._build_launch_command()
+
+        assert "unset ANTHROPIC_API_KEY OPENAI_API_KEY OPENCODE_CONFIG_CONTENT" in command
+        assert command.endswith("opencode providers login")
 
 
 # ---------------------------------------------------------------------------

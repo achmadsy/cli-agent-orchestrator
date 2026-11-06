@@ -64,6 +64,18 @@ describe('PreRunModal provider modes', () => {
       { name: 'claude_code', binary: 'claude', installed: true },
       { name: 'codex', binary: 'codex', installed: true },
     ])
+    vi.spyOn(api, 'listProviderProfiles').mockResolvedValue([
+      {
+        id: 'claude-a', label: 'Claude A', provider: 'claude_code',
+        login_method: 'native_profile', settings: {}, is_default: false,
+        auth_state: 'authenticated', created_at: '', updated_at: '',
+      },
+      {
+        id: 'claude-b', label: 'Claude B', provider: 'claude_code',
+        login_method: 'native_profile', settings: {}, is_default: false,
+        auth_state: 'unconfigured', created_at: '', updated_at: '',
+      },
+    ]) as any
     vi.spyOn(api, 'listWorkflowRuns').mockResolvedValue([])
     vi.spyOn(api, 'inspectWorkflowRun').mockResolvedValue({ run_id: 'r1', workflow_name: 'demo', state: 'running', started_at: '', tier: 'yaml', steps: [] })
     vi.spyOn(api, 'getWorkflowRunEvents').mockResolvedValue({ events: [], gaps: [], next_after_seq: null })
@@ -73,9 +85,9 @@ describe('PreRunModal provider modes', () => {
     const submit = vi.spyOn(api, 'submitWorkflowRun').mockResolvedValue({ run_id: 'r1', state: 'running' })
     render(<PreRunModal open workflowName="demo" onClose={() => {}} onStarted={() => {}} />)
     await waitFor(() => expect(screen.getByText('Provider impact')).toBeInTheDocument())
-    fireEvent.change(screen.getByLabelText(/count/i), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('count'), { target: { value: '3' } })
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('demo', { count: 3 }, undefined, {}))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('demo', { count: 3 }, undefined, {}, undefined))
   })
 
   it('same CLI applies all recognized roles', async () => {
@@ -83,10 +95,40 @@ describe('PreRunModal provider modes', () => {
     render(<PreRunModal open workflowName="demo" onClose={() => {}} onStarted={() => {}} />)
     await waitFor(() => expect(screen.getByText('Same CLI for roles')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Same CLI for roles'))
-    fireEvent.change(screen.getByLabelText(/count/i), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('count'), { target: { value: '3' } })
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
     await waitFor(() => expect(submit).toHaveBeenCalledWith('demo', { count: 3 }, undefined, {
       supervisor: 'claude_code', developer: 'claude_code', reviewer: 'claude_code',
-    }))
+    }, undefined))
+  })
+
+  it('unauthenticated account profiles are omitted from the run submission', async () => {
+    const submit = vi.spyOn(api, 'submitWorkflowRun').mockResolvedValue({ run_id: 'r1', state: 'running' })
+    render(<PreRunModal open workflowName="demo" onClose={() => {}} onStarted={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Customize by role')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('Customize by role'))
+    // The developer account trigger appears once both the spec and the
+    // profile list finish loading (role = developer authors claude_code).
+    const developerAccount = await screen.findByRole('button', {
+      name: /account for developer/i,
+    })
+    expect(developerAccount).toBeInTheDocument()
+
+    // Open the account menu: Claude A is selectable, Claude B (unverified)
+    // is listed but disabled.
+    fireEvent.click(developerAccount)
+    const menu = await screen.findByTestId('custom-select-menu')
+    const optionFor = (label: string) =>
+      Array.from(menu.querySelectorAll('button')).find(b => b.textContent?.includes(label))
+    expect(optionFor('Claude A')?.disabled).toBe(false)
+    expect(optionFor('Claude B')?.disabled).toBe(true)
+
+    // Pick Claude A and submit: the fifth argument carries the account policy.
+    fireEvent.click(optionFor('Claude A')!)
+    fireEvent.change(screen.getByLabelText('count'), { target: { value: '3' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
+    await waitFor(() => expect(submit).toHaveBeenCalled())
+    expect(submit.mock.calls[0][4]).toEqual({ developer: 'claude-a' })
   })
 })

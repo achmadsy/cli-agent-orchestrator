@@ -303,6 +303,15 @@ if ENABLE_WORKING_DIRECTORY:
                 "the supervisor terminal's role-provider policy and profile defaults."
             ),
         ),
+        provider_profile: Optional[str] = Field(
+            default=None,
+            description=(
+                "Explicit provider-account profile ID (e.g. 'claude-work') for this "
+                "worker's CLI account. Takes precedence over the supervisor terminal's "
+                "role-provider-profile policy. Must exist on the target node, belong "
+                "to this worker's effective provider, and be authenticated."
+            ),
+        ),
         use_worktree: bool = Field(
             default=False,
             description=(
@@ -389,6 +398,8 @@ if ENABLE_WORKING_DIRECTORY:
         }
         if provider is not None:
             kwargs["provider"] = provider
+        if provider_profile is not None:
+            kwargs["provider_profile"] = provider_profile
         return await _handoff_impl(
             agent_profile, message, timeout, working_directory, **kwargs
         )
@@ -416,6 +427,15 @@ else:
             description=(
                 "Explicit provider override for this worker. Takes precedence over "
                 "the supervisor terminal's role-provider policy and profile defaults."
+            ),
+        ),
+        provider_profile: Optional[str] = Field(
+            default=None,
+            description=(
+                "Explicit provider-account profile ID (e.g. 'claude-work') for this "
+                "worker's CLI account. Takes precedence over the supervisor terminal's "
+                "role-provider-profile policy. Must exist on the target node, belong "
+                "to this worker's effective provider, and be authenticated."
             ),
         ),
         use_worktree: bool = Field(
@@ -491,6 +511,8 @@ else:
         }
         if provider is not None:
             kwargs["provider"] = provider
+        if provider_profile is not None:
+            kwargs["provider_profile"] = provider_profile
         return await _handoff_impl(agent_profile, message, timeout, None, **kwargs)
 
 
@@ -600,6 +622,15 @@ if ENABLE_WORKING_DIRECTORY:
                 "the supervisor terminal's role-provider policy and profile defaults."
             ),
         ),
+        provider_profile: Optional[str] = Field(
+            default=None,
+            description=(
+                "Explicit provider-account profile ID (e.g. 'claude-work') for this "
+                "worker's CLI account. Takes precedence over the supervisor terminal's "
+                "role-provider-profile policy. Must exist on the target node, belong "
+                "to this worker's effective provider, and be authenticated."
+            ),
+        ),
         use_worktree: bool = Field(
             default=False,
             description=(
@@ -624,6 +655,8 @@ if ENABLE_WORKING_DIRECTORY:
         }
         if provider is not None:
             kwargs["provider"] = provider
+        if provider_profile is not None:
+            kwargs["provider_profile"] = provider_profile
         return _assign_impl(agent_profile, message, working_directory, **kwargs)
 
 else:
@@ -643,6 +676,15 @@ else:
             description=(
                 "Explicit provider override for this worker. Takes precedence over "
                 "the supervisor terminal's role-provider policy and profile defaults."
+            ),
+        ),
+        provider_profile: Optional[str] = Field(
+            default=None,
+            description=(
+                "Explicit provider-account profile ID (e.g. 'claude-work') for this "
+                "worker's CLI account. Takes precedence over the supervisor terminal's "
+                "role-provider-profile policy. Must exist on the target node, belong "
+                "to this worker's effective provider, and be authenticated."
             ),
         ),
         use_worktree: bool = Field(
@@ -669,6 +711,8 @@ else:
         }
         if provider is not None:
             kwargs["provider"] = provider
+        if provider_profile is not None:
+            kwargs["provider_profile"] = provider_profile
         return _assign_impl(agent_profile, message, None, **kwargs)
 
 

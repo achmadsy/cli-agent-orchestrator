@@ -82,6 +82,69 @@ cao workflow validate ~/.aws/cli-agent-orchestrator/workflows/workflow.py
 (disallowed/dynamic imports, nondeterminism warnings) and exits `0` for this example
 (`pass`) before any run is ever submitted.
 
+## Route roles to named provider accounts
+
+Create and authenticate account profiles first (profile IDs stay local to this CAO node;
+credentials never enter workflow payloads):
+
+1. Open CAO Web **Provider Profiles**.
+2. Under **Add provider account**, choose `claude_code`, enter account profile ID
+   `claude-work` and display name `Claude Work`, then select **Add account profile**.
+3. Select **Login** on the new profile and complete sign-in in the isolated login terminal.
+4. Select **Check login**; the profile must read `authenticated` before workflow launch.
+
+Provider-profile create/login currently lives in Web and the REST API
+(`/agents/provider-profiles` and `/agents/provider-profiles/{id}/auth/login`); no
+`cao provider-profile` CLI command exists.
+
+Then route this example's `reviewer` role explicitly:
+
+```bash
+cao workflow run workflow \
+  --input target=myapp \
+  --role-provider reviewer=claude_code \
+  --role-provider-profile reviewer=claude-work
+```
+
+`--role-provider-profile ROLE=PROFILE_ID` is repeatable. IDs name CAO provider-account
+profiles, not provider CLIs, and each ID must belong to the role's effective provider.
+REST callers send the exact field below:
+
+```json
+{
+  "name_or_path": "workflow",
+  "inputs": {"target": "myapp"},
+  "role_providers": {
+    "supervisor": "claude_code",
+    "developer": "claude_code",
+    "reviewer": "claude_code"
+  },
+  "role_provider_profiles": {
+    "supervisor": "claude-supervisor",
+    "developer": "claude-work",
+    "reviewer": "claude-review"
+  }
+}
+```
+
+Resolution precedence is: explicit call/step profile, run role account policy,
+`AgentProfile.providerProfile`, provider default. Normal retry and resume keep the frozen
+per-step profile. Account rotation never happens automatically. For a structured
+`rate_limited` or `quota_exhausted` workflow failure, choose a replacement account in Web
+and resume with an explicit failed-step override:
+
+```json
+{
+  "provider_profile_overrides": {
+    "check-myapp-security": "claude-review-backup"
+  }
+}
+```
+
+CAO accepts that override only for the failed step, only with provider-owned quota/rate-limit
+evidence, and only when the target profile belongs to the frozen provider and is authenticated.
+Wrong-provider, unknown, unauthenticated, non-failed, and non-quota overrides are rejected.
+
 ## Run, observe, cancel
 
 ```bash

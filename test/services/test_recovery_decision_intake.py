@@ -94,8 +94,8 @@ STEP_B = "call-2"
 STEP_C = "call-3"
 TS = "2026-08-16T00:00:00Z"
 
-FP_CALL = "v2:" + "a" * 64  # this call's fingerprint, current scheme
-FP_OTHER_V2 = "v2:" + "b" * 64  # a stored current-scheme value that DIFFERS
+FP_CALL = "v3:" + "a" * 64  # this call's fingerprint, current scheme
+FP_OTHER_V2 = "v3:" + "b" * 64  # a stored current-scheme value that DIFFERS
 FP_LEGACY = "c" * 64  # the three-field scheme: a bare digest, no prefix
 
 ENVELOPE = StepResultEnvelope(
@@ -330,7 +330,7 @@ class TestRerunAuthorisesReExecution:
         apply_decisions(RUN, {STEP: "rerun"})
         assert decide(RUN, STEP, FP_CALL, RecoveryPolicy.MANUAL).verdict is ReplayVerdict.EXECUTE
 
-        new_fingerprint = "v2:" + "d" * 64
+        new_fingerprint = "v3:" + "d" * 64
         workflow_journal.begin_step(RUN, STEP, "2026-08-16T00:00:01Z", new_fingerprint)
 
         row = _all_columns()
@@ -725,7 +725,7 @@ class TestOneDecisionAuthorisesOneAttempt:
         apply_decisions(RUN, {STEP: "rerun"})
         assert _state_of() == StepState.RERUN_AUTHORIZED.value
 
-        workflow_journal.begin_step(RUN, STEP, "2026-08-16T00:00:01Z", "v2:" + "e" * 64)
+        workflow_journal.begin_step(RUN, STEP, "2026-08-16T00:00:01Z", "v3:" + "e" * 64)
 
         assert _state_of() == StepState.RUNNING.value
         assert _state_of() != StepState.RERUN_AUTHORIZED.value

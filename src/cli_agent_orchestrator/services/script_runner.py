@@ -1287,8 +1287,107 @@ async def run_script_workflow_prepared(
 # ---------------------------------------------------------------------------
 # A2 — resume_script_run (S2 flow, M3, US-C1/C2)
 # ---------------------------------------------------------------------------
+def _validate_provider_profile_overrides(
+    run_id: str, overrides: Mapping[str, str]
+) -> Dict[str, tuple[str, str]]:
+    """Validate explicit quota-recovery account switches without writing.
+
+    Returns ``step_id -> (profile_id, effective_provider)``. Every entry is
+    validated before any override is applied, so a bad map is atomic from the
+    operator's perspective. Runtime-failure evidence comes only from provider-
+    owned structured journal fields; terminal text is never parsed here.
+    """
+    import json as _json
+
+    from cli_agent_orchestrator.providers.manager import provider_manager
+    from cli_agent_orchestrator.services.provider_profile_store import get_provider_profile
+
+    steps = {step.step_id: step for step in workflow_journal.get_steps(run_id)}
+    events = workflow_journal.read_events(run_id)
+    validated: Dict[str, tuple[str, str]] = {}
+
+    for step_id, profile_id in overrides.items():
+        step = steps.get(step_id)
+        if step is None:
+            raise ValueError(f"run '{run_id}' has no step '{step_id}'")
+        if step.state != StepState.FAILED.value:
+            raise ValueError(
+                f"run '{run_id}' step '{step_id}' is '{step.state}', not failed; "
+                "provider_profile_overrides only recover failed quota/rate-limit steps"
+            )
+
+        failure_kind: Optional[str] = None
+        for event in reversed(events):
+            if event.step_id != step_id or not event.runtime_failure_json:
+                continue
+            try:
+                failure = _json.loads(event.runtime_failure_json)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(failure, dict):
+                value = failure.get("kind")
+                if isinstance(value, str):
+                    failure_kind = value
+                    break
+        if failure_kind not in {"rate_limited", "quota_exhausted"}:
+            raise ValueError(
+                f"run '{run_id}' step '{step_id}' has no structured quota/rate-limit "
+                "failure eligible for an account override"
+            )
+
+        effective_provider = step.effective_provider
+        if not effective_provider:
+            raise ValueError(
+                f"run '{run_id}' step '{step_id}' has no frozen effective provider"
+            )
+        profile = get_provider_profile(profile_id)
+        if profile.provider.value != effective_provider:
+            raise ValueError(
+                f"provider profile '{profile_id}' belongs to '{profile.provider.value}', "
+                f"not step '{step_id}' provider '{effective_provider}'"
+            )
+        if profile.auth_state != "authenticated":
+            raise ValueError(
+                f"provider profile '{profile_id}' is '{profile.auth_state}', not 'authenticated'"
+            )
+        if not provider_manager.is_profile_supported(effective_provider):
+            raise ValueError(
+                f"provider '{effective_provider}' does not support account profiles"
+            )
+        validated[step_id] = (profile_id, effective_provider)
+
+    return validated
+
+
+def _apply_provider_profile_overrides(
+    run_id: str, validated: Mapping[str, tuple[str, str]]
+) -> None:
+    """Apply validated overrides and append an immutable operator audit event."""
+    for step_id, (profile_id, provider) in validated.items():
+        workflow_journal.override_step_effective_provider_profile(
+            run_id, step_id, profile_id
+        )
+        seq = max(
+            workflow_journal.persisted_high_water(run_id),
+            workflow_journal.max_event_seq(run_id),
+        ) + 1
+        workflow_journal.persist_high_water(run_id, seq)
+        workflow_journal.append_event(
+            run_id,
+            seq,
+            "step.provider_profile.overridden",
+            event_schema_version=1,
+            ts=_now(),
+            step_id=step_id,
+            provider=provider,
+            reason=f"operator selected provider profile '{profile_id}' for quota recovery",
+        )
+
+
 async def resume_script_run(
-    run_id: str, decisions: Optional[Mapping[str, str]] = None
+    run_id: str,
+    decisions: Optional[Mapping[str, str]] = None,
+    provider_profile_overrides: Optional[Mapping[str, str]] = None,
 ) -> WorkflowRunResult:
     """Resume a crashed/failed/cancelled script run from its journal (A2, S2).
 
@@ -1367,6 +1466,7 @@ async def resume_script_run(
     # review, F6). Declared BEFORE the ``try`` so the ``finally`` can always read it, empty for
     # the ordinary no-decision resume, which therefore takes no extra read and no extra write.
     granted: Dict[str, str] = {}
+    validated_profile_overrides: Dict[str, tuple[str, str]] = {}
     try:
         # --- Gate 3: terminal-state / tier resumability (delegated to U3) -> 409 ---
         if not _is_resumable_for_tier(row):
@@ -1418,6 +1518,16 @@ async def resume_script_run(
         # whose approval is perfectly valid for what it actually froze.
         approval_gate.ensure_plan_approved(tier=row.tier, manifest_json=row.manifest_json)
 
+        # Validate the account map after every admission gate and before any
+        # write. This resume already owns the drive claim, so no concurrent
+        # resume can race its account choice into another drive.
+        if provider_profile_overrides:
+            validated_profile_overrides = await asyncio.to_thread(
+                _validate_provider_profile_overrides,
+                run_id,
+                provider_profile_overrides,
+            )
+
         # --- The human's recovery decisions (issue #583, FR-7). NOT a gate: admission
         # is over, this resume holds the drive claim, and nothing has been spawned yet.
         # That position is the requirement — see the docstring. A ValueError here
@@ -1429,6 +1539,17 @@ async def resume_script_run(
         # not consume is taken back when the drive ends — however it ends.
         if decisions:
             granted = await asyncio.to_thread(workflow_journal.apply_decisions, run_id, decisions)
+
+        # Account override is explicit operator input and durable for subsequent
+        # retries/restarts. Ordinary resume takes no branch and keeps the frozen
+        # profile unchanged. Apply before generation bump + spawn so the resumed
+        # child sees it on its first run-step call.
+        if validated_profile_overrides:
+            await asyncio.to_thread(
+                _apply_provider_profile_overrides,
+                run_id,
+                validated_profile_overrides,
+            )
 
         # Unit A (FR-A6, ADR-3, REL-A1): re-deliver the RESOLVED inputs journaled
         # at the original run VERBATIM — read row.inputs_json and hand it to

@@ -70,6 +70,37 @@ PROCESSING_PATTERN = r"\b(thinking|working|running|executing|processing|analyzin
 WAITING_PROMPT_PATTERN = r"^(?:Approve|Allow)\b.*\b(?:y/n|yes/no|yes|no)\b"
 ERROR_PATTERN = r"^(?:Error:|ERROR:|Traceback \(most recent call last\):|panic:)"
 
+# ---------------------------------------------------------------------------
+# Runtime-failure chrome (#runtime). Codex shows a hard quota/rate-limit wall
+# as a TUI toast/notice, not an "Error:" row; the shapes (codex-cli 0.16x)
+# render as a box above the composer:
+#
+#   ⚠ You've hit your usage limit. Your limit will reset at 4:19 PM (PDT)
+#     Upgrade to Plus to continue using Codex. (runs `codex upgrade`)
+#     > Retry  × Cancel
+#
+# and an auth rejection carries a signed-out landing:
+#   ✗ Not logged in ... error: getting auth json was not valid JSON
+# Stream errors (network/429 inside the API stream) surface as a turn-fatal
+# banner at column 0: "stream error: stream ended without ...; retrying" or
+# an "✗ ..." error cell (ERROR_CELL_PATTERN). Quota walls carry the words
+# "usage limit" or "rate limit" together — never quoted as prose.
+# ---------------------------------------------------------------------------
+RUNTIME_FAILURE_USAGE_LIMIT_PATTERN = re.compile(
+    r"(?m)^[^\S\n]*(?:[⚠✗]|■)[^\S\n]+[^\n]*\b(?:usage|rate)[- ]limit\b[^\n]*"
+)
+RUNTIME_FAILURE_LIMIT_CHROME_PATTERN = re.compile(
+    r"(?m)^[^\S\n]*(?:Your limit will reset at|Upgrade to|resets in|Try again at)[^\n]*"
+)
+
+
+def _bound_codex_failure_message(text: str, max_len: int) -> str:
+    """Bound a provider-owned Codex failure message for persistence."""
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_len:
+        return text[: max_len - 1].rstrip() + "…"
+    return text
+
 # Codex TUI footer indicators (status bar below the idle prompt).
 # Used to detect when the bottom lines contain TUI chrome rather than user input.
 # v0.110 and earlier: "? for shortcuts" and "N% context left"
@@ -1028,6 +1059,10 @@ class ProviderError(Exception):
 class CodexProvider(BaseProvider):
     """Provider for Codex CLI tool integration."""
 
+    supports_profiles = True
+    profile_mode = "isolated_home"
+    supports_auth_lifecycle = True
+
     @classmethod
     def honors_model(
         cls,
@@ -1066,11 +1101,26 @@ class CodexProvider(BaseProvider):
         allowed_tools: Optional[list] = None,
         skill_prompt: Optional[str] = None,
         model: Optional[str] = None,
+        provider_profile: Optional[str] = None,
+        provider_action: Optional[str] = None,
     ):
         """Initialize provider state."""
         super().__init__(terminal_id, session_name, window_name, allowed_tools, skill_prompt)
         self._initialized = False
         self._agent_profile = agent_profile
+        self._provider_profile = provider_profile
+        self._provider_action = provider_action
+        self._codex_home: Optional[Path] = None
+        if provider_profile:
+            from cli_agent_orchestrator.services.provider_profile_store import (
+                get_provider_profile,
+                profile_home,
+            )
+
+            account = get_provider_profile(provider_profile)
+            if account.provider.value != "codex":
+                raise ProviderError(f"Provider profile '{provider_profile}' is not a Codex profile")
+            self._codex_home = profile_home("codex", provider_profile, create=True)
         # Explicit per-call override for profile.model, see _build_codex_command.
         self._model = model
         # The release in the startup banner, and whether it ends each turn with
@@ -1113,6 +1163,15 @@ class CodexProvider(BaseProvider):
         Returns properly escaped shell command string that can be safely sent via tmux.
         Uses codex's -c developer_instructions flag to inject agent system prompts.
         """
+        if self._provider_action == "auth_login":
+            command = shlex.join(["codex", "login"])
+            if self._codex_home is None:
+                return command
+            return (
+                "unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN; "
+                f"export CODEX_HOME={shlex.quote(str(self._codex_home))}; {command}"
+            )
+
         # --yolo (alias for --dangerously-bypass-approvals-and-sandbox)
         # is the default because CAO runs codex non-interactively in tmux
         # where approval prompts would block handoff/assign. Profiles can
@@ -1377,6 +1436,11 @@ class CodexProvider(BaseProvider):
         command = shlex.join(command_parts)
         if developer_instructions_fragment is not None:
             command = f"{command} {developer_instructions_fragment}"
+        if self._codex_home is not None:
+            command = (
+                "unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN; "
+                f"export CODEX_HOME={shlex.quote(str(self._codex_home))}; {command}"
+            )
         return command
 
     async def _handle_trust_prompt(
@@ -1673,6 +1737,10 @@ class CodexProvider(BaseProvider):
             get_backend().send_keys, self.session_name, self.window_name, command
         )
 
+        if self._provider_action == "auth_login":
+            self._initialized = True
+            return True
+
         # Handle workspace trust prompt if it appears (new/untrusted directories).
         # The handler's bounds now come from settings rather than a hard-coded
         # 20.0 that could not be raised without a code change, so an operator on
@@ -1769,6 +1837,108 @@ class CodexProvider(BaseProvider):
 
     def get_status(self, output: str) -> TerminalStatus:
         return self._get_status(output, rendered=False)
+
+    def get_runtime_failure(self, buffer: str) -> Optional[Dict[str, Any]]:
+        """Classify Codex's own usage-limit / auth runtime failure chrome (#runtime).
+
+        Codex renders a hard quota wall as a TUI notice above the composer
+        carrying cost/reset wording ("Your limit will reset at …", "Upgrade to
+        Plus to continue", "Retry × Cancel"). Assistant prose never draws
+        those companion rows. Anchored line-regionally rather than to Codex's
+        per-cell redraw escape stream, so the verdict survives ``°``/cell
+        redraws the way the status detector itself is structured for Codex
+        redraws. Auth-expired is reported only on the chatgpt-signed-shaped
+        login menu correlation (the same shape the status detector reads
+        WAITING_USER_ANSWER for); a plain 401 sentence quoted as prose must
+        not classify.
+
+        Returns a ``ProviderRuntimeFailure``-compatible dict; the caller
+        (StatusMonitor) owns generation validation, bounding and persistence.
+        """
+        from cli_agent_orchestrator.models.terminal import RUNTIME_FAILURE_MESSAGE_MAX as _MAX
+
+        if not buffer:
+            return None
+        clean = strip_terminal_escapes(buffer)
+        if not clean.strip():
+            return None
+
+        verdict: Optional[Dict[str, Any]] = None
+        newest_failure_end = -1
+
+        # The turn-level wall: an error cell row that names a rate/usage limit.
+        # Anchored to Codex's own error-cell glyph so a quoted sentence never
+        # matches, and paired with a Codex reset/upsell line nearby (chrome
+        # evidence) so plain 429 prose that happens to mention "rate limit"
+        # cannot fire either. A bare Advent error cell without companion
+        # reset/upgrade wording is provider_error instead (CLI-internal crash:
+        # different remedy than waiting out a quota doorway).
+        for limit_match in RUNTIME_FAILURE_USAGE_LIMIT_PATTERN.finditer(clean):
+            block_end = clean.find("\n", limit_match.end())
+            if block_end == -1:
+                block_end = len(clean)
+            block = clean[limit_match.start() : min(clean.__len__(), limit_match.end() + 600)]
+            if RUNTIME_FAILURE_LIMIT_CHROME_PATTERN.search(block):
+                kind = "quota_exhausted"
+                retryable = False
+                reset: Optional[str] = None
+                reset_match = re.search(r"(?:Your limit will reset at|resets in)\s+(.{2,60})", block)
+                if reset_match:
+                    reset = reset_match.group(1).strip()[:60]
+            elif self._initialized:
+                # An error-cell row with no companion reset/upgrade line and no
+                # waitable completion footer is Codex's own stream/failure
+                # chrome. Prose quoting an error would carry sibling content,
+                # not bare column-0 cells.
+                kind = "provider_error"
+                retryable = True
+                reset = None
+            else:
+                continue
+
+            verdict = {
+                "kind": kind,
+                "message": _bound_codex_failure_message(
+                    clean[limit_match.start() : block_end].rstrip(), _MAX
+                ),
+                "retryable": retryable,
+                "retry_after_s": None,
+                "reset_at": reset,
+            }
+            newest_failure_end = block_end
+
+        # Chatgpt auth landing: the login menu the status detector already
+        # recognizes (see its own constants module-level). Classify it as an
+        # auth_expired runtime failure ONLY when the CLI is past initialization
+        # — the pre-credential first launch surfaces via WAITING_USER_ANSWER
+        # (operator task) rather than a runtime verdict that would mask that
+        # intentional first-run landing. On an initialized terminal, the menu
+        # re-rendering means credentials are dead (re-auth required before any
+        # further turn will run).
+        if self._initialized:
+            bottom_region = "\n".join(clean.splitlines()[-STARTUP_PROMPT_BOTTOM_LINES:])
+            if LOGIN_MENU_PATTERN in bottom_region and LOGIN_MENU_FOOTER in bottom_region:
+                verdict = {
+                    "kind": "auth_expired",
+                    "message": _bound_codex_failure_message(
+                        "Codex session expired: sign-in menu re-appeared after launch", _MAX
+                    ),
+                    "retryable": False,
+                    "retry_after_s": None,
+                    "reset_at": None,
+                }
+                newest_failure_end = len(clean)
+
+        if verdict is None or newest_failure_end < 0:
+            return None
+
+        # A completed turn after an older quota/error cell makes that cell
+        # scrollback, not current runtime state. Codex completion footers are
+        # provider-owned evidence and safer than generic prose such as "done".
+        newer = clean[newest_failure_end:]
+        if any(re.match(COMPLETION_FOOTER_PATTERN, line) for line in newer.splitlines()):
+            return None
+        return verdict
 
     def _get_status(self, output: str, *, rendered: bool) -> TerminalStatus:
         """Detect the status of ``output``, a rendered screen or the raw stream.

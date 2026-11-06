@@ -119,6 +119,7 @@ from cli_agent_orchestrator.services.memory_gateway import (
 )
 from cli_agent_orchestrator.services.memory_service import MemoryService
 from cli_agent_orchestrator.services.plugin_dispatch import dispatch_plugin_event
+from cli_agent_orchestrator.services.provider_profile_store import get_provider_profile
 from cli_agent_orchestrator.services.session_env import (
     clear_session_env,
     get_session_env,
@@ -1050,6 +1051,7 @@ async def create_terminal(
     idempotency_key: Optional[str] = None,
     claim_id: Optional[str] = None,
     provider_action: Optional[str] = None,
+    switch_predecessor_id: Optional[str] = None,
 ) -> Terminal:
     """Create a new terminal with an initialized CLI agent.
 
@@ -1307,6 +1309,7 @@ async def create_terminal(
             idempotency_key=idempotency_key,
             claim_id=claim_id,
             provider_action=provider_action,
+            switch_predecessor_id=switch_predecessor_id,
             ephemeral_state=state,
         )
     except BaseException as exc:
@@ -1342,6 +1345,7 @@ async def _create_terminal_unguarded(
     idempotency_key: Optional[str] = None,
     claim_id: Optional[str] = None,
     provider_action: Optional[str] = None,
+    switch_predecessor_id: Optional[str] = None,
     *,
     ephemeral_state: _EphemeralLaunchState,
 ) -> Terminal:
@@ -1862,6 +1866,11 @@ async def _create_terminal_unguarded(
                         idempotency_key=idempotency_key,
                         request_fingerprint=request_fingerprint,
                         new_session_incarnation=created_session,
+                        **(
+                            {"switch_predecessor_id": switch_predecessor_id}
+                            if switch_predecessor_id is not None
+                            else {}
+                        ),
                         # The initial message is ACCEPTED the moment this row is
                         # visible, so its outcome starts life as pending in the same
                         # transaction (#566): a restart between here and the deferred
@@ -2040,6 +2049,8 @@ async def _create_terminal_unguarded(
             group=group,
             metadata=metadata,
             deferred_init_failure=None,
+            switch_predecessor_id=switch_predecessor_id,
+            switch_successor_id=None,
             session_incarnation_id=session_incarnation_id,
             status=initial_status,
             last_active=datetime.now(timezone.utc),
@@ -3728,6 +3739,7 @@ def get_terminal(terminal_id: str) -> Dict:
             "metadata": public_metadata,
             "deferred_init_failure": deferred_failure,
             "initial_delivery": metadata.get("initial_delivery"),
+            "runtime_failure": metadata.get("runtime_failure"),
             "session_incarnation_id": metadata.get("session_incarnation_id"),
             "status": status,
             "last_active": metadata["last_active"],
@@ -4679,6 +4691,183 @@ def dismantle_terminal_runtime(
     # short of "exactly DELETED or ABSENT, and every other step succeeded" stays
     # retryable instead of being recorded as reclaimed.
     return runtime_complete
+
+
+# Bounded continuation context for the account-switch handoff (#runtime).
+SWITCH_CONTINUATION_NOTE_MAX = 400
+SWITCH_CONTINUATION_EXCERPT_MAX = 800
+
+
+def _switch_idempotency_key(predecessor_id: str, target_provider_profile: str) -> str:
+    """Stable per-(predecessor, target) idempotency key for successor creation."""
+
+    import hashlib as _hashlib
+
+    seed = f"switch:{predecessor_id}:{target_provider_profile}"
+    return f"switch-{_hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+
+
+def _switch_continuation_prompt(
+    predecessor_id: str,
+    failure: Dict[str, Any],
+    note: str,
+) -> str:
+    """Build the deterministic bounded continuation prompt.
+
+    CAO-owned context only: predecessor ID, structured failure summary,
+    optional operator note. Credentials and the successor's own transcript
+    never appear here; the bounded excerpt is sanitized once below.
+    """
+    failure_kind = failure.get("kind") or "unknown_failure"
+    failure_message = failure.get("message") or "no provider detail available"
+    reset_at = failure.get("reset_at")
+    reset_clause = f' Reset: {reset_at}.' if reset_at else ""
+    note_clause = f' Operator note: {note}' if note else ""
+    return (
+        f"[Account switch] The previous session (terminal {predecessor_id}) stopped on a "
+        f"provider failure ({failure_kind}): {failure_message}.{reset_clause}"
+        f"{note_clause} Continue the previous work. Nothing else was copied from "
+        f"the previous session — ask the operator for details you cannot recover "
+        f"from this summary."
+    )
+
+
+def _switch_extract_excerpt(text: str, cap: int = SWITCH_CONTINUATION_EXCERPT_MAX) -> str:
+    """Last N characters of extracted output, sanitized for downstream storage."""
+    import re as _re
+
+    text = _re.sub(r"\s+", " ", text).strip()
+    return text[-cap:]
+
+
+async def switch_provider_profile(
+    terminal_id: str,
+    target_provider_profile: str,
+    continuation_note: Optional[str] = None,
+    registry: PluginRegistry | None = None,
+) -> Dict[str, Any]:
+    """Switch a live terminal onto another authenticated provider account (#runtime).
+
+    A user-triggered recovery for a terminal whose provider CLI reported a
+    structured runtime failure (rate limit, quota, auth). Detection OFFERS
+    this action; nothing rotates accounts automatically.
+
+    ALWAYS successor-first:
+
+    1. Read the predecessor's launch identity (provider, agent profile, model,
+       tools, working directory, group, safe orchestration metadata) and its
+       current runtime failure.
+    2. Validate the target profile: exists, same provider as the
+       predecessor's, backed by a supported adapter, and ``authenticated``.
+    3. Create the successor in the SAME CAO session with all of the
+       predecessor's launch identity except the account profile, then
+       dispatch a bounded continuation prompt to it.
+    4. Retain the predecessor for inspection by default — DELETE it only via
+       the ordinary delete endpoint after the successor works.
+
+    The handoff is BOUNDED context, not native resume: Claude's transcript
+    lives under the predecessor's isolated ``CLAUDE_CONFIG_DIR``, so
+    ``--resume`` under a different account home is not guaranteed and copying
+    transcript state would cross account homes. The continuation prompt
+    carries the predecessor ID, the failure summary, a bounded recent-output
+    excerpt, and the operator's optional note — nothing else. Credentials and
+    unbounded transcripts never transfer.
+
+    Raises the narrow ``SwitchError`` inside a dedicated exception so the API
+    layer maps exactly the reasons the UI presents (target missing / wrong
+    provider / not authenticated / predecessor missing / no runtime failure)
+    without searching the message.
+
+    Returns a summary dict with both terminal ids, the failed-before state and
+    the successor's post-dispatch ready state.
+    """
+
+    class SwitchError(ValueError):
+        """Raised when the switch preconditions do not hold."""
+
+    predecessor = await asyncio.to_thread(get_terminal_metadata, terminal_id)
+    if not predecessor:
+        raise SwitchError(f"terminal '{terminal_id}' not found")
+
+    provider = predecessor["provider"]
+    target = await asyncio.to_thread(get_provider_profile, target_provider_profile)
+    if target.provider.value != provider:
+        raise SwitchError(
+            f"provider profile '{target_provider_profile}' belongs to provider "
+            f"'{target.provider.value}', terminal is '{provider}'"
+        )
+    if not provider_manager.is_profile_supported(provider):
+        raise SwitchError(f"provider '{provider}' does not support account profiles")
+    if target.auth_state != "authenticated":
+        raise SwitchError(
+            f"provider profile '{target_provider_profile}' is "
+            f"'{target.auth_state}', not 'authenticated'"
+        )
+
+    if predecessor.get("switch_successor_id"):
+        raise SwitchError(f"terminal '{terminal_id}' already has a successor")
+
+    bounded_failure = (predecessor.get("runtime_failure") or {}).copy()
+    bounded_note = (continuation_note or "").strip()[:SWITCH_CONTINUATION_NOTE_MAX]
+
+    request_dict = dict(
+        provider=provider,
+        agent_profile=predecessor.get("agent_profile"),
+        provider_profile=target_provider_profile,
+        session_name=predecessor["tmux_session"],
+        new_session=False,
+        working_directory=predecessor.get("working_directory"),
+        allowed_tools=None,  # profile-derived (same agent profile)
+        engine=predecessor.get("engine"),
+        model=predecessor.get("model"),
+        group=list(predecessor.get("group") or []) or None,
+    )
+    try:
+        successor = await create_terminal(
+            idempotency_key=_switch_idempotency_key(terminal_id, target_provider_profile),
+            switch_predecessor_id=terminal_id,
+            **request_dict,
+        )
+    except ValueError as exc:
+        raise SwitchError(f"failed to create successor: {exc}") from exc
+    except TerminalLimitError:
+        raise SwitchError(
+            "node terminal capacity reached; free a terminal or raise CAO_MAX_TERMINALS first"
+        )
+
+    continuation_prompt = _switch_continuation_prompt(
+        predecessor_id=terminal_id,
+        failure=bounded_failure,
+        note=bounded_note,
+    )
+    try:
+        await asyncio.to_thread(send_input, successor.id, continuation_prompt)
+    except Exception as exc:  # noqa: BLE001 - delivery state reported, not masked
+        logger.error(
+            "successor %s created but its continuation dispatch failed: %s",
+            successor.id,
+            exc,
+        )
+        return {
+            "predecessor_id": terminal_id,
+            "successor_id": successor.id,
+            "status": "successor_created_delivery_failed",
+            "failure": bounded_failure,
+            "detail": str(exc)[:400],
+        }
+
+    logger.info(
+        "switch-provider-profile: %s -> successor %s on account %s",
+        terminal_id,
+        successor.id,
+        target_provider_profile,
+    )
+    return {
+        "predecessor_id": terminal_id,
+        "successor_id": successor.id,
+        "status": "switched",
+        "failure": bounded_failure,
+    }
 
 
 def delete_terminal_row(

@@ -70,8 +70,16 @@ depth, not the argument.
 # that would let one side stop recognising the other's output.
 _V2_PREFIX = "v2:"
 
-# Joins the ten components. Inherited from the three-field scheme it replaces, so the v1 -> v2
-# transition is a change of INPUTS only (TD-1) — exactly what the scheme prefix is designed to
+# The account profile entered the hashed component set AFTER v2 went to disk. A stored
+# ``v2:`` value must NEVER be compared against a ``v3:`` digest: the same logical call
+# hashes differently under the two schemes purely because of the extra component, so the
+# caller (replay-gate) classifies by prefix and routes a legacy scheme to human review
+# instead of an equality check. Compare-before-classify would turn every pre-#account
+# row into a false ``DIVERGED``.
+_V3_PREFIX = "v3:"
+
+# Joins the eleven components. Inherited from earlier schemes; v3 adds account identity while preserving
+# the framing contract (TD-1) — exactly what the scheme prefix is designed to
 # express. See ``compute``'s docstring for the one framing limit this separator carries.
 _COMPONENT_SEP = "\x00"
 
@@ -94,7 +102,15 @@ _TIMEOUT_PRECISION = 6
 
 @dataclass(frozen=True)
 class StepCallFields:
-    """The execution-affecting inputs to one agent step — ten hashed components (BR-1).
+    """The execution-affecting inputs to one agent step — eleven hashed components (BR-1).
+
+    ``provider_profile`` (added with the v3 scheme): the named ACCOUNT the step runs
+    under. An id, never the profile's contents — profile contents (paths, env) are
+    config, and the account identity is the execution-affecting fact. Under a different
+    account the same prompt hits a different quota and a different isolated home.
+    Update history: an operator's quota recovery may legitimately change this between
+    attempts, and that is a HUMAN-edited execution differential — it must read
+    ``DIVERGED`` absent an explicit override-recovery decision, never silently replay.
 
     NEVER PERSISTED. It exists only to be hashed; the *hash* is persisted, the fields are not.
     This is the type's most load-bearing property and it is a security property, not an
@@ -162,6 +178,7 @@ class StepCallFields:
     use_worktree: bool = False
     reused_terminal: bool = False
     timeout: float = 600.0
+    provider_profile: Optional[str] = None
 
 
 def _text(value: Optional[str]) -> str:
@@ -198,14 +215,14 @@ def _tools(value: Optional[tuple[str, ...]]) -> str:
 
 
 def compute(fields: StepCallFields) -> str:
-    """Hash the ten components into ``"v2:<64 lowercase hex>"``.
+    """Hash the eleven components into ``"v3:<64 lowercase hex>"``.
 
-    TEN COMPONENTS IN A FIXED ORDER, AND THE ORDER IS PART OF THE CONTRACT (BR-1). Reordering
+    ELEVEN COMPONENTS IN A FIXED ORDER, AND THE ORDER IS PART OF THE CONTRACT (BR-1). Reordering
     them changes every hash on disk with no scheme change to signal it — the same silent break
     as editing :data:`CREATION_ONLY`.
 
     ON A REUSE CALL, SUBSTITUTION IS PER-FIELD AND THE TUPLE IS NEVER SHORTENED (BR-1a). Four
-    components become :data:`CREATION_ONLY`; the count stays ten on both paths, so a create
+    components become :data:`CREATION_ONLY`; the count stays eleven on both paths, so a create
     call and a reuse call cannot collide by arity either. ``engine`` is NOT among them (see
     :class:`StepCallFields`).
 
@@ -259,41 +276,48 @@ def compute(fields: StepCallFields) -> str:
         use_worktree,
         _flag(fields.reused_terminal),
         _timeout(fields.timeout),
+        _text(fields.provider_profile),
     )
     joined = _COMPONENT_SEP.join(components)
-    return _V2_PREFIX + hashlib.sha256(joined.encode("utf-8")).hexdigest()
+    return _V3_PREFIX + hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
-def scheme_of(stored: Optional[str]) -> Literal["v2", "legacy", "absent"]:
+def scheme_of(stored: Optional[str]) -> Literal["v3", "v2", "legacy", "absent"]:
     """Classify a stored ``call_fingerprint`` by the scheme it was written under (BR-8).
 
-    ``None`` -> ``absent`` (the row predates the column, or this unit); a value lacking the
-    ``v2:`` prefix -> ``legacy`` (the three-field scheme this unit replaced); otherwise
-    ``v2``.
+    ``None`` -> ``absent`` (the row predates the column, or this unit); a value carrying the
+    ``v2:`` prefix -> ``v2`` (the scheme ``provider_profile`` does not enter); a value
+    carrying ``v3:`` -> ``v3``; anything else -> ``legacy`` (the three-field scheme the v2
+    scheme replaced).
 
-    THREE-WAY RATHER THAN A BOOLEAN. ``absent`` and ``legacy`` route the same way today (both
-    to ``DECISION_REQUIRED``) but they are different FACTS — "never recorded" versus "recorded
-    under narrower rules" — and a later agent is asked to reconstruct events from persisted
-    evidence. Collapsing them would discard that distinction permanently.
+    FOUR-WAY RATHER THAN A BOOLEAN. ``absent``, ``legacy`` and ``v2`` route the same way today
+    (to ``DECISION_REQUIRED`` when a comparison would be attempted) but they are different
+    FACTS — "never recorded", "recorded under narrower rules", and "recorded before account
+    profiles entered call identity" — and a later agent is asked to reconstruct events from
+    persisted evidence. Collapsing them would discard that distinction permanently.
 
-    VALIDITY IS NOT THE SCHEME'S QUESTION. ``"v2:xyz"`` classifies as ``v2``: the function
+    A ``v2`` VALUE IS CLASSIFIED, NEVER COMPARED AGAINST A ``v3`` VALUE. Since
+    ``provider_profile`` entered the component set, the same logical call hashes differently
+    across the two schemes; only equality of two ``v3`` values (or two ``v2`` values from a
+    frozen historical read) is meaningful. ``replay-gate`` owns that routing (BR-9); this
+    function's contract is only that the populations stay distinguishable forever, which
+    holds because every value ``compute`` emits carries the CURRENT scheme's prefix (INV-4).
+
+    VALIDITY IS NOT THE SCHEME'S QUESTION. ``"v3:xyz"`` classifies as ``v3``: the function
     reports what the value CLAIMS. Whether the digest is well-formed is a different concern
-    and no consumer needs it, because a malformed ``v2`` value simply fails the subsequent
-    equality comparison and reads as ``DIVERGED``.
+    and no consumer needs it, because a malformed value simply fails the subsequent equality
+    comparison and reads as ``DIVERGED``.
 
     TOTAL over its declared type (INV-3): it raises on no ``str`` — including ``""`` and
     arbitrary malformed text — and none on ``None``. The bound is the declared type and that
     is deliberate: the only real caller reads a SQLite ``TEXT`` column, whose Python domain is
     exactly ``str | None``, so an ``isinstance`` guard here would be a branch no caller can
     reach.
-
-    A LEGACY VALUE IS CLASSIFIED, NEVER COMPARED (BR-9). That routing belongs to
-    ``replay-gate``; this function's contract is only that the two populations stay
-    distinguishable forever, which holds because every value ``compute`` emits carries the
-    prefix (INV-4).
     """
     if stored is None:
         return "absent"
+    if stored.startswith(_V3_PREFIX):
+        return "v3"
     if stored.startswith(_V2_PREFIX):
         return "v2"
     return "legacy"

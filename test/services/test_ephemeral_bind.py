@@ -214,6 +214,7 @@ def test_workflow_claim_end_collects_and_stale_end_preserves_row(claimed_store):
 def fingerprint(**overrides):
     args = dict(
         provider="claude_code",
+        provider_profile=None,
         agent_profile="reviewer",
         session_name="cao-session",
         working_directory=None,
@@ -232,9 +233,11 @@ def fingerprint(**overrides):
 
 
 def test_optional_claim_preserves_golden_fingerprint():
+    # provider_profile=None added to the signature bumps the hash; the golden
+    # pins the CURRENT scheme so further field changes fail loudly.
     assert (
         fingerprint(claim_id=None)
-        == "d90daa142c3110f7a169da36d6044671a6de9642b14210bcac9030c3370587a1"
+        == "4f425906229fcea87279d6e5bc9782ad7ca50212319204cdec0694ea4d358a32"
     )
     assert fingerprint(claim_id="a" * 32) != fingerprint(claim_id="b" * 32)
     assert fingerprint(claim_id="a" * 32) != fingerprint()
@@ -1002,6 +1005,7 @@ async def test_flow_recycling_releases_ephemeral_rows(claimed_store, monkeypatch
             provider="claude_code",
             agent_profile="developer",
             engine=None,
+            provider_profile=None,
         ),
     )
     monkeypatch.setattr(flow_service, "db_update_flow_run_times", Mock())

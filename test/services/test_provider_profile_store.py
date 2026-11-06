@@ -93,13 +93,38 @@ def test_rejects_unsafe_profile_id(isolated_store):
         )
 
 
+def test_creates_distinct_private_codex_homes(isolated_store):
+    first = store.create_provider_profile(
+        ProviderProfileCreate(
+            id="codex-work",
+            label="Codex Work",
+            provider="codex",
+            login_method="isolated_home",
+        )
+    )
+    second = store.create_provider_profile(
+        ProviderProfileCreate(
+            id="codex-personal",
+            label="Codex Personal",
+            provider="codex",
+            login_method="isolated_home",
+        )
+    )
+
+    first_home = store.profile_home("codex", first.id)
+    second_home = store.profile_home("codex", second.id)
+    assert first_home != second_home
+    assert (first_home.stat().st_mode & 0o777) == 0o700
+    assert (second_home.stat().st_mode & 0o777) == 0o700
+
+
 def test_rejects_unverified_provider_profile(isolated_store):
     with pytest.raises(store.ProviderProfileError, match="does not support"):
         store.create_provider_profile(
             ProviderProfileCreate(
-                id="codex-work",
-                label="Codex Work",
-                provider="codex",
+                id="cursor-work",
+                label="Cursor Work",
+                provider="cursor_cli",
                 login_method="native_profile",
                 settings={"native_profile": "work"},
             )

@@ -11,6 +11,7 @@ import {
   WorkflowSpecSummary,
   WorkflowSource,
   RoleProviderPolicy,
+  RoleProviderProfilePolicy,
   WorkflowRunSubmitResponse,
 } from './api'
 
@@ -41,6 +42,7 @@ interface Store {
     sessionName?: string,
     roleProviders?: RoleProviderPolicy,
     providerProfile?: string,
+    roleProviderProfiles?: RoleProviderProfilePolicy,
   ) => Promise<void>
   deleteSession: (name: string) => Promise<void>
   showSnackbar: (snackbar: Snackbar) => void
@@ -70,6 +72,7 @@ interface Store {
     inputs: Record<string, unknown>,
     runId?: string,
     roleProviders?: RoleProviderPolicy,
+    roleProviderProfiles?: RoleProviderProfilePolicy,
   ) => Promise<WorkflowRunSubmitResponse>
 
   // ── Workflow run journal slice (Issue #504 / U8) ──────────────────────
@@ -158,7 +161,7 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
-  createSession: async (provider, agentProfile, workingDirectory, sessionName, roleProviders, providerProfile) => {
+  createSession: async (provider, agentProfile, workingDirectory, sessionName, roleProviders, providerProfile, roleProviderProfiles) => {
     try {
       await api.createSession(
         provider,
@@ -167,6 +170,7 @@ export const useStore = create<Store>((set, get) => ({
         workingDirectory,
         roleProviders,
         providerProfile,
+        roleProviderProfiles,
       )
       get().showSnackbar({ type: 'success', message: 'Session created' })
       await get().fetchSessions()
@@ -240,8 +244,8 @@ export const useStore = create<Store>((set, get) => ({
     await get().fetchWorkflowSpecs()
   },
 
-  submitWorkflowRun: async (name, inputs, runId, roleProviders) => {
-    const result = await api.submitWorkflowRun(name, inputs, runId, roleProviders)
+  submitWorkflowRun: async (name, inputs, runId, roleProviders, roleProviderProfiles) => {
+    const result = await api.submitWorkflowRun(name, inputs, runId, roleProviders, roleProviderProfiles)
     get().showSnackbar({ type: 'success', message: `Started run ${result.run_id}` })
     await get().fetchWorkflowRuns()
     await get().selectWorkflowRun(result.run_id)

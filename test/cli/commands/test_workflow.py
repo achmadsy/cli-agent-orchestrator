@@ -304,6 +304,60 @@ def test_run_detach_exits_0_after_submit_no_follow(runner):
     mock_req.get.assert_not_called()
 
 
+def test_run_role_provider_policies_reach_async_payload(runner):
+    with patch("cli_agent_orchestrator.cli.commands.workflow.api_http") as mock_req:
+        mock_req.post.return_value = _submit_resp()
+        result = runner.invoke(
+            workflow,
+            [
+                "run",
+                "wf",
+                "--detach",
+                "--role-provider",
+                "developer=claude_code",
+                "--role-provider-profile",
+                "developer=claude-work",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    payload = mock_req.post.call_args.kwargs["json"]
+    assert payload["role_providers"] == {"developer": "claude_code"}
+    assert payload["role_provider_profiles"] == {"developer": "claude-work"}
+
+
+def test_run_role_provider_policies_reach_blocking_payload(runner):
+    body = {"run_id": "run1", "state": "completed", "steps": []}
+    with patch("cli_agent_orchestrator.cli.commands.workflow.api_http") as mock_req:
+        mock_req.post.return_value = _resp(200, body)
+        result = runner.invoke(
+            workflow,
+            [
+                "run",
+                "wf",
+                "--wait",
+                "--role-provider",
+                "reviewer=codex",
+                "--role-provider-profile",
+                "reviewer=codex-review",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    payload = mock_req.post.call_args.kwargs["json"]
+    assert payload["role_providers"] == {"reviewer": "codex"}
+    assert payload["role_provider_profiles"] == {"reviewer": "codex-review"}
+
+
+def test_run_rejects_bad_role_provider_profile_before_request(runner):
+    with patch("cli_agent_orchestrator.cli.commands.workflow.api_http") as mock_req:
+        result = runner.invoke(
+            workflow,
+            ["run", "wf", "--role-provider-profile", "builder=bad/profile"],
+        )
+    assert result.exit_code == 1
+    assert "role must be supervisor, developer, or reviewer" in result.output
+    mock_req.post.assert_not_called()
+
+
 def test_run_wait_uses_blocking_route_and_long_timeout(runner):
     """T8 (VR-2, C-6): ``run --wait`` POSTs the blocking ``/workflows/runs`` (NOT
     ``:submit``) with the worst-case ``WORKFLOW_RUN_REQUEST_TIMEOUT``."""
