@@ -104,10 +104,15 @@ def test_history_query_cannot_replace_bound_target(workspace, monkeypatch):
     assert fetch.call_args.args[1]["terminal"] == "abcdef12"
 
 
-@pytest.mark.parametrize("payload", ['{"type":"close_pane"}', '{"type":"link_join"}', '[]', '{"type":"input","text":"' + 'x'*65536 + '"}'])
+@pytest.mark.parametrize("payload", ['{"type":"close_pane"}', '{"type":"link_join"}', '{"type":"resize_pane"}', '[]', '{"type":"input","text":"' + 'x'*65536 + '"}'])
 def test_ws_message_allowlist(payload):
     with pytest.raises(ValueError):
         routes._validate_frame(payload)
+
+
+def test_ws_resize_frame_is_forwarded():
+    frame = routes._validate_frame('{"type":"resize","pane":"%2","cols":180,"rows":48}')
+    assert frame["type"] == "resize" and frame["cols"] == 180
 
 
 def test_sidecar_endpoint_rejects_arbitrary_hosts(monkeypatch):

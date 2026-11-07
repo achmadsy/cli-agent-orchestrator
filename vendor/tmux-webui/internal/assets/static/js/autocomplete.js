@@ -185,6 +185,9 @@
   // ── Keyboard navigation ──
 
   inputEl.addEventListener('keydown', (e) => {
+    // Enter selecting an IME candidate is not message submission (Safari may
+    // report keyCode 229 without isComposing on the final composing keydown).
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
     if (acList.classList.contains('open')) {
       const items = acList.querySelectorAll('.ac-item');
 

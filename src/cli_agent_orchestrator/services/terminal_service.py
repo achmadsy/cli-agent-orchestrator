@@ -1927,29 +1927,11 @@ async def _create_terminal_unguarded(
         # socket events and their pipe_pane is a no-op, so skip the FIFO there and
         # rely on the herdr inbox registration below.
         if not get_backend().supports_event_inbox():
-            fifo_path = FIFO_DIR / f"{terminal_id}.fifo"
+            from cli_agent_orchestrator.services.observation_recovery import attach_output
 
-            # Reader must exist BEFORE pipe-pane starts so it captures from the
-            # start. Enroll it in the pipe-pane liveness watchdog (issue #388):
-            # supply a probe for tmux's live pane content and a re-arm that
-            # re-attaches a stalled forwarder. The re-arm does stop-then-start,
-            # NOT a bare pipe_pane() — a stalled pane still reports pane_pipe=1,
-            # so the backend's ``pipe-pane -o`` toggle would just switch the
-            # dead pipe OFF instead of restarting it.
-            def _probe_pane(s=session_name, w=window_name) -> str:
-                return get_backend().get_history(s, w, tail_lines=PIPE_LIVENESS_TAIL_LINES)
+            from cli_agent_orchestrator.services.observation_recovery import _settled_worker
 
-            def _rearm_pipe(s=session_name, w=window_name, p=str(fifo_path)) -> None:
-                get_backend().stop_pipe_pane(s, w)
-                get_backend().pipe_pane(s, w, p)
-
-            fifo_manager.create_reader(terminal_id, pane_probe=_probe_pane, rearm=_rearm_pipe)
-
-            # Configure pipe-pane to stream output to the FIFO. This enables
-            # real-time event-driven processing via StatusMonitor and LogWriter
-            # (LogWriter writes TERMINAL_LOG_DIR/{id}.log from the FIFO). A pane
-            # has a single pipe-pane target, so we pipe ONLY to the FIFO.
-            get_backend().pipe_pane(session_name, window_name, str(fifo_path))
+            await _settled_worker(attach_output, terminal_id, session_name)
 
             # Nudge the shell so it re-renders its prompt AFTER pipe-pane attaches.
             # pipe-pane only captures output produced after it starts; on a fast
@@ -3742,6 +3724,7 @@ def get_terminal(terminal_id: str) -> Dict:
             "runtime_failure": metadata.get("runtime_failure"),
             "session_incarnation_id": metadata.get("session_incarnation_id"),
             "status": status,
+            "monitoring": status_monitor.monitoring_diagnostic(terminal_id),
             "last_active": metadata["last_active"],
         }
 

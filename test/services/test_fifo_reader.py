@@ -583,16 +583,11 @@ class TestPipeLivenessWatchdog:
         # Single-line content has no "\n" to CRLF-convert, so the republished
         # payload equals the raw pane content verbatim; the multi-line CRLF
         # conversion itself is covered by test_rearm_replay_converts_lf_to_crlf.
-        assert ("terminal.term.output", {"data": pane["content"]}) in published
+        assert ("terminal.term.snapshot", {"data": pane["content"]}) in published
+        assert not any(topic.endswith('.output') for topic, _ in published)
 
-    def test_rearm_replay_converts_lf_to_crlf(self, tmp_path, monkeypatch):
-        """Regression for the round-2 review finding: capture-pane joins lines
-        with a bare "\\n" (clients/tmux.py's get_history), which pyte treats as
-        linefeed-without-carriage-return (LNM off by default) — replaying that
-        verbatim staircases the composited screen, so status detection for
-        CAO_PYTE_STATUS providers (claude_code, #388's own repro target) can
-        stay broken after the very re-arm meant to fix it. The replay must
-        convert each bare "\\n" to "\\r\\n" so pyte renders it as a real newline."""
+    def test_rearm_snapshot_preserves_rendered_lines_not_raw_replay(self, tmp_path, monkeypatch):
+        """Captured rows have explicit provenance and never enter pyte/raw output."""
         monkeypatch.setattr(fr, "PIPE_LIVENESS_STALL_CHECKS", 1)
         published: list = []
         monkeypatch.setattr(fr.bus, "publish", lambda topic, data: published.append((topic, data)))
@@ -608,7 +603,8 @@ class TestPipeLivenessWatchdog:
         manager._check_pipe_liveness("term")
 
         assert rearm_calls == [True]
-        assert ("terminal.term.output", {"data": multiline.replace("\n", "\r\n")}) in published
+        assert ("terminal.term.snapshot", {"data": multiline}) in published
+        assert not any(topic.endswith('.output') for topic, _ in published)
         # And the raw bare-LF form must NOT have been published — that's
         # exactly the payload that staircases pyte's screen.
         assert ("terminal.term.output", {"data": multiline}) not in published
@@ -1022,7 +1018,8 @@ class TestColdStartStallDetection:
         manager._check_pipe_liveness("term")
 
         assert rearm_calls == [True]
-        assert ("terminal.term.output", {"data": pane["content"]}) in published
+        assert ("terminal.term.snapshot", {"data": pane["content"]}) in published
+        assert not any(topic.endswith('.output') for topic, _ in published)
 
     def test_cold_start_end_to_end_via_real_reader_thread(self, tmp_path, monkeypatch):
         """Integration-level: create_reader() seeds the cold-start state

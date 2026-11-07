@@ -50,3 +50,40 @@ def test_personal_session_is_refused_before_scanning(client):
     client._sessions_for_identity_scan = MagicMock()
     with pytest.raises(ValueError): client.resolve_workspace_target('abcdef12', 'personal')
     client._sessions_for_identity_scan.assert_not_called()
+
+
+@pytest.fixture
+def observed_target():
+    return dict(terminal='abcdef12', session='cao-test', pane_id='%7',
+                window_id='@2', socket='/tmp/private.sock', mode='pane')
+
+
+def test_observe_rejects_changed_target_before_command(client, observed_target):
+    client.resolve_workspace_target = MagicMock(return_value={**observed_target, 'pane_id': '%8'})
+    with patch('cli_agent_orchestrator.clients.tmux.subprocess.run') as run:
+        with pytest.raises(ValueError): client.observe_terminal_exact(observed_target, '/tmp/test.fifo')
+        run.assert_not_called()
+
+
+def test_observe_refuses_unverified_existing_pipe(client, observed_target):
+    client.resolve_workspace_target = MagicMock(return_value=observed_target)
+    with patch('cli_agent_orchestrator.clients.tmux.subprocess.run', side_effect=[
+        MagicMock(stdout='foreign'), MagicMock(stdout='1'),
+    ]) as run:
+        with pytest.raises(ValueError): client.observe_terminal_exact(observed_target, '/tmp/test.fifo')
+        assert run.call_count == 2
+        assert not any('pipe-pane' in call.args[0] for call in run.call_args_list)
+
+
+def test_observe_uses_pinned_socket_and_pane_never_names(client, observed_target):
+    client.resolve_workspace_target = MagicMock(return_value=observed_target)
+    with patch('cli_agent_orchestrator.clients.tmux.subprocess.run', side_effect=[
+        MagicMock(stdout='abcdef12'), MagicMock(stdout='1'), MagicMock(stdout=''),
+        MagicMock(stdout=''), MagicMock(stdout=''),
+    ]) as run:
+        client.observe_terminal_exact(observed_target, '/tmp/test.fifo')
+        commands = [c.args[0] for c in run.call_args_list]
+        assert all(c[:3] == ['tmux', '-S', '/tmp/private.sock'] for c in commands)
+        assert all('%7' in c for c in commands)
+        assert sum('pipe-pane' in c for c in commands) == 2
+        assert not any('send-keys' in c for c in commands)

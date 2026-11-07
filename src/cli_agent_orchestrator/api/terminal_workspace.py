@@ -20,7 +20,7 @@ from cli_agent_orchestrator.services import terminal_workspace_service as servic
 router = APIRouter(prefix="/terminal", tags=["terminal-workspace"])
 write_access = require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)
 _ASSET = re.compile(r"^static/(?:css|js)/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.(?:css|js)$")
-_ALLOWED_MESSAGES = {"input", "key", "mouse", "focus", "fit", "fit_enable", "fit_disable",
+_ALLOWED_MESSAGES = {"input", "key", "mouse", "focus", "fit", "resize", "fit_enable", "fit_disable",
                      "switch_window", "refresh_panes", "autocomplete", "pong"}
 
 

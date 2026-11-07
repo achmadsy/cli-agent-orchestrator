@@ -233,7 +233,7 @@ function genWorkspaceCss(upstream = false) {
   const prefix = upstream ? "" : "workspace-";
   return HEADER_HASH + "\n:root {\n" + colors.map(([key, value]) =>
     `  --${prefix}${names[key] || key}: ${value};`
-  ).join("\n") + `\n  --${prefix}font-size: ${w.fontSize}px;\n  --${prefix}radius: ${w.radius}px;\n}\n`;
+  ).join("\n") + `\n  --${prefix}font-size: ${w.fontSize}px;\n  --${prefix}font-size-desktop: ${w.fontSize}px;\n  --${prefix}font-size-mobile: ${w.fontSizeMobile}px;\n  --${prefix}radius: ${w.radius}px;\n}\n`;
 }
 
 const ARTIFACTS = [

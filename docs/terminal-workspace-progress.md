@@ -100,6 +100,16 @@ Job 1 only: pinned operonlab/tmux-webui + mobile-first theme, CAO gateway author
   `loading-permanent-recovery.png`, plus `browser-results.json` under the artifact directory.
   No production service or network configuration was changed.
 
+## Follow-up: desktop readability, TUI keys and status observation (2026-11-08)
+- Branch `fix/workspace-status-and-keys`, based on deployed `67aa5a27`. Local implementation only; no follow-up push/redeploy authorized or performed.
+- Desktop output defaults to 16px; narrow layout 14px, separate validated preferences with size/Reset. Four visible arrows + named Keys drawer; mobile modifiers appear inside the drawer. Physical combinations and virtual keys share dispatch; composer/IME stays text. Exact-provider OpenCode defaults are optional actions, including a cancellable Ctrl+X → M chord.
+- Follow-up from user: provider hints now cover **all** providers (Claude Code `/model`+Shift+Tab, Codex `/model`, OpenCode chords, generic Interrupt/Stop for Hermes/Kimi/Gemini/Q/Cursor/Grok/Copilot/Kiro/Antigravity/OMP/MiniMax); unverified CLIs never get invented model bindings.
+- Follow-up from user: the real desktop issue was **mobile-width wrapping**, not font size. Added an explicit **Fit terminal** action: one bounded `resize-window` (20–400×6–200) for the terminal's own pinned window via a new allowlisted `resize` op (browser client allowlist → gateway `_ALLOWED_MESSAGES` → restricted sidecar). Automatic fit stays off; private-socket test proves the personal session's size is untouched. Browser-verified 120 cols → 145×27 on a 1440 desktop.
+- Unknown explanation distinguishes unestablished agent state from exit. Startup restores only exact-owned output readers/pipes after real consumer readiness; no initialization or Enter. Quiet confirmed viewport stays diagnostic-only, never inbox/delivery evidence. Watchdog snapshots no longer impersonate raw output.
+- Verification: 493 targeted backend tests, 381 frontend tests (31 files) + TypeScript/build, Go restricted/ws/tmuxctl/pwa + private ownership tests, raw received-byte fixture, real CAO restart with unchanged pane/PID and zero input. Actual browser controls at 1440/1920 desktop and 320/390/430/landscape; existing history/reconnect/expiry/classic E2E passed.
+- Browser fixes found during this pass: mobile arrows/Keys were beyond scroll edge; mobile modifiers needed drawer placement; landscape pane-label overlay blocked Keys; drawer scroll anchoring hid its first fields. Corrected and rerun with real clicks/screenshots.
+- Artifacts: `controls-*.png`, `browser-results.json` in the existing ignored verification directory. No physical-device keyboard/clipboard claim; OpenCode shortcuts were verified as dispatched keys/PTY bytes, not a paid live model change.
+
 ## Findings / constraints
 - Correct repository is the nested `cli-agent-orchestrator`, not its parent. All git and source commands use explicit repository paths.
 - Graph MCP and dedicated Glob/Grep unavailable after tool discovery; exact source read and bounded shell search fallback.

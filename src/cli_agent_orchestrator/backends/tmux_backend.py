@@ -217,6 +217,9 @@ class TmuxBackend(TerminalBackend):
         """Return exact owned tmux IDs for the optional workspace viewer."""
         return self._client.resolve_workspace_target(terminal_id, session_name)
 
+    def observe_terminal_exact(self, target: Dict[str, str], fifo_path: Optional[str] = None) -> str:
+        return self._client.observe_terminal_exact(target, fifo_path)
+
     # --- Pipe-pane ---
 
     def pipe_pane(self, session_name: str, window_name: str, file_path: str) -> None:

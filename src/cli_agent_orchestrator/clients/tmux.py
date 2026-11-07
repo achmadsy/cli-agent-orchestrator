@@ -2187,6 +2187,34 @@ class TmuxClient:
             "socket": str(result.stdout[0]),
         }
 
+    def observe_terminal_exact(self, target: Dict[str, str], fifo_path: Optional[str] = None) -> str:
+        """Capture or attach output using a pinned, freshly verified pane and socket.
+
+        Never resolves a reusable window name and never sends terminal input. An
+        existing pipe is replaced only when our output marker proves its owner.
+        """
+        if self.resolve_workspace_target(target["terminal"], target["session"]) != target:
+            raise ValueError("Terminal ownership changed")
+
+        def tmux(*args: str) -> str:
+            result = subprocess.run(
+                ["tmux", "-S", target["socket"], *args],
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+            return result.stdout
+
+        pane_id = target["pane_id"]
+        if fifo_path is None:
+            return tmux("capture-pane", "-p", "-t", pane_id, "-S", "0")
+        owner = tmux("show-options", "-pqv", "-t", pane_id, "@cao_output_pipe").strip()
+        attached = tmux("display-message", "-p", "-t", pane_id, "#{pane_pipe}").strip()
+        if attached == "1" and owner != target["terminal"]:
+            raise ValueError("Existing output pipe ownership is unverified")
+        tmux("pipe-pane", "-t", pane_id)
+        tmux("set-option", "-p", "-t", pane_id, "@cao_output_pipe", target["terminal"])
+        tmux("pipe-pane", "-t", pane_id, self._pipe_pane_command(fifo_path))
+        return ""
+
     def cleanup_terminal_exact(
         self,
         terminal_id: str,

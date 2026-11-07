@@ -47,8 +47,12 @@ class LogWriter:
     write.
     """
 
+    def __init__(self) -> None:
+        self.ready = asyncio.Event()
+
     async def run(self) -> None:
         queue = bus.subscribe("terminal.*.output")
+        self.ready.set()
         logger.info("LogWriter started")
 
         while True:

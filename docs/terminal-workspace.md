@@ -50,7 +50,23 @@ A service/version mismatch or unsupported backend displays a clear fallback noti
 
 “CAO Quiet Workspace” uses scoped slate surfaces and a restrained blue focus accent. `design-tokens/tokens.json` is the source of truth. Run `node design-tokens/gen.mjs`; do not hand-edit `workspace.generated.css`, `cao-tokens.css` or the generated config. Normal status colors and MCP App tokens are unchanged.
 
-The terminal defaults to 14px; input is 16px on phones. A−/A+ controls preserve terminal font preference. Upstream owns keyboard viewport sizing; the parent does not add a second keyboard offset. Touch controls target 44px, soft-keyboard autofocus is avoided, browser zoom is available, and history stays still while reading. Classic terminal remains available for interaction that needs raw PTY fidelity.
+The terminal defaults to **16px on desktop / 14px on narrow layouts**; input is at least 16px on phones. A−/size/A+/Reset use separate versioned desktop/mobile preferences (12–24px); the old shared preference is not copied into desktop. Font changes are presentation-only, never tmux resize requests. Upstream owns keyboard viewport sizing; the parent does not add a second keyboard offset. Touch controls target 44px, soft-keyboard autofocus is avoided, browser zoom is available, and history stays still while reading. Classic terminal remains available for interaction that needs raw PTY fidelity.
+
+### Navigation and TUI shortcuts
+
+The four arrow buttons are directly visible, including on 320px layouts. **Keys** opens the explicit terminal-key field. Tap Ctrl/Alt/Shift once for one key, double-tap to lock, or choose **Clear modifiers**. Type one key in that field then **Send key**, or press a physical combination there. Ordinary typing, Shift capitalization, selection, clipboard and IME in the message composer remain text; armed virtual modifiers do not steal composer input. Interrupt always sends Ctrl+C independently of armed modifiers. Modifiers clear on target change/disconnection; uncertain keys are never replayed.
+
+Every provider gets a contextual group in the drawer, not just one CLI: **Claude Code** (type `/model`, Shift+Tab plan/auto), **Codex** (type `/model`), **OpenCode** (Ctrl+P palette, Ctrl+X then M, F2/Shift+F2), and safe generic Interrupt/Stop keys for the rest (Hermes, Kimi, Gemini, Q, Cursor, Grok, Copilot, Kiro, Antigravity, OMP, MiniMax). Only bindings each TUI itself documents are offered; providers without a verified model command keep generic keys so nothing is guessed. `/model` buttons type the command and press Enter exactly like the composer — the picker itself stays in the real TUI. Custom bindings may differ; for a custom Shift+P, arm Shift, enter `p` in the key field and choose Send key. Terminal protocols may encode Ctrl+Shift+letter identically to Ctrl+letter; tests verify actual bytes rather than promising distinct chords the PTY cannot represent.
+
+### Fit: mobile-width wrapping on desktop
+
+A pane last used from a phone keeps phone columns, so its output wraps on a wide screen regardless of font size. **Fit terminal** sends one bounded, viewer-requested `resize-window` for *this terminal's own pinned window* (20–400 cols, 6–200 rows); other windows and sessions are never touched, and automatic layout fitting stays disabled. tmux may re-adjust the size later if a smaller real client attaches, exactly like attaching any terminal.
+
+### Unknown and restart observation
+
+**Unknown means the agent state has not been established, not that the process exited.** Open its badge for a content-free explanation. After CAO restarts, eligible exactly owned tmux panes regain reader/watchdog/pipe observation, without provider initialization, Enter, conversation resume or any other input. Existing unverified pipes are left untouched; legacy unmarked targets fail closed.
+
+A quiet viewport can be shown as a separate, twice-confirmed observation, but it is **not** automation readiness, completion or delivery evidence. The authoritative status remains unknown until recognizable fresh output arrives. Rendered watchdog captures use a distinct snapshot topic, never raw output generations/logs. Native event-inbox backends keep their existing recovery path.
 
 PWA/push is **not activated in this preview**. No worker is registered or served. The unsafe origin-wide cache deletion has been removed from the vendored worker; future install support still needs scoped manifest/auth/new-tab launch validation on real phones.
 

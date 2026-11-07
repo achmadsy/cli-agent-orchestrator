@@ -242,6 +242,55 @@ class StatusMonitor:
         # this a detection task can be garbage-collected mid-run and silently drop
         # a status transition. Tasks remove themselves on completion.
         self._detect_tasks: set = set()
+        self.ready = asyncio.Event()
+        self._monitoring: Dict[str, dict] = {}
+        self._snapshot_candidate: Dict[str, tuple] = {}
+
+    def set_monitoring(self, terminal_id: str, state: str, reason: str) -> None:
+        """Content-free observation health; not an agent readiness verdict."""
+        with self._lock:
+            self._snapshot_candidate.pop(terminal_id, None)
+            self._monitoring[terminal_id] = {"state": state, "reason": reason}
+
+    def monitoring_diagnostic(self, terminal_id: str) -> dict:
+        with self._lock:
+            return dict(self._monitoring.get(terminal_id, {
+                "state": "not_checked", "reason": "status_not_established",
+            }))
+
+    def observe_snapshot(self, terminal_id: str, capture) -> None:
+        """Display-only restart observation, never dispatch/completion evidence.
+
+        Ready snapshots intentionally do NOT enter _last_status, publish status
+        events or advance output generations: inbox pollers also call get_status.
+        """
+        with self._lock:
+            if self._output_generation.get(terminal_id, 0) > 0:
+                return
+            generation = self._capture_generation.get(terminal_id, 0)
+            witness = self._monitoring.setdefault(terminal_id, {"state": "attached", "reason": "awaiting_output"})
+        provider = provider_manager.get_provider(terminal_id)
+        if provider is None or not getattr(provider, "supports_screen_detection", False):
+            self.set_monitoring(terminal_id, "attached", "awaiting_output")
+            return
+        lines = capture().splitlines()
+        detected = provider.get_status_from_screen(lines)
+        now = time.monotonic()
+        with self._lock:
+            if (self._capture_generation.get(terminal_id, 0) != generation
+                    or self._monitoring.get(terminal_id) is not witness):
+                return
+            previous = self._snapshot_candidate.get(terminal_id)
+            self._snapshot_candidate[terminal_id] = (detected, now, generation)
+            if (previous and previous[0] == detected and previous[2] == generation
+                    and now - previous[1] <= STALE_PROCESSING_CONFIRM_TTL_S
+                    and detected != TerminalStatus.UNKNOWN):
+                self._monitoring[terminal_id] = {
+                    "state": "attached", "reason": "snapshot_only",
+                    "observed_status": detected.value, "source": "viewport",
+                }
+            else:
+                self._monitoring[terminal_id] = {"state": "attached", "reason": "awaiting_output"}
 
     async def run(self) -> None:
         """Subscribe to output events and detect status changes.
@@ -263,6 +312,7 @@ class StatusMonitor:
         # scheduled from the worker thread can be marshaled back onto it.
         self._loop = asyncio.get_running_loop()
         queue = bus.subscribe("terminal.*.output")
+        self.ready.set()
         logger.info("StatusMonitor started")
 
         while True:
@@ -295,6 +345,8 @@ class StatusMonitor:
         state_buffer_max = get_server_settings()["state_buffer_max"]
 
         with self._lock:
+            self._snapshot_candidate.pop(terminal_id, None)
+            self._monitoring[terminal_id] = {"state": "attached", "reason": "live_output", "source": "fifo"}
             buffer = self._buffers.get(terminal_id, "") + chunk
             recorder = getattr(provider, "record_status_chunk", None)
             if callable(recorder):
@@ -1018,6 +1070,8 @@ class StatusMonitor:
         """
         with self._runtime_failure_lock(terminal_id):
             with self._lock:
+                self._snapshot_candidate.pop(terminal_id, None)
+                self._monitoring.pop(terminal_id, None)
                 self._allow_processing_revert[terminal_id] = True
                 # A new turn invalidates every pane/runtime verdict sampled before
                 # this boundary, even when no new provider output has arrived.
@@ -1119,6 +1173,8 @@ class StatusMonitor:
     def clear_terminal(self, terminal_id: str) -> None:
         """Free buffer and status for a deleted terminal."""
         with self._lock:
+            self._monitoring.pop(terminal_id, None)
+            self._snapshot_candidate.pop(terminal_id, None)
             self._buffers.pop(terminal_id, None)
             self._buffer_epochs.pop(terminal_id, None)
             self._last_status.pop(terminal_id, None)
@@ -1156,6 +1212,8 @@ class StatusMonitor:
         with self._runtime_failure_lock(terminal_id):
             with self._lock:
                 self._runtime_failures.pop(terminal_id, None)
+                self._monitoring.pop(terminal_id, None)
+                self._snapshot_candidate.pop(terminal_id, None)
                 self._buffers[terminal_id] = ""
                 self._last_status.pop(terminal_id, None)
                 self._processing_generation.pop(terminal_id, None)

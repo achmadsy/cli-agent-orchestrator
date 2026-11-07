@@ -47,6 +47,7 @@ class InboxService:
         # two pastes from ever interleaving in one pane. The lock map is tiny
         # (one Lock per terminal id ever delivered to in this process) and is not
         # reaped — terminal ids are bounded by session lifecycle.
+        self.ready = asyncio.Event()
         self._delivery_locks_guard = threading.Lock()
         self._delivery_locks: Dict[str, threading.Lock] = {}
 
@@ -60,6 +61,7 @@ class InboxService:
 
     async def run(self, registry: PluginRegistry | None = None) -> None:
         queue = bus.subscribe("terminal.*.status")
+        self.ready.set()
         logger.info("InboxService started")
 
         while True:

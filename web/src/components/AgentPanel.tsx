@@ -22,6 +22,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 export function AgentPanel() {
   const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, deleteSession, terminalStatuses, setTerminalStatus } = useStore()
+  const [monitoring, setMonitoring] = useState<Record<string, { reason: string; observed_status?: string } | null>>({})
   const [provider, setProvider] = useState('kiro_cli')
   const [profile, setProfile] = useState('')
   const [creating, setCreating] = useState(false)
@@ -176,6 +177,9 @@ export function AgentPanel() {
     setRuntimeFailures(previous => Object.fromEntries(
       Object.entries(previous).filter(([id]) => visible.has(id)),
     ))
+    setMonitoring(previous => Object.fromEntries(
+      Object.entries(previous).filter(([id]) => visible.has(id)),
+    ))
     if (terminalIds.length === 0) return
 
     let cancelled = false
@@ -188,6 +192,7 @@ export function AgentPanel() {
           .then(terminal => {
             if (cancelled) return
             if (terminal.status) setTerminalStatus(id, terminal.status)
+            setMonitoring(previous => ({ ...previous, [id]: terminal.monitoring ?? null }))
             setRuntimeFailures(previous => ({
               ...previous,
               [id]: terminal.runtime_failure ?? null,
@@ -484,7 +489,7 @@ export function AgentPanel() {
                   <div className="flex min-w-0 flex-wrap items-center gap-3">
                     <TermIcon size={14} className="text-gray-400 shrink-0" />
                     <span className="text-sm font-mono text-gray-300">{t.id}</span>
-                    <StatusBadge status={terminalStatuses[t.id] || null} />
+                    <StatusBadge status={terminalStatuses[t.id] || null} monitoring={monitoring[t.id]} />
                     <span className="text-xs text-gray-500">{t.provider}</span>
                     {t.agent_profile && <span className="text-xs text-emerald-400">{t.agent_profile}</span>}
                   </div>

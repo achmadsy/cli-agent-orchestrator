@@ -189,6 +189,12 @@ class FifoManager:
 
         FIFO_DIR.mkdir(parents=True, exist_ok=True)
 
+    def has_reader(self, terminal_id: str) -> bool:
+        with self._lock:
+            thread = self._threads.get(terminal_id)
+            flag = self._readers.get(terminal_id)
+            return thread is not None and thread.is_alive() and flag is not None and not flag.is_set()
+
     def create_reader(
         self,
         terminal_id: str,
@@ -737,33 +743,12 @@ class FifoManager:
     def _rearm_stalled_pipe(
         self, terminal_id: str, content: str, rearm: RearmPipe, *, cold_start: bool
     ) -> None:
-        """Re-arm a confirmed-stalled pipe-pane forwarder and replay the live
-        pane snapshot into the pipeline, shared by both stall checks above —
-        they differ only in HOW a stall is detected, not in what happens once
-        one is confirmed.
+        """Re-arm a stalled forwarder without fabricating raw output.
 
-        Bytes lost during the stall are gone (tmux never buffered them), but
-        the pane's *current* content is not — replay it into the pipeline so
-        the StatusMonitor buffer / GET output immediately reflect the live
-        screen instead of staying frozen until the agent happens to emit
-        something new. This is also what makes the cold-start case actually
-        resolve: the replay publishes straight to the event bus, bypassing
-        the FIFO reader entirely, so wait_for_shell()'s buffer read is
-        satisfied even though the FIFO itself never delivered a byte.
-
-        capture-pane output is joined with a bare "\\n" (clients/tmux.py's
-        get_history), which is linefeed-without-carriage-return. pyte's
-        screen (fed by StatusMonitor for CAO_PYTE_STATUS providers — on by
-        default, and opted into by claude_code, exactly the provider #388
-        was filed against) defaults LNM (line-feed/new-line mode) off, so a
-        bare "\\n" advances the row without returning to column 0: each
-        replayed line renders indented past the previous one
-        ("staircasing"), and the composited screen no longer matches the
-        real pane until a later cursor-addressed repaint happens to paper
-        over it — meaning status detection can stay broken after the very
-        re-arm meant to fix it. Replaying with "\\r\\n" makes pyte treat it as
-        a real newline, matching what a real terminal does with tmux's own
-        capture-pane output.
+        Lost bytes cannot be recovered. Captured rendered rows have a separate
+        snapshot topic; they must not enter raw detectors, execution evidence,
+        or logs. Shell startup reads a guarded capture directly when needed.
+        Only actual FIFO reads advance the real-output clock.
         """
         logger.warning(
             "pipe-pane forwarder for terminal %s appears %s — re-arming",
@@ -809,14 +794,16 @@ class FifoManager:
                 )
             return
 
-        replay = content.replace("\n", "\r\n")
         with self._lock:
             if terminal_id not in self._pane_probe:
                 return
             self._rearm_failures.pop(terminal_id, None)
-            self._last_data_at[terminal_id] = time.monotonic()
+            # A successful pipe command is not byte delivery. Keep the real
+            # output clock untouched; the existing bounded retry clocks apply.
 
-        bus.publish(f"terminal.{terminal_id}.output", {"data": replay})
+        # Rendered captures are observations, never raw bytes, log output, or
+        # execution/delivery evidence. Status recovery uses snapshot-safe APIs.
+        bus.publish(f"terminal.{terminal_id}.snapshot", {"data": content})
 
 
 # Module-level singleton

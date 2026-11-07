@@ -14,6 +14,21 @@
   const extraKeysEl = document.getElementById('extra-keys');
   const arrowPad = document.getElementById('arrow-pad');
   const inputEl = document.getElementById('input');
+  // The very same buttons move into the named drawer on phones; modifiers
+  // must not be hidden beyond the quick-bar scroll edge when Keys is open.
+  const modifierButtons = [...document.querySelectorAll('.ek.mod')];
+  const modifierGroup = document.createElement('div');
+  modifierGroup.className = 'cao-mobile-modifiers';
+  extraKeysEl.prepend(modifierGroup);
+  const phoneLayout = matchMedia('(max-width:600px)');
+  function placeModifiers() {
+    for (const button of modifierButtons) {
+      if (phoneLayout.matches) modifierGroup.append(button);
+      else document.getElementById('ek-toggle').before(button);
+    }
+  }
+  phoneLayout.addEventListener('change', placeModifiers);
+  placeModifiers();
 
   // ── Modifier FSM ──
 
@@ -42,6 +57,7 @@
           ms.timer = setTimeout(() => {
             // Auto-expire: ARMED → IDLE
             ms.state = 'idle';
+            updateModifierFeedback();
             btn.classList.remove('active');
             btn.classList.add('flash-cancel');
             setTimeout(() => btn.classList.remove('flash-cancel'), 300);
@@ -69,6 +85,7 @@
           break;
       }
       ms.lastTap = now;
+      updateModifierFeedback();
     });
   });
 
@@ -93,6 +110,7 @@
         ms.btn.classList.remove('active');
       }
     }
+    updateModifierFeedback();
   }
 
   function clearAllModifiers() {
@@ -101,16 +119,23 @@
       ms.state = 'idle';
       ms.btn.classList.remove('active', 'locked');
     }
+    updateModifierFeedback();
   }
 
   // ── Send key with current modifiers ──
 
-  function sendEk(key) {
+  function sendEk(key, physical = [], fixed = false, sequence = false) {
+    if (!sequence) window.dispatchEvent(new Event('cao:key-intent'));
     if (!window.tmuxWs || !window.tmuxWs.isConnected() || !window.tmuxState.focusedPane) {
       window.flashInputError?.('Not connected');
       return;
     }
-    const mods = getActiveModifiers();
+    const mods = [...new Set([...(fixed ? [] : getActiveModifiers()), ...physical])];
+    // Fixed prefixed keys remain their declared chord even if modifiers were
+    // armed. Other quick keys use the same canonical modifier path.
+    if (key.startsWith('C-')) { mods.push('C'); key = key.slice(2); }
+    const names = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Backspace: 'BSpace', Delete: 'DC', PageUp: 'PPage', PageDown: 'NPage', ' ': 'Space' };
+    key = names[key] || key;
     window.tmuxWs.send({
       type: 'key',
       pane: window.tmuxState.focusedPane,
@@ -126,43 +151,44 @@
   window.sendEk = sendEk;
   window.hasActiveModifier = hasActiveModifiers;
 
-  // ── Phone keyboard combo: intercept when modifier active ──
-
-  if (inputEl) {
-    // Desktop/keydown path
-    inputEl.addEventListener('keydown', (e) => {
-      if (!hasActiveModifiers()) return;
-
-      const key = e.key;
-      if (!key) return;
-      // Allow single chars + special keys
-      if (key.length > 1 && !['Enter','Tab','Escape','Backspace','Delete'].includes(key)) return;
-
+  // Explicit key interaction only: ordinary composer text/IME/clipboard is
+  // never turned into terminal input merely because a virtual modifier is armed.
+  const keyCapture = document.getElementById('cao-key-capture');
+  if (keyCapture) {
+    keyCapture.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229 || e.metaKey || ['Control','Alt','Shift','Meta','Dead','Process'].includes(e.key)) return;
+      // Tab leaves this explicit capture field; use the visible Tab/⇧Tab
+      // buttons to send it. Clipboard shortcuts remain normal in the composer.
+      if (e.key === 'Tab') return;
+      if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.shiftKey) return;
       e.preventDefault();
-      e.stopPropagation();
-      sendEk(key.length === 1 ? key : key);
-      // Keep keyboard open on mobile — re-focus input after combo
-      requestAnimationFrame(() => inputEl.focus());
-    });
-
-    // Mobile fallback: 'input' event for keyboards that skip keydown
-    let lastInputValue = '';
-    inputEl.addEventListener('focus', () => { lastInputValue = inputEl.value; });
-    inputEl.addEventListener('input', () => {
-      if (!hasActiveModifiers()) { lastInputValue = inputEl.value; return; }
-
-      const newVal = inputEl.value;
-      const inserted = newVal.slice(lastInputValue.length);
-      if (inserted.length >= 1) {
-        // Undo insertion, send as combo
-        inputEl.value = lastInputValue;
-        sendEk(inserted[0]);
-        // Keep keyboard open on mobile
-        requestAnimationFrame(() => inputEl.focus());
-      }
-      lastInputValue = inputEl.value;
+      e.stopImmediatePropagation();
+      sendEk(e.key, [e.ctrlKey && 'C', e.altKey && 'M', e.shiftKey && 'Shift'].filter(Boolean));
+      keyCapture.value = '';
+    }, true);
+    document.getElementById('cao-key-send')?.addEventListener('click', () => {
+      const key = keyCapture.value;
+      if ([...key].length !== 1) { window.flashInputError?.('Enter one key'); return; }
+      sendEk(key);
+      keyCapture.value = '';
     });
   }
+  document.getElementById('cao-clear-modifiers')?.addEventListener('click', clearAllModifiers);
+
+  function updateModifierFeedback() {
+    const labels = [];
+    for (const ms of Object.values(modState)) {
+      ms.btn.setAttribute('aria-pressed', String(ms.state !== 'idle'));
+      ms.btn.dataset.state = ms.state;
+      if (ms.state !== 'idle') labels.push(`${ms.btn.textContent} ${ms.state}`);
+    }
+    const status = document.getElementById('cao-modifier-status');
+    if (status) status.textContent = labels.join(', ') || 'No modifiers';
+  }
+  window.clearTerminalModifiers = clearAllModifiers;
+  window.addEventListener('pagehide', clearAllModifiers);
+  window.addEventListener('cao:terminal-reset', clearAllModifiers);
+  updateModifierFeedback();
 
   // ── Extra key buttons ──
 
@@ -178,13 +204,7 @@
   document.querySelectorAll('.ek[data-ctrl]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
-      if (!window.tmuxWs || !window.tmuxWs.isConnected() || !window.tmuxState.focusedPane) return;
-      window.tmuxWs.send({
-        type: 'key',
-        pane: window.tmuxState.focusedPane,
-        key: btn.dataset.ctrl,
-        modifiers: ['C'],
-      });
+      sendEk(btn.dataset.ctrl, ['C'], true);
     });
   });
 
@@ -286,7 +306,8 @@
   function loadEkPref() {
     const isPhone = window.matchMedia('(max-width:600px)').matches;
     if (isPWA() && !isPhone) return true;
-    const stored = localStorage.getItem('tmux-webui-show-extra-keys');
+    let stored = null;
+    try { stored = localStorage.getItem('tmux-webui-show-extra-keys'); } catch (_) {}
     if (stored !== null) return stored === '1';
     return isTouch() && !isPhone;
   }
@@ -301,11 +322,14 @@
   // ── Extra Keys Toggle Button ──
   const ekToggle = document.getElementById('ek-toggle');
   if (ekToggle) {
+    ekToggle.setAttribute('aria-expanded', String(extraKeysEl.classList.contains('visible')));
     ekToggle.addEventListener('click', (e) => {
       e.preventDefault();
       const show = !extraKeysEl.classList.contains('visible');
       extraKeysEl.classList.toggle('visible', show);
-      localStorage.setItem('tmux-webui-show-extra-keys', show ? '1' : '0');
+      if (show) extraKeysEl.scrollTop = 0;
+      ekToggle.setAttribute('aria-expanded', String(show));
+      try { localStorage.setItem('tmux-webui-show-extra-keys', show ? '1' : '0'); } catch (_) {}
       const footerEl = document.querySelector('footer');
       if (footerEl && show) footerEl.classList.remove('mobile-collapsed');
       else if (footerEl && !show && window.matchMedia('(max-width:600px)').matches) footerEl.classList.add('mobile-collapsed');

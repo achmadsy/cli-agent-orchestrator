@@ -22,10 +22,77 @@ import (
 var caoID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
 var caoStablePane = regexp.MustCompile(`^%[0-9]+$`)
 var caoStableWindow = regexp.MustCompile(`^@[0-9]+$`)
-var caoKey = regexp.MustCompile(`^(?:(?:C|M|S)-)*(?:[A-Za-z0-9]|Enter|Escape|Tab|BSpace|DC|Delete|Up|Down|Left|Right|Home|End|PPage|NPage|Space|BTab|F[1-9][0-2]?)$`)
+var caoKey = regexp.MustCompile(`^(?:(?:C|M|S)-)*(?:[A-Za-z0-9]|Enter|Escape|Tab|BSpace|DC|Delete|Up|Down|Left|Right|Home|End|PPage|NPage|Space|BTab|F(?:[1-9]|1[0-2]))$`)
+
+// Canonicalize only the restricted key protocol, without changing upstream FSM.
+func caoKeySpec(key string, modifiers []string) (string, bool) {
+	if len(modifiers) > 3 {
+		return "", false
+	}
+	mods := []string{}
+	shift := false
+	for _, mod := range modifiers {
+		switch strings.ToLower(mod) {
+		case "c", "ctrl":
+			mods = append(mods, "C")
+		case "m", "alt":
+			mods = append(mods, "M")
+		case "s", "shift":
+			shift = true
+		default:
+			return "", false
+		}
+	}
+	if shift {
+		switch {
+		case key == "Tab":
+			key = "BTab"
+		case len(key) == 1 && strings.Contains("abcdefghijklmnopqrstuvwxyz", key):
+			key = strings.ToUpper(key)
+		case len(key) == 1 && strings.Contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", key):
+		case len(key) == 1 && strings.Contains("1234567890-=[]\\;'/.,`", key):
+			from, to := "1234567890-=[]\\;'/.,`", "!@#$%^&*()_+{}|:\"?><~"
+			key = string(to[strings.Index(from, key)])
+		case len(key) == 1: // DOM event.key may already be shifted punctuation.
+		default:
+			mods = append(mods, "S")
+		}
+	}
+	spec := buildKeySpec(key, mods)
+	if caoKey.MatchString(spec) {
+		return spec, true
+	}
+	if len(key) == 1 && strings.Contains("[]\\^_?@", key) && len(mods) > 0 {
+		return spec, true
+	}
+	if len(mods) == 0 && len([]rune(key)) == 1 && []rune(key)[0] >= 32 && []rune(key)[0] != 127 {
+		return key, true
+	}
+	return "", false
+}
 
 // tmuxctl.atoi is package-private; capture output fields are advisory anyway.
 func caoAtoi(s string) int { n, _ := strconv.Atoi(s); return n }
+
+// Bounds for viewer-requested resizes: generous for 4K panes, far below any
+// value a real browser viewport could produce from its own box measurements.
+const (
+	caoResizeMinCols = 20
+	caoResizeMaxCols = 400
+	caoResizeMinRows = 6
+	caoResizeMaxRows = 200
+)
+
+// caoResize resizes exactly the target's own pinned window. Automatic layout
+// fitting stays disabled; this runs only for an explicit user request.
+func caoResize(ctx context.Context, tx *tmuxctl.Client, t CAOTarget, cols, rows int) error {
+	if cols < caoResizeMinCols || cols > caoResizeMaxCols || rows < caoResizeMinRows || rows > caoResizeMaxRows {
+		return errors.New("resize out of range")
+	}
+	_, err := tx.Run(ctx, "resize-window", "-t", t.WindowID,
+		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+	return err
+}
 
 // CAOTarget comes only from the authenticated Python gateway, never directly
 // from a browser. Stable IDs are pinned for the lifetime of a viewer lease.
@@ -295,7 +362,7 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 						return
 					}
 					continue
-				case "input", "key", "mouse", "focus", "fit":
+				case "input", "key", "mouse", "focus", "fit", "resize":
 					if !found {
 						return
 					}
@@ -304,7 +371,20 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 				}
 				switch msg.Type {
 				case "focus", "fit":
-					continue // client focus only; never mutate shared layout
+					continue // client focus only; never auto-mutate shared layout
+				case "resize":
+					// One-shot, viewer-requested geometry for THIS terminal's own
+					// window. A pane left at phone columns wraps on desktop; the
+					// user asking to fit is the same act as attaching a client of
+					// that size. Bounded; other windows are never touched.
+					if e := caoResize(ctx, tx, t, msg.Cols, msg.Rows); e != nil {
+						_ = send(newInputError("Resize unavailable"))
+						continue
+					}
+					if refresh() != nil {
+						return
+					}
+					continue
 				case "input":
 					if len(msg.Text) > 60000 || len(msg.Nonce) > 128 {
 						return
@@ -337,15 +417,13 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 						_ = send(outInputOK{Type: "input_ok", Nonce: msg.Nonce})
 					}
 				case "key":
-					key := buildKeySpec(msg.Key, msg.Modifiers)
-					if !caoKey.MatchString(key) {
-						// Single printable shell/Unicode keys are literal data, never
-						// option names or tmux command separators.
-						if len([]rune(msg.Key)) == 1 && len(msg.Modifiers) == 0 && []rune(msg.Key)[0] >= 32 {
-							_ = tx.SendText(ctx, msg.Pane, msg.Key)
-						} else {
-							_ = send(newInputError("Unsupported key"))
-						}
+					key, ok := caoKeySpec(msg.Key, msg.Modifiers)
+					if !ok {
+						_ = send(newInputError("Unsupported key"))
+						continue
+					}
+					if len([]rune(key)) == 1 {
+						_ = tx.SendText(ctx, msg.Pane, key)
 						continue
 					}
 					// No prefix FSM: C-b then x must not turn into kill-pane/global commands.

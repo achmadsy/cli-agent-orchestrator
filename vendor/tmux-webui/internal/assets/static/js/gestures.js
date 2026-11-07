@@ -15,7 +15,8 @@
   // applied by app.js applyTheme) > CSS default 12. Fall through to config only
   // when the user hasn't pinched, so a pinch always overrides the operator's
   // configured size.
-  const storedFont = localStorage.getItem('tmux-webui-font-size');
+  let storedFont = null;
+  try { if (!window.__CAO_WORKSPACE__) storedFont = localStorage.getItem('tmux-webui-font-size'); } catch (_) {}
   const cfgFont = window.cfgGet ? window.cfgGet('theme.fontSize', null) : null;
   let fontSize = parseFloat(storedFont != null ? storedFont : (cfgFont != null ? cfgFont : 14));
   document.documentElement.style.setProperty('--font-size', fontSize + 'px');

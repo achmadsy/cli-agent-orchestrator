@@ -126,6 +126,7 @@ export interface Terminal {
   status: string | null
   last_active: string | null
   runtime_failure?: RuntimeFailure | null
+  monitoring?: { state: string; reason: string; observed_status?: string; source?: string } | null
 }
 
 export interface SessionDetail {

@@ -194,6 +194,9 @@ class Terminal(BaseModel):
     status: Optional[TerminalStatus] = Field(
         None, description="Current terminal status (live only)"
     )
+    monitoring: Optional[Dict[str, str]] = Field(
+        None, description="Content-free output observation diagnostics; not delivery readiness"
+    )
     last_active: Optional[datetime] = Field(None, description="Last active timestamp (UTC)")
 
     @field_validator("last_active")

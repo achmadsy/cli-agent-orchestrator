@@ -1443,11 +1443,18 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     bus.set_loop(loop)
 
+    # Clear lifecycle-local readiness before scheduling consumers; recovery must
+    # not mistake a previous lifespan's subscription for a current one.
+    for consumer in (status_monitor, log_writer, inbox_service):
+        consumer.ready.clear()
     # Start event bus consumers as background tasks
     status_monitor_task = asyncio.create_task(status_monitor.run())
     log_writer_task = asyncio.create_task(log_writer.run())
     inbox_service_task = asyncio.create_task(inbox_service.run(registry))
     logger.info("Event bus consumers started (StatusMonitor, LogWriter, InboxService)")
+    from cli_agent_orchestrator.services.observation_recovery import recover_observation
+
+    observation_recovery_task = asyncio.create_task(recover_observation())
 
     # Start ApprovalBridge when AG-UI surface is enabled
     approval_bridge_task: Optional[asyncio.Task] = None
@@ -1526,6 +1533,9 @@ async def lifespan(app: FastAPI):
             await deferred_init_recovery_task
         except asyncio.CancelledError:
             pass
+
+    observation_recovery_task.cancel()
+    await asyncio.gather(observation_recovery_task, return_exceptions=True)
 
     # Cancel consumer tasks on shutdown
     status_monitor_task.cancel()

@@ -1170,6 +1170,7 @@ function buildPaneEl(p) {
 
 function setFocus(paneId) {
   const isSwitch = S.focusedPane !== paneId;
+  if (isSwitch) window.dispatchEvent(new Event('cao:terminal-reset'));
   // Save current pane's input buffer before switching
   if (S.focusedPane && isSwitch) {
     S.paneInputs[S.focusedPane] = inputEl.value;
@@ -1523,7 +1524,7 @@ window.tmuxWs = (function() {
 
   function send(data) {
     if (window.__CAO_WORKSPACE__) {
-      const permitted = new Set(['input','key','mouse','focus','fit','fit_enable','fit_disable','switch_window','refresh_panes','autocomplete','pong']);
+      const permitted = new Set(['input','key','mouse','focus','fit','resize','fit_enable','fit_disable','switch_window','refresh_panes','autocomplete','pong']);
       if (!permitted.has(data.type)) { window.flashInputError?.('Manage agents from CAO'); return; }
       if (['fit','fit_enable','fit_disable'].includes(data.type)) return; // layouts are shared
     }
@@ -1677,6 +1678,7 @@ window.tmuxWs = (function() {
 
     ws.onclose = (event) => {
       if (ws !== thisWs) return; // stale instance's close must not touch shared UI state
+      window.dispatchEvent(new Event('cao:terminal-reset'));
       if (window.__CAO_WORKSPACE__ && [4401,4403].includes(event.code)) {
         setStatus('', '');
         statusEl.textContent = 'Viewer expired — reopen from CAO';
@@ -1992,7 +1994,8 @@ document.querySelectorAll('.qbtn[data-key]').forEach(btn => {
     const key = btn.dataset.key;
     if (!window.tmuxWs.isConnected() || !S.focusedPane) return;
     if (window.linkSendBlocked && window.linkSendBlocked()) return; // input follow-lock (spec §3 Slice 2)
-    window.tmuxWs.send({ type:'key', pane:S.focusedPane, key });
+    if (window.sendEk) window.sendEk(key, [], key === 'C-c' || key === 'BTab');
+    else window.tmuxWs.send({ type:'key', pane:S.focusedPane, key });
     if (S.paneEls[S.focusedPane]) S.paneEls[S.focusedPane].resetScroll();
   });
 });

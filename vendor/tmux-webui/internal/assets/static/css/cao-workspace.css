@@ -13,7 +13,18 @@ header h1 { color: var(--dim); font-size: 13px; font-weight: 500; }
 .header-controls { gap: 8px; flex-wrap: nowrap; min-width: 0; }
 #status { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
 #status.connected { color: var(--green); }
-.cao-reading-controls { display: flex; gap: 4px; }
+.cao-reading-controls { display: flex; align-items: center; gap: 4px; }
+.cao-reading-controls output { min-width: 36px; text-align: center; color: var(--dim); font-size: 13px; }
+.cao-key-capture { display: flex; align-items: center; gap: 8px; }
+.cao-mobile-modifiers { display: none; }
+#cao-key-capture { width: 170px; min-height: 44px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 16px; }
+.cao-key-help, #cao-modifier-status { color: var(--dim); font-size: 13px; }
+.cao-provider-keys { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; }
+.cao-provider-keys > span { color: var(--dim); font-size: 13px; }
+.cao-key-help { flex-basis: 100%; }
+.ek.mod { font-size: 13px; }
+.ek.mod[data-state='armed'] { background: var(--accent); color: var(--bg); }
+.ek.mod[data-state='locked'] { background: var(--accent); color: var(--bg); box-shadow: inset 0 -3px var(--text); }
 .btn, .qbtn, .ek, .mobile-pane-tab, .win-tab, .layout-dd-btn { min-height: 44px; min-width: 44px; font-size: 13px; }
 .btn { background: transparent; }
 #pane-container { min-height: 0; padding: 8px; gap: 8px; }
@@ -23,10 +34,14 @@ header h1 { color: var(--dim); font-size: 13px; font-weight: 500; }
 .pane-terminal { font-family: var(--font-mono); line-height: 1.5; padding: 12px; background: var(--bg); }
 footer { background: var(--surface); padding: 8px max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
 .footer-top { min-width: 0; }
+.focused-label { display: none; } /* Pane identity already lives in its header. */
+.quick-actions { flex: 1; }
 .quick-actions { flex-wrap: nowrap !important; overflow-x: auto; min-width: 0; gap: 6px; }
 .qbtn { flex-shrink: 0; padding: 8px 12px; background: var(--surface2); }
 .qbtn[data-key='C-c'] { color: var(--red); }
-.extra-keys.visible { max-height: 112px; overflow-y: auto; }
+.extra-keys.visible { max-height: min(240px, 35dvh); overflow-y: auto; flex-wrap: wrap; gap: 6px; align-content: flex-start; overflow-anchor: none; scroll-behavior: auto; }
+.quick-actions .ek { flex-shrink: 0; }
+@media (min-width: 601px) { .quick-actions { gap: 8px; } .pane-header { font-size: 13px; } }
 .input-row { gap: 8px; align-items: flex-end; }
 #input { min-width: 0; font-family: inherit; font-size: 16px; line-height: 1.4; padding: 12px; background: var(--bg); color: var(--text); }
 #send-btn { min-height: 46px; padding: 10px 16px; background: var(--accent); color: var(--bg); font-size: 14px; font-weight: 600; border-radius: 8px; }
@@ -41,7 +56,11 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:f
   header { padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left)); }
   header h1 { display: none; }
   .header-controls { width: 100%; justify-content: space-between; gap: 4px; }
-  #status { max-width: 40vw; font-size: 12px; }
+  #status { max-width: 24vw; font-size: 12px; }
+  .cao-reading-controls { gap: 0; }
+  .cao-reading-controls .btn { padding-inline: 6px; }
+  .cao-jump-live { max-width: 66px; white-space: normal; }
+  .cao-fit { white-space: nowrap; padding-inline: 8px; }
   .cao-jump-live { font-size: 12px; padding-inline: 8px; }
   #pane-container { padding: 0; gap: 0; }
   .pane-box { border-radius: 0; border: 0; }
@@ -52,6 +71,12 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:f
   footer { padding-inline: 8px; }
   .focused-label, .qico { display: none; }
   .qbtn, .ek, .btn { min-height: 44px; }
+  .cao-mobile-modifiers { display: flex; gap: 6px; width: 100%; }
+  .cao-key-capture { flex-wrap: wrap; width: 100%; }
+  #cao-key-capture { width: 100%; }
+  /* Navigation and the named key drawer are immediately visible, not beyond
+     the horizontal scroll edge on small phones. */
+  .quick-actions > .ek[data-ek], #ek-toggle { order: -1; }
   #input { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {

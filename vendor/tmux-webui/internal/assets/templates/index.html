@@ -81,18 +81,24 @@
         <button type="button" class="qbtn" data-key="C-c" title="Interrupt">C-c<span class="qico">&#x2303;</span></button>
         <button type="button" class="qbtn" data-key="BSpace" title="Delete">Del<span class="qico">&#x232B;</span></button>
         <button type="button" class="qbtn" data-key="Enter" title="Enter">Enter<span class="qico">&#x23CE;</span></button>
-        <div class="arrow-pad arrow-pad-mini" id="quick-arrow-pad"><div class="arrow-pad-label">&#8982;</div></div>
-        <button class="qbtn qbtn-ek-toggle" id="ek-toggle" title="Toggle extra keys">&#9776;</button>
+        <button type="button" class="ek" data-ek="Left" aria-label="Left arrow">←</button>
+        <button type="button" class="ek" data-ek="Up" aria-label="Up arrow">↑</button>
+        <button type="button" class="ek" data-ek="Down" aria-label="Down arrow">↓</button>
+        <button type="button" class="ek" data-ek="Right" aria-label="Right arrow">→</button>
+        <button type="button" class="ek mod" data-mod="C" aria-pressed="false" title="Tap once; double-tap to lock">Ctrl</button>
+        <button type="button" class="ek mod" data-mod="M" aria-pressed="false">Alt</button>
+        <button type="button" class="ek mod" data-mod="Shift" aria-pressed="false">Shift</button>
+        <button type="button" class="qbtn qbtn-ek-toggle" id="ek-toggle" aria-expanded="false" aria-controls="extra-keys">Keys</button>
       </div>
       <button class="exit-fullscreen" id="exit-fullscreen" title="Exit fullscreen">&#x26F6; exit</button>
       <span class="focused-label" id="focused-label">no pane</span>
     </div>
     <div class="extra-keys" id="extra-keys">
-      <!-- Row 1: Modifiers (FSM: tap=armed, double-tap=locked) -->
-      <button class="ek mod" data-mod="C" title="Ctrl (tap=once, double-tap=lock)">Ctrl</button>
-      <button class="ek mod" data-mod="M" title="Alt/Option">Alt</button>
-      <button class="ek mod" data-mod="Shift" title="Shift">Shift</button>
-      <button class="ek mod" data-mod="S" title="Cmd/Super">Cmd</button>
+      <label class="cao-key-capture">Send a terminal key <input id="cao-key-capture" aria-label="Terminal key or combination" placeholder="Press a key or type p" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <button type="button" class="ek" id="cao-key-send">Send key</button>
+      <button type="button" class="ek" id="cao-clear-modifiers">Clear modifiers</button>
+      <output id="cao-modifier-status" aria-live="polite">No modifiers</output>
+      <span class="cao-key-help">Modifiers: tap once; double-tap to lock. Message typing stays normal.</span>
       <div class="ek-sep"></div>
       <!-- Row 2: Control shortcuts -->
       <button class="ek" data-ctrl="d" title="Ctrl+D (EOF/exit)" style="color:var(--red)">C-d</button>

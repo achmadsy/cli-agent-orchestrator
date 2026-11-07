@@ -56,12 +56,15 @@ export function TerminalWorkspace({ terminalId, provider, agentProfile, onClose 
     const receive = (event: MessageEvent) => {
       if (event.origin !== location.origin || event.source !== frame.current?.contentWindow) return
       if (event.data?.type === 'cao:terminal-expired') setExpired(true)
-      if (event.data?.type === 'cao:terminal-ready') setReady(true)
+      if (event.data?.type === 'cao:terminal-ready') {
+        setReady(true)
+        frame.current?.contentWindow?.postMessage({ type: 'cao:terminal-context', provider: provider || '' }, location.origin)
+      }
       if (event.data?.type === 'cao:terminal-load-failed') setLoadFailed(true)
     }
     window.addEventListener('message', receive)
     return () => window.removeEventListener('message', receive)
-  }, [])
+  }, [provider])
 
   useEffect(() => {
     if (!viewer || classic || ready || expired || loadFailed) return

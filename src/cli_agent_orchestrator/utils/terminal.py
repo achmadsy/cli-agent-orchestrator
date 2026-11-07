@@ -148,7 +148,23 @@ async def wait_for_shell(
     else:
 
         def read_buffer() -> str:
-            return status_monitor.get_buffer(terminal_id)
+            raw = status_monitor.get_buffer(terminal_id)
+            if raw.strip():
+                return raw
+            # Shell-startup stability only, not agent status or execution proof.
+            # A quiet shell may predate pipe attachment; don't inject a rendered
+            # capture into the raw-output bus to satisfy this wait.
+            from cli_agent_orchestrator.backends.tmux_backend import TmuxBackend
+            from cli_agent_orchestrator.clients.database import get_terminal_metadata
+
+            if isinstance(backend, TmuxBackend):
+                try:
+                    metadata = get_terminal_metadata(terminal_id)
+                    target = backend.resolve_workspace_target(terminal_id, metadata["tmux_session"])
+                    return backend.observe_terminal_exact(target)
+                except Exception:
+                    return ""
+            return raw
 
     logger.info(f"Waiting for shell to be ready for terminal {terminal_id}...")
 
@@ -157,7 +173,7 @@ async def wait_for_shell(
     last_change = time.time()
 
     while time.time() < deadline:
-        buf = read_buffer()
+        buf = await asyncio.to_thread(read_buffer)
 
         if buf != previous_buffer:
             previous_buffer = buf
