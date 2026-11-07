@@ -226,7 +226,23 @@ function genMcpStatus() {
 // ---------------------------------------------------------------------------
 // driver
 // ---------------------------------------------------------------------------
+function genWorkspaceCss(upstream = false) {
+  const w = tokens.workspace;
+  const names = { accentHover: "accent-h" };
+  const colors = Object.entries(w).filter(([, value]) => typeof value === "string");
+  const prefix = upstream ? "" : "workspace-";
+  return HEADER_HASH + "\n:root {\n" + colors.map(([key, value]) =>
+    `  --${prefix}${names[key] || key}: ${value};`
+  ).join("\n") + `\n  --${prefix}font-size: ${w.fontSize}px;\n  --${prefix}radius: ${w.radius}px;\n}\n`;
+}
+
 const ARTIFACTS = [
+  { path: resolve(REPO, "web/src/workspace.generated.css"), content: genWorkspaceCss() },
+  { path: resolve(REPO, "vendor/tmux-webui/internal/assets/static/css/cao-tokens.css"), content: genWorkspaceCss(true) },
+  { path: resolve(REPO, "vendor/tmux-webui/cao-config.example.json"), content: JSON.stringify({ ui: { theme: {
+    colors: Object.fromEntries(Object.entries(tokens.workspace).filter(([, v]) => typeof v === "string")),
+    fontSize: tokens.workspace.fontSize, radius: tokens.workspace.radius,
+  } } }, null, 2) + "\n" },
   { path: resolve(REPO, "web/tailwind.preset.cjs"), content: genTailwindPreset() },
   { path: resolve(REPO, "web/src/status.generated.ts"), content: genWebStatus() },
   {

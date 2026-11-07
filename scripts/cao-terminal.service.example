@@ -1,0 +1,17 @@
+# Example only: not installed by CAO. Replace absolute paths before use.
+# Use a user service (systemctl --user); do not run as root.
+[Unit]
+Description=CAO restricted tmux terminal workspace
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/cao/terminal-workspace.env
+ExecStart=%h/.local/bin/cao-terminal --listen 127.0.0.1:9528 --socket /replace/with/cao/tmux/socket --config /replace/with/cao-config.example.json
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=default.target

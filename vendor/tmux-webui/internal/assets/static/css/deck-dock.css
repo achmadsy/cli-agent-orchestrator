@@ -1,0 +1,181 @@
+/* deck-dock.css — Dock Mode: split-view (terminal visible + control column).
+   100% additive: every selector is scoped to #deck-* / .deck-* / #app.deck-dock.
+   When deck-dock mode is off (#app has no .deck-dock class) no rule here affects
+   the existing terminal view — deck-off byte-identical guarantee is preserved.
+   #app.deck-dock follows the same mode-class pattern as #app.deck-mode / #app.fullscreen-mode. */
+
+/* ── Dock layout — #app.deck-dock ─────────────────────────────────────────── */
+
+/* Dock mode co-exists with the terminal (does NOT hide #pane-container, unlike the
+   fullscreen #app.deck-mode). The control panel reuses the EXISTING #deck-root and
+   is pinned as a fixed rail to the right (landscape) or bottom (portrait); the
+   terminal stays visible and is padded to clear it. position:fixed (not an #app
+   flex-direction flip) so the header/footer don't reflow into a row. */
+
+/* Landscape: right 38% control rail.
+   The rail starts BELOW the header (top: header height, set by deck.js as
+   --deck-header-h) so it never covers the header's deck-toggle — otherwise the
+   rail traps the user in dock mode (clicking the toggle hits the rail). */
+@media (orientation: landscape) and (min-aspect-ratio: 1.3) {
+  #app.deck-dock #deck-root {
+    display: flex; flex-direction: column;
+    position: fixed; top: var(--deck-header-h, 40px); right: 0; bottom: 0;
+    width: 38%; max-width: 380px;
+    overflow-y: auto; gap: 14px;
+    background: var(--bg); border-left: 1px solid var(--border);
+    padding: 14px;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+    z-index: 50;
+  }
+  #app.deck-dock #pane-container { padding-right: min(38%, 380px); }
+}
+
+/* Portrait: bottom control dock */
+@media not ((orientation: landscape) and (min-aspect-ratio: 1.3)) {
+  #app.deck-dock #deck-root {
+    display: flex; flex-direction: column;
+    position: fixed; left: 0; right: 0; bottom: 0;
+    max-height: 46vh; overflow-y: auto; gap: 12px;
+    background: var(--bg); border-top: 1px solid var(--border);
+    padding: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    z-index: 50;
+  }
+  #app.deck-dock #pane-container { padding-bottom: 46vh; }
+}
+
+/* ── Dial widget .deck-dial ───────────────────────────────────────────────── */
+
+/* touch-action:none so pointer capture works; pan blocked intentionally */
+.deck-dial {
+  touch-action: none;
+  position: relative;
+  display: inline-block;
+  width: 80px;
+  height: 80px;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* SVG fills the widget; background circle */
+.deck-dial svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Detent tick marks around the perimeter */
+.deck-dial-detent {
+  stroke: var(--border);
+  stroke-width: 2;
+  stroke-linecap: round;
+  opacity: .55;
+}
+
+/* Filled arc showing current value */
+.deck-dial-arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 4;
+  stroke-linecap: round;
+  transition: stroke-dashoffset .08s linear;
+}
+
+/* Track arc (background ring) */
+.deck-dial-track {
+  fill: none;
+  stroke: var(--surface2);
+  stroke-width: 4;
+}
+
+/* Central thumb / grip circle */
+.deck-dial-thumb {
+  fill: var(--surface2);
+  stroke: var(--border);
+  stroke-width: 1.5;
+  transition: fill .15s;
+}
+
+.deck-dial:active .deck-dial-thumb,
+.deck-dial.dragging .deck-dial-thumb {
+  fill: color-mix(in srgb, var(--accent) 30%, var(--surface2));
+  stroke: var(--accent);
+}
+
+/* Value label below the dial */
+.deck-dial-label {
+  position: absolute;
+  bottom: -18px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ── Permission-mode pills .deck-mode-pills (replaces the old drag slider) ──── */
+/* 4 equal-width tap targets, no horizontal scroll. Tapping cycles CC to that
+   mode (Shift-Tab presses in JS); the active mode is highlighted. auto = red
+   caution, plan = green safe — mirrors the status-strip mode-light semantics. */
+
+.deck-mode-pills {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 0;
+  flex-shrink: 0;
+}
+
+.deck-mode-pill {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 9px 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s, box-shadow .15s, transform .05s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.deck-mode-pill:active {
+  transform: translateY(1px);
+}
+
+/* active mode (default/accept) — accent highlight */
+.deck-mode-pill.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* plan = green (safe, read-only planning) */
+.deck-mode-pill.mode-plan.active {
+  background: var(--green);
+  color: var(--bg);
+  border-color: var(--green);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--green) 45%, transparent);
+}
+
+/* auto = red (caution: auto-executes without prompting) */
+.deck-mode-pill.mode-auto.active {
+  background: var(--red);
+  color: var(--bg);
+  border-color: var(--red);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--red) 45%, transparent);
+}

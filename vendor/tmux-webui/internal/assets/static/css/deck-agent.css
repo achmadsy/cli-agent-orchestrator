@@ -1,0 +1,713 @@
+/* deck-agent.css — Agent Deck: the deck-mode v2 control surface.
+   Ported from the claude.ai/design "Agent Deck" mock (Stream Deck+ device frame:
+   profile rail · key grid · touch strip · dials), RECOLORED onto tmux-webui's
+   own tokens (main.css :root) instead of the mock's neutral grays:
+     running=--green · waiting=--red (existing rail conventions)
+     focus/routing=--accent · info strip=--cyan · warn=--yellow
+   Two layouts: fullscreen (#app.deck-mode, fluid to the viewport) and compact
+   (.dka-compact — the dock column: tabs · mini strip · pills · grid · scrub).
+   100% additive: every selector is .dka-* / #deck-root.dka.
+   Deck-off DOM untouched; legacy dock chrome (no .dka) untouched. */
+
+/* ── container ─────────────────────────────────────────────────────────── */
+#app.deck-mode #deck-root.dka{
+  align-items:center;
+  gap:14px;
+  background:
+    radial-gradient(120% 90% at 50% -10%,
+      color-mix(in srgb, var(--surface2) 70%, var(--bg)) 0%,
+      var(--bg) 55%,
+      color-mix(in srgb, black 35%, var(--bg)) 100%);
+}
+
+@keyframes dkaPulse{
+  0%,100%{ box-shadow:0 0 0 0 rgba(248,113,113,0), 0 6px 14px rgba(0,0,0,.5); }
+  50%{ box-shadow:0 0 0 3px color-mix(in srgb, var(--red) 45%, transparent),
+        0 0 22px color-mix(in srgb, var(--red) 50%, transparent),
+        0 6px 14px rgba(0,0,0,.5); }
+}
+@keyframes dkaBlink{ 0%,100%{opacity:1} 50%{opacity:.25} }
+@keyframes dkaToastIn{ from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)} }
+@keyframes dkaSent{ 0%{filter:brightness(1.8)} 100%{filter:brightness(1)} }
+
+/* ── context strip ─────────────────────────────────────────────────────── */
+.dka-strip{
+  width:100%; max-width:980px;
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:0 4px;
+}
+.dka-logo{ display:flex; align-items:center; gap:9px; }
+.dka-logo-mark{
+  width:22px; height:22px; border-radius:6px;
+  background:linear-gradient(135deg, var(--surface2), var(--bg));
+  border:1px solid var(--border);
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; color:var(--accent-h);
+}
+.dka-logo-name{ font-weight:700; letter-spacing:1.5px; font-size:13px; color:var(--text); }
+.dka-logo-sub{ font-size:10px; color:var(--dim); letter-spacing:.5px; }
+.dka-spacer{ flex:1; }
+.dka-route{
+  display:flex; align-items:center; gap:8px;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius); padding:5px 11px;
+  min-width:0;
+}
+.dka-route-hint{ font-size:11px; color:var(--dim); }
+.dka-route-name{ font-size:12px; font-weight:600; color:var(--text);
+  max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dka-chip{
+  font-size:9px; color:var(--dim);
+  border:1px solid var(--border); border-radius:4px; padding:1px 5px;
+  white-space:nowrap;
+}
+.dka-wait{
+  display:flex; align-items:center; gap:6px;
+  background:color-mix(in srgb, var(--red) 12%, var(--bg));
+  border:1px solid color-mix(in srgb, var(--red) 45%, var(--border));
+  border-radius:var(--radius); padding:5px 10px;
+  animation:dkaBlink 1.4s infinite;
+  cursor:pointer; font-family:inherit;
+}
+.dka-wait-dot{ width:7px; height:7px; border-radius:50%; background:var(--red); }
+.dka-wait-txt{ font-size:11px; color:var(--red); font-weight:600; }
+.dka-wait-caret{ font-size:12px; color:var(--red); font-weight:700; line-height:1; margin-left:-2px; }
+.dka-clock{ font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
+.dka-x{
+  display:flex; align-items:center; justify-content:center;
+  width:30px; height:30px; border-radius:var(--radius);
+  background:var(--surface); color:var(--dim);
+  border:1px solid var(--border);
+  font-family:inherit; font-size:13px; cursor:pointer;
+  touch-action:manipulation;
+}
+.dka-x:active{ background:var(--accent); color:#fff; border-color:var(--accent); }
+
+/* ── device frame ──────────────────────────────────────────────────────── */
+.dka-device{
+  width:100%; max-width:980px;
+  background:linear-gradient(180deg,
+    color-mix(in srgb, var(--surface2) 85%, var(--text) 4%),
+    var(--surface));
+  border:1px solid var(--border);
+  border-radius:22px; padding:18px;
+  box-shadow:0 1px 0 rgba(255,255,255,.05) inset,
+    0 30px 60px rgba(0,0,0,.6), 0 2px 0 rgba(0,0,0,.4);
+  display:flex; gap:16px;
+}
+.dka-main{ flex:1; min-width:0; display:flex; flex-direction:column; }
+
+/* ── profile rail ──────────────────────────────────────────────────────── */
+.dka-rail{ flex:none; width:74px; display:flex; flex-direction:column; gap:8px; }
+.dka-rail-title{
+  font-size:9px; letter-spacing:1.5px; color:var(--dim);
+  text-align:center; margin-bottom:2px;
+}
+.dka-railbtn{
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  height:60px; border-radius:11px; cursor:pointer;
+  font-family:inherit; transition:.12s;
+  color:var(--dim); font-weight:500;
+  background:linear-gradient(180deg,
+    color-mix(in srgb, var(--surface2) 90%, var(--text) 3%), var(--surface));
+  border:1px solid var(--border);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 3px 7px rgba(0,0,0,.4);
+  touch-action:manipulation; user-select:none; -webkit-user-select:none;
+}
+.dka-railbtn:active{ transform:translateY(1px); }
+.dka-railbtn.active{
+  color:#fff; font-weight:700;
+  background:linear-gradient(180deg, var(--accent-h), var(--accent));
+  border-color:var(--accent-h);
+  box-shadow:0 0 16px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 3px 8px rgba(0,0,0,.5);
+}
+.dka-railbtn-glyph{ font-size:18px; line-height:1; }
+.dka-railbtn-lbl{ font-size:8px; letter-spacing:.5px; margin-top:3px; }
+
+/* ── page head ─────────────────────────────────────────────────────────── */
+.dka-pagehead{ display:flex; align-items:baseline; gap:10px; margin:0 2px 12px; min-width:0; }
+.dka-pagetitle{ font-size:12px; letter-spacing:1px; font-weight:700; color:var(--text); white-space:nowrap; }
+.dka-pagehint{ font-size:11px; color:var(--dim);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* ── key grid ──────────────────────────────────────────────────────────── */
+.dka-grid{ display:grid; grid-template-columns:repeat(5,1fr); gap:10px; }
+.dka-key{
+  --tone:var(--dim);
+  position:relative; aspect-ratio:1; border-radius:9px; cursor:pointer;
+  font-family:inherit;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:5px; padding:8px;
+  transition:transform .07s, box-shadow .15s, border-color .15s;
+  background:radial-gradient(125% 95% at 50% 0%,
+    color-mix(in srgb, var(--surface2) 80%, var(--bg)) 0%,
+    color-mix(in srgb, var(--surface) 60%, var(--bg)) 72%);
+  border:1px solid color-mix(in srgb, var(--border) 70%, var(--bg));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05),
+    inset 0 -11px 20px rgba(0,0,0,.42), 0 5px 13px rgba(0,0,0,.55);
+  touch-action:manipulation; user-select:none; -webkit-user-select:none;
+}
+.dka-key:active{ transform:translateY(2px) scale(.975); }
+.dka-key.is-sent{ animation:dkaSent .35s ease-out; }
+.dka-key[data-tone="green"]{ --tone:var(--green); }
+.dka-key[data-tone="red"]{ --tone:var(--red); }
+.dka-key[data-tone="yellow"]{ --tone:var(--yellow); }
+.dka-key[data-tone="cyan"]{ --tone:var(--cyan); }
+.dka-key[data-tone="accent"]{ --tone:var(--accent-h); }
+.dka-key[data-tone="neutral"]{ --tone:var(--text); }
+.dka-key.lit{
+  background:radial-gradient(125% 95% at 50% 0%,
+    color-mix(in srgb, var(--tone) 16%, var(--bg)) 0%,
+    color-mix(in srgb, var(--surface) 60%, var(--bg)) 60%);
+  border-color:color-mix(in srgb, var(--tone) 65%, transparent);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.08),
+    inset 0 0 26px color-mix(in srgb, var(--tone) 10%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--tone) 20%, transparent),
+    0 0 22px color-mix(in srgb, var(--tone) 18%, transparent),
+    0 5px 13px rgba(0,0,0,.6);
+}
+.dka-key.focused{
+  border-color:color-mix(in srgb, var(--accent-h) 60%, transparent);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06),
+    0 0 0 1px color-mix(in srgb, var(--accent-h) 60%, transparent),
+    0 0 14px color-mix(in srgb, var(--accent) 25%, transparent),
+    0 5px 13px rgba(0,0,0,.55);
+}
+.dka-key.pulse{ animation:dkaPulse 1.6s ease-in-out infinite; }
+.dka-key.ghost{
+  border:1px dashed color-mix(in srgb, var(--border) 45%, var(--bg));
+  background:rgba(255,255,255,.012);
+  box-shadow:inset 0 0 18px rgba(0,0,0,.4);
+  pointer-events:none; cursor:default;
+}
+.dka-key[data-disabled="1"]{ opacity:.45; }
+.dka-led{
+  position:absolute; top:7px; right:7px;
+  width:6px; height:6px; border-radius:50%;
+  background:var(--tone); box-shadow:0 0 6px var(--tone);
+}
+.dka-led.blink{ animation:dkaBlink 1.3s infinite; }
+.dka-glyph{
+  font-size:24px; line-height:1; color:var(--tone);
+  text-shadow:0 1px 2px rgba(0,0,0,.55);
+}
+.dka-key.lit .dka-glyph{ color:#fff;
+  text-shadow:0 0 13px color-mix(in srgb, var(--tone) 80%, transparent); }
+.dka-glyph.txt{ font-size:15px; font-weight:700; letter-spacing:1px; }
+.dka-lbl{
+  font-size:8px; letter-spacing:.7px; font-weight:700; text-align:center;
+  white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis;
+  color:var(--dim); line-height:1.15; text-transform:uppercase;
+}
+.dka-key.lit .dka-lbl{ color:var(--text); }
+.dka-sub{
+  font-size:7px; letter-spacing:.4px; white-space:nowrap; max-width:100%;
+  overflow:hidden; text-overflow:ellipsis;
+  color:color-mix(in srgb, var(--dim) 70%, var(--bg)); text-transform:uppercase;
+  margin-top:1px;
+}
+.dka-key.lit .dka-sub{ color:color-mix(in srgb, var(--text) 60%, transparent); }
+
+/* menu option keys (live CC menu → labeled keys, spans grid width) */
+.dka-menukey{
+  grid-column:1 / -1;
+  aspect-ratio:auto; min-height:52px;
+  flex-direction:row; justify-content:flex-start; gap:12px;
+  padding:8px 14px; text-align:left;
+}
+.dka-menukey .dka-lbl{
+  font-size:12px; text-transform:none; letter-spacing:.2px;
+  white-space:normal; text-align:left; max-height:2.4em; overflow:hidden;
+}
+.dka-menukey .dka-glyph.txt{
+  flex:none; width:30px; height:30px; border-radius:7px;
+  display:flex; align-items:center; justify-content:center;
+  background:color-mix(in srgb, var(--accent) 18%, var(--bg));
+  border:1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  color:var(--accent-h); font-size:14px;
+}
+
+/* ── touch strip + dials ───────────────────────────────────────────────── */
+.dka-bottom{ margin-top:16px; display:flex; gap:14px; align-items:stretch; }
+.dka-touch{
+  flex:1; min-width:0; position:relative;
+  background:linear-gradient(180deg,
+    color-mix(in srgb, var(--cyan) 5%, var(--bg)),
+    color-mix(in srgb, black 25%, var(--bg)));
+  border:1px solid color-mix(in srgb, var(--cyan) 18%, var(--border));
+  border-radius:12px; padding:13px 16px;
+  display:flex; flex-direction:column; justify-content:center;
+  box-shadow:inset 0 1px 0 color-mix(in srgb, var(--cyan) 8%, transparent),
+    inset 0 0 30px color-mix(in srgb, var(--cyan) 6%, transparent);
+}
+.dka-touch-head{ display:flex; align-items:center; gap:9px; margin-bottom:5px; min-width:0; }
+.dka-dot{ width:8px; height:8px; border-radius:50%; flex:none; background:var(--dim); }
+.dka-dot.st-working{ background:var(--green); box-shadow:0 0 7px var(--green); animation:dkaBlink 1.3s infinite; }
+.dka-dot.st-waiting{ background:var(--red); box-shadow:0 0 7px var(--red); animation:dkaBlink 1.3s infinite; }
+.dka-dot.st-idle{ background:var(--dim); }
+.dka-touch-name{ font-size:13px; font-weight:600; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dka-status{ font-size:9px; letter-spacing:1px; font-weight:700; white-space:nowrap; }
+.dka-status.st-working{ color:var(--green); }
+.dka-status.st-waiting{ color:var(--red); }
+.dka-status.st-idle{ color:var(--dim); }
+.dka-status.st-unknown{ color:var(--dim); }
+.dka-pct{ font-size:11px; color:var(--cyan); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.dka-line{
+  font-size:11.5px; color:color-mix(in srgb, var(--cyan) 55%, var(--dim));
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.dka-line.warn{ color:var(--yellow); }
+.dka-bar{
+  height:3px; border-radius:3px; margin-top:9px; overflow:hidden;
+  background:color-mix(in srgb, var(--cyan) 8%, var(--bg));
+}
+.dka-barfill{ height:100%; width:0; background:var(--cyan); transition:width .4s; opacity:.9; }
+/* I3 per-pane state timeline: live "<state> <dur>" + working/waiting/idle split */
+.dka-timeline{ display:flex; align-items:center; gap:8px; margin-top:7px; }
+.dka-tl-txt{ font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.dka-tl-bar{
+  flex:1; display:flex; height:4px; border-radius:3px; overflow:hidden;
+  background:color-mix(in srgb, var(--cyan) 8%, var(--bg));
+}
+.dka-tl-seg{ height:100%; width:0; transition:width .5s; }
+.dka-tl-working{ background:var(--green); }
+.dka-tl-waiting{ background:var(--red); }
+.dka-tl-idle{ background:var(--dim); opacity:.6; }
+.dka-toast{
+  position:absolute; right:14px; top:10px;
+  background:var(--bg);
+  border:1px solid color-mix(in srgb, var(--tone,var(--cyan)) 40%, var(--border));
+  color:var(--tone,var(--cyan));
+  font-size:11px; font-weight:600; padding:5px 10px; border-radius:7px;
+  box-shadow:0 4px 12px rgba(0,0,0,.5);
+  animation:dkaToastIn .18s ease-out;
+  max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.dka-toast[data-tone="green"]{ --tone:var(--green); }
+.dka-toast[data-tone="red"]{ --tone:var(--red); }
+.dka-toast[data-tone="yellow"]{ --tone:var(--yellow); }
+.dka-toast[data-tone="accent"]{ --tone:var(--accent-h); }
+
+.dka-dials{ flex:none; display:flex; gap:12px; padding:6px 4px 0; }
+.dka-dialwrap{ display:flex; flex-direction:column; align-items:center; gap:5px; width:64px; }
+.dka-dial-lbl{ font-size:9px; letter-spacing:1px; color:var(--dim); }
+.dka-dial{
+  width:54px; height:54px; border-radius:50%;
+  border:1px solid var(--border);
+  background:radial-gradient(circle at 50% 35%,
+    color-mix(in srgb, var(--surface2) 85%, var(--text) 5%), var(--bg));
+  cursor:pointer; position:relative;
+  box-shadow:0 3px 8px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
+  touch-action:manipulation;
+}
+.dka-dial:active{ transform:translateY(1px); }
+.dka-tick{
+  position:absolute; left:50%; top:7px; width:2px; height:15px; border-radius:2px;
+  background:var(--accent-h); transform-origin:50% 20px;
+  transform:translateX(-50%);
+  box-shadow:0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.dka-tick.off{ background:var(--border); box-shadow:none; }
+.dka-dial-val{
+  font-size:10px; color:var(--text); font-weight:600; text-align:center;
+  line-height:1.1; height:22px; display:flex; align-items:center;
+  max-width:64px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+
+/* ── footer hint ───────────────────────────────────────────────────────── */
+.dka-foot{
+  max-width:980px; width:100%; display:flex; justify-content:space-between;
+  padding:0 6px; gap:10px;
+}
+.dka-foot span{ font-size:10px; color:var(--dim); }
+
+/* ── fullscreen on real screens: fill the viewport, don't float a 980px
+   island in it. Device stretches, grid rows share the freed height, type
+   scales with clamp(). Scoped to #app.deck-mode so the compact dock column
+   keeps its own metrics.
+   HEIGHT-GUARDED: on a phone in landscape (~390-430px tall) these desktop
+   metrics are what broke the deck — a vertical 5×60px rail overflowed the
+   viewport and 1fr grid rows collapsed to slivers — so the wide-screen
+   layout only engages when the screen is also TALL enough for it. Short
+   screens fall through to the (max-height:520px) block below. ─────────── */
+@media (min-width:641px) and (min-height:521px){
+  #app.deck-mode #deck-root.dka .dka-strip,
+  #app.deck-mode #deck-root.dka .dka-device,
+  #app.deck-mode #deck-root.dka .dka-foot{ max-width:min(1720px, 100%); }
+  #app.deck-mode #deck-root.dka .dka-device{ flex:1; min-height:0; }
+  #app.deck-mode #deck-root.dka .dka-main{ min-height:0; }
+  #app.deck-mode #deck-root.dka .dka-grid{
+    flex:1; min-height:0; grid-auto-rows:1fr; overflow-y:auto;
+  }
+  #app.deck-mode #deck-root.dka .dka-key{ aspect-ratio:auto; min-height:96px; }
+  #app.deck-mode #deck-root.dka .dka-glyph{ font-size:clamp(24px, 3.6vh, 44px); }
+  #app.deck-mode #deck-root.dka .dka-glyph.txt{ font-size:clamp(15px, 2.2vh, 24px); }
+  #app.deck-mode #deck-root.dka .dka-lbl{ font-size:clamp(8px, 1.3vh, 13px); }
+  #app.deck-mode #deck-root.dka .dka-sub{ font-size:clamp(7px, 1vh, 11px); }
+  #app.deck-mode #deck-root.dka .dka-rail{ width:clamp(74px, 7vw, 104px); }
+  #app.deck-mode #deck-root.dka .dka-railbtn{
+    flex:1; height:auto; min-height:60px; max-height:120px;
+  }
+}
+
+/* ── phone landscape (short viewport, any width): a vertical rail can never
+   fit 5 pages in ~400px of height, and every fixed chrome row starves the
+   grid. Rail goes horizontal on top, chrome condenses, keys cap small and
+   the grid scrolls (#deck-root is the scroll container). ────────────────── */
+@media (max-height:520px){
+  #app.deck-mode #deck-root{ gap:8px; padding:8px;
+    padding-left:calc(8px + env(safe-area-inset-left));
+    padding-right:calc(8px + env(safe-area-inset-right)); }
+  #app.deck-mode #deck-root.dka .dka-strip{ max-width:100%; }
+  #app.deck-mode #deck-root.dka .dka-logo-sub,
+  #app.deck-mode #deck-root.dka .dka-foot{ display:none; }
+  #app.deck-mode #deck-root.dka .dka-device{
+    flex:1; min-height:0; max-width:100%;
+    flex-direction:column; padding:10px; gap:8px; border-radius:14px;
+  }
+  #app.deck-mode #deck-root.dka .dka-rail{
+    width:auto; flex-direction:row; gap:6px;
+  }
+  #app.deck-mode #deck-root.dka .dka-rail-title{ display:none; }
+  #app.deck-mode #deck-root.dka .dka-railbtn{
+    flex:1; height:40px; min-height:0; max-height:none; border-radius:9px;
+    flex-direction:row; gap:6px;
+  }
+  #app.deck-mode #deck-root.dka .dka-railbtn-glyph{ font-size:13px; }
+  #app.deck-mode #deck-root.dka .dka-railbtn-lbl{ font-size:9px; margin-top:0; }
+  #app.deck-mode #deck-root.dka .dka-main{ min-height:0; }
+  #app.deck-mode #deck-root.dka .dka-pagehead{ margin:0 2px 6px; }
+  #app.deck-mode #deck-root.dka .dka-grid{
+    flex:1; min-height:0; overflow-y:auto;
+    grid-template-columns:repeat(auto-fill, minmax(92px, 1fr));
+    grid-auto-rows:minmax(56px, auto); gap:6px; align-content:start;
+  }
+  #app.deck-mode #deck-root.dka .dka-key{
+    aspect-ratio:auto; min-height:56px; padding:4px 6px; gap:2px;
+  }
+  #app.deck-mode #deck-root.dka .dka-key.ghost{ display:none; }
+  #app.deck-mode #deck-root.dka .dka-glyph{ font-size:16px; }
+  #app.deck-mode #deck-root.dka .dka-glyph.txt{ font-size:12px; }
+  #app.deck-mode #deck-root.dka .dka-sub{ display:none; }
+  #app.deck-mode #deck-root.dka .dka-menukey{ min-height:44px; }
+  #app.deck-mode #deck-root.dka .dka-bottom{ margin-top:8px; flex-direction:row; }
+  #app.deck-mode #deck-root.dka .dka-touch{ padding:7px 12px; }
+  #app.deck-mode #deck-root.dka .dka-bar{ display:none; }
+  #app.deck-mode #deck-root.dka .dka-dials{ padding:0; gap:8px; }
+  #app.deck-mode #deck-root.dka .dka-dialwrap{ width:52px; gap:2px; }
+  #app.deck-mode #deck-root.dka .dka-dial{ width:38px; height:38px; }
+  #app.deck-mode #deck-root.dka .dka-tick{ top:5px; height:10px; transform-origin:50% 14px; }
+  #app.deck-mode #deck-root.dka .dka-dial-val{ font-size:9px; height:14px; max-width:52px; }
+  #app.deck-mode #deck-root.dka .dka-dial-lbl{ font-size:8px; }
+
+  /* dock column on a short screen: the tab row can't fit 6 labeled pills +
+     3 chrome buttons in ~320px — go icon-only, labels return on tall screens */
+  .dka-compact .dka-railbtn-lbl{ display:none; }
+  .dka-compact .dka-railbtn{ height:38px; }
+  .dka-compact .dka-railbtn-glyph{ font-size:15px; }
+}
+
+/* ── compact (dock column) — #deck-root.dka.dka-compact ─────────────────
+   Terminal stays visible beside/above; vertical space is scarce, so:
+   horizontal page tabs, mini strip with status chips, permission pills,
+   fluid auto-fill grid with the scrollback scrub strip alongside. */
+.dka-compact .dka-tabs{ display:flex; gap:6px; align-items:stretch; }
+.dka-compact .dka-tabs .dka-x{ height:auto; width:34px; flex:none; }
+.dka-compact .dka-rail{ flex:1; min-width:0; flex-direction:row; width:auto; gap:6px; }
+.dka-compact .dka-rail-title{ display:none; }
+.dka-compact .dka-railbtn{ flex:1; min-width:0; height:46px; border-radius:9px; }
+.dka-compact .dka-railbtn-glyph{ font-size:14px; }
+.dka-compact .dka-railbtn-lbl{ font-size:7px; margin-top:2px; }
+.dka-compact .dka-touch{ padding:9px 12px; flex:none; }
+/* default flex — JS toggles style.display between '' (this) and 'none' */
+.dka-badges{ display:flex; gap:6px; margin-top:7px; flex-wrap:wrap; }
+.dka-badge{
+  font-size:9px; color:var(--dim);
+  border:1px solid var(--border); border-radius:4px; padding:2px 6px;
+  background:var(--surface); white-space:nowrap;
+}
+.dka-badge-mode.mode-plan{ color:var(--green); border-color:color-mix(in srgb, var(--green) 45%, var(--border)); }
+.dka-badge-mode.mode-accept{ color:var(--yellow); border-color:color-mix(in srgb, var(--yellow) 45%, var(--border)); }
+.dka-badge-mode.mode-auto{ color:var(--red); border-color:color-mix(in srgb, var(--red) 45%, var(--border)); }
+.dka-badge-mode.mode-bypass{ color:var(--red); border-color:color-mix(in srgb, var(--red) 45%, var(--border)); }
+.dka-compact .dka-body{ display:flex; gap:10px; flex:1; min-height:0; }
+.dka-compact .dka-grid{
+  flex:1; min-width:0;
+  grid-template-columns:repeat(auto-fill, minmax(86px, 1fr));
+  gap:8px; align-content:start; overflow-y:auto;
+}
+.dka-compact .dka-key{ min-height:86px; }
+
+/* ── narrow screens (phone portrait): rail goes horizontal, the device fills
+   the freed viewport (no floating island with dead space above), keys cap at
+   a tappable-but-compact height instead of aspect-ratio giants, grid scrolls,
+   foot hidden, dials compact. Fullscreen-scoped where it must not leak into
+   the dock column (which has its own compact metrics). ─────────────────── */
+@media (max-width:640px){
+  .dka-device{ flex-direction:column; padding:12px; gap:10px; }
+  .dka-rail{ width:auto; flex-direction:row; }
+  .dka-rail-title{ display:none; }
+  .dka-railbtn{ flex:1; height:48px; min-width:0; }
+  .dka-railbtn-lbl{ max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+  .dka-grid{ grid-template-columns:repeat(4,1fr); gap:8px; }
+  .dka-bottom{ flex-direction:column; gap:10px; }
+  .dka-dials{ justify-content:center; }
+  .dka-route{ order:5; width:100%; }
+
+  #app.deck-mode #deck-root{ gap:10px; padding:10px;
+    padding-left:calc(10px + env(safe-area-inset-left));
+    padding-right:calc(10px + env(safe-area-inset-right)); }
+  #app.deck-mode #deck-root.dka .dka-strip{ max-width:100%; }
+  #app.deck-mode #deck-root.dka .dka-logo-sub{ display:none; }
+  #app.deck-mode #deck-root.dka .dka-foot{ display:none; }
+  #app.deck-mode #deck-root.dka .dka-device{ flex:1; min-height:0; max-width:100%; }
+  #app.deck-mode #deck-root.dka .dka-main{ min-height:0; }
+  #app.deck-mode #deck-root.dka .dka-grid{
+    flex:1; min-height:0; overflow-y:auto;
+    grid-auto-rows:minmax(76px, auto); align-content:start;
+  }
+  #app.deck-mode #deck-root.dka .dka-key{ aspect-ratio:auto; min-height:76px; padding:6px; gap:3px; }
+  #app.deck-mode #deck-root.dka .dka-key.ghost{ display:none; }
+  #app.deck-mode #deck-root.dka .dka-glyph{ font-size:19px; }
+  #app.deck-mode #deck-root.dka .dka-menukey{ min-height:48px; }
+  #app.deck-mode #deck-root.dka .dka-dial{ width:44px; height:44px; }
+  #app.deck-mode #deck-root.dka .dka-tick{ top:6px; height:12px; transform-origin:50% 16px; }
+  #app.deck-mode #deck-root.dka .dka-dialwrap{ width:56px; }
+}
+
+/* i18n language toggle — shares .dka-x chrome; text is 2 glyphs, widen a touch */
+.dka-lang{ width:auto; min-width:30px; padding:0 8px; font-size:11px; letter-spacing:.5px; }
+.dka-compact .dka-tabs .dka-lang{ width:auto; min-width:34px; }
+
+/* ── Slice C: edit mode (rail states + ＋ add key) ──────────────────────── */
+.dka-railbtn.dka-railbtn-hidden{ opacity:.42; }
+.dka-railbtn.dka-railbtn-add,
+.dka-railbtn.dka-railedit{
+  background:linear-gradient(180deg,
+    color-mix(in srgb, var(--accent) 14%, var(--surface)), var(--surface));
+  border-color:color-mix(in srgb, var(--accent) 45%, var(--border));
+  color:var(--accent-h);
+}
+.dka-railbtn.dka-railedit.active{
+  background:linear-gradient(180deg, var(--accent-h), var(--accent));
+  border-color:var(--accent-h); color:#fff;
+}
+.dka-key.dka-addkey{
+  border:1px dashed color-mix(in srgb, var(--accent-h) 60%, transparent);
+  background:radial-gradient(125% 95% at 50% 0%,
+    color-mix(in srgb, var(--accent) 12%, var(--bg)) 0%,
+    color-mix(in srgb, var(--surface) 60%, var(--bg)) 72%);
+}
+
+/* ── Slice C: edit sheet (overlay appended to document.body, so unscoped) ── */
+.dka-edit{
+  position:fixed; inset:0; z-index:85;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.55);
+  padding:16px calc(16px + env(safe-area-inset-right)) 16px calc(16px + env(safe-area-inset-left));
+  font-family:var(--font-mono); color:var(--text);
+}
+.dka-edit-panel{
+  width:min(94vw, 480px); max-height:88vh;
+  display:flex; flex-direction:column; gap:12px;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius); padding:16px;
+  box-shadow:0 12px 40px rgba(0,0,0,.55);
+}
+.dka-edit-title{ font-size:14px; font-weight:700; color:var(--text); text-align:center; }
+.dka-edit-body{
+  display:flex; flex-direction:column; gap:12px;
+  overflow-y:auto; min-height:0; padding:2px;
+}
+.dka-edit-field{ display:flex; flex-direction:column; gap:5px; }
+.dka-edit-label{ font-size:11px; color:var(--dim); letter-spacing:.3px; }
+.dka-edit-input, .dka-edit-textarea, .dka-edit-select{
+  font-family:inherit; font-size:12px; color:var(--text);
+  background:var(--surface2); border:1px solid var(--border);
+  border-radius:6px; padding:7px 9px; width:100%; box-sizing:border-box;
+}
+.dka-edit-textarea{ resize:vertical; min-height:52px; }
+.dka-edit-input:focus, .dka-edit-textarea:focus, .dka-edit-select:focus{
+  outline:none; border-color:var(--accent);
+  box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.dka-edit-check{
+  display:flex; align-items:center; gap:8px;
+  font-size:12px; color:var(--text); cursor:pointer; user-select:none;
+}
+.dka-edit-check input{ width:16px; height:16px; accent-color:var(--accent); }
+.dka-edit-note{
+  font-size:11px; color:var(--dim); line-height:1.5;
+  background:var(--surface2); border:1px solid var(--border);
+  border-radius:6px; padding:8px 10px;
+}
+.dka-edit-action{ display:flex; flex-direction:column; gap:12px; }
+.dka-edit-macro{ display:flex; flex-direction:column; gap:8px; }
+.dka-edit-steps{ display:flex; flex-direction:column; gap:6px; }
+.dka-edit-step{ display:flex; align-items:center; gap:5px; }
+.dka-edit-step .dka-edit-select{ width:auto; flex:none; padding:6px; }
+.dka-edit-step-payload{ flex:1; min-width:0; }
+.dka-edit-mini{
+  flex:none; width:28px; height:30px; border-radius:6px; cursor:pointer;
+  font-family:inherit; font-size:13px; color:var(--dim);
+  background:var(--surface2); border:1px solid var(--border);
+}
+.dka-edit-mini:active{ transform:translateY(1px); }
+.dka-edit-mini-del{ color:var(--red); border-color:color-mix(in srgb, var(--red) 40%, var(--border)); }
+.dka-edit-addstep{
+  align-self:flex-start; font-family:inherit; font-size:11px; cursor:pointer;
+  color:var(--accent-h); background:transparent;
+  border:1px dashed color-mix(in srgb, var(--accent-h) 55%, var(--border));
+  border-radius:6px; padding:6px 12px;
+}
+.dka-edit-err{
+  font-size:11px; color:var(--red);
+  background:color-mix(in srgb, var(--red) 10%, var(--bg));
+  border:1px solid color-mix(in srgb, var(--red) 40%, var(--border));
+  border-radius:6px; padding:7px 10px;
+}
+.dka-edit-btns{ display:flex; gap:10px; justify-content:flex-end; align-items:center; }
+.dka-edit-save, .dka-edit-del, .dka-edit-cancel{
+  font-family:inherit; font-size:12px; cursor:pointer;
+  border-radius:6px; padding:8px 16px; border:1px solid var(--border);
+}
+.dka-edit-save{
+  color:#fff; font-weight:700;
+  background:linear-gradient(180deg, var(--accent-h), var(--accent));
+  border-color:var(--accent-h);
+}
+.dka-edit-del{ color:var(--red); background:transparent; border-color:color-mix(in srgb, var(--red) 45%, var(--border)); margin-right:auto; }
+.dka-edit-cancel{ color:var(--dim); background:transparent; }
+.dka-edit-save[disabled], .dka-edit-del[disabled], .dka-edit-cancel[disabled]{ opacity:.5; cursor:default; }
+
+/* ── I2: attention triage list (waiting-pane overlay, body-level like .dka-edit) ── */
+.dka-waitlist{
+  position:fixed; inset:0; z-index:86;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.55);
+  padding:16px calc(16px + env(safe-area-inset-right)) 16px calc(16px + env(safe-area-inset-left));
+  font-family:var(--font-mono); color:var(--text);
+}
+.dka-waitlist-panel{
+  width:min(94vw, 460px); max-height:80vh;
+  display:flex; flex-direction:column; gap:10px;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius); padding:16px;
+  box-shadow:0 12px 40px rgba(0,0,0,.55);
+}
+.dka-waitlist-head{ display:flex; align-items:center; gap:10px; }
+.dka-waitlist-title{ flex:1; font-size:14px; font-weight:700; color:var(--text); }
+.dka-waitlist-close{
+  flex:none; width:28px; height:28px; border-radius:6px; cursor:pointer;
+  font-family:inherit; font-size:13px; color:var(--dim);
+  background:transparent; border:1px solid var(--border);
+}
+.dka-waitlist-close:active{ transform:translateY(1px); }
+.dka-waitlist-rows{
+  display:flex; flex-direction:column; gap:8px;
+  overflow-y:auto; min-height:0; padding:2px;
+}
+.dka-waitlist-empty{ font-size:12px; color:var(--dim); text-align:center; padding:18px 8px; }
+.dka-waitlist-row{
+  display:flex; align-items:center; gap:10px; text-align:left; width:100%;
+  font-family:inherit; cursor:pointer;
+  background:color-mix(in srgb, var(--red) 8%, var(--surface2));
+  border:1px solid color-mix(in srgb, var(--red) 30%, var(--border));
+  border-radius:8px; padding:9px 11px;
+}
+.dka-waitlist-row:active{ transform:translateY(1px); border-color:var(--red); }
+.dka-waitlist-dot{
+  flex:none; width:8px; height:8px; border-radius:50%; background:var(--red);
+  animation:dkaBlink 1.4s infinite;
+}
+.dka-waitlist-main{ flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.dka-waitlist-coord{
+  display:flex; align-items:center; gap:7px;
+  font-size:12px; font-weight:600; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.dka-waitlist-tool{
+  flex:none; font-size:9px; color:var(--dim);
+  border:1px solid var(--border); border-radius:4px; padding:1px 5px;
+}
+.dka-waitlist-preview{
+  font-size:11px; color:var(--dim);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.dka-waitlist-go{ flex:none; color:var(--red); font-size:14px; font-weight:700; }
+
+/* ── I4 output replay scrubber (opt-in) ─────────────────────────────────────
+   Body-level overlay mirroring the waitlist: a captured-frame screen rendered
+   through ansiToHtml, a draggable range axis, and a frame/timestamp caption.
+   The picker variant reuses the same panel to choose a pane. ──────────────── */
+.dka-replay{
+  position:fixed; inset:0; z-index:87;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.6);
+  padding:16px calc(16px + env(safe-area-inset-right)) 16px calc(16px + env(safe-area-inset-left));
+  font-family:var(--font-mono); color:var(--text);
+}
+.dka-replay-panel{
+  width:min(96vw, 720px); max-height:86vh;
+  display:flex; flex-direction:column; gap:10px;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius); padding:16px;
+  box-shadow:0 12px 40px rgba(0,0,0,.6);
+}
+.dka-replay-head{ display:flex; align-items:center; gap:10px; }
+.dka-replay-title{
+  flex:1; min-width:0; font-size:13px; font-weight:700; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.dka-replay-close{
+  flex:none; width:28px; height:28px; border-radius:6px; cursor:pointer;
+  font-family:inherit; font-size:13px; color:var(--dim);
+  background:transparent; border:1px solid var(--border);
+}
+.dka-replay-close:active{ transform:translateY(1px); }
+.dka-replay-screen{
+  margin:0; flex:1; min-height:180px; max-height:56vh; overflow:auto;
+  background:var(--bg); border:1px solid var(--border); border-radius:8px;
+  padding:10px 12px; font-family:var(--font-mono); font-size:12px; line-height:1.35;
+  white-space:pre-wrap; word-break:break-word;
+}
+.dka-replay-axis{ display:flex; align-items:center; }
+.dka-replay-range{ width:100%; accent-color:var(--accent); cursor:pointer; }
+.dka-replay-range:disabled{ opacity:.4; cursor:default; }
+.dka-replay-meta{ font-size:11px; color:var(--dim); text-align:center; }
+.dka-replay-rows{
+  display:flex; flex-direction:column; gap:8px;
+  overflow-y:auto; min-height:0; padding:2px;
+}
+.dka-replay-row{
+  display:flex; align-items:center; gap:10px; text-align:left; width:100%;
+  font-family:inherit; cursor:pointer;
+  background:var(--surface2); border:1px solid var(--border);
+  border-radius:8px; padding:9px 11px;
+}
+.dka-replay-row:active{ transform:translateY(1px); border-color:var(--accent); }
+.dka-replay-rowmain{
+  flex:1; min-width:0; font-size:12px; font-weight:600; color:var(--text);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.dka-replay-rowstate{ flex:none; font-size:10px; color:var(--dim); }
+
+/* ── pane identity: route pill & touch strip carry the focused pane's OSC
+   title (the Claude task name — what actually tells five "zsh" apart) and
+   are tappable to jump to the 窗口 page for re-routing. ─────────────────── */
+.dka-route{ cursor:pointer; }
+.dka-route:active{ border-color:var(--accent); }
+.dka-route-title{
+  font-size:10px; color:var(--dim);
+  max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.dka-touch-name{ cursor:pointer; text-decoration:underline dotted color-mix(in srgb, var(--dim) 60%, transparent); text-underline-offset:3px; }
+.dka-touch-title{
+  font-size:10px; color:var(--dim); min-width:0; flex-shrink:1;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+@media (max-width:640px){
+  .dka-route-title{ max-width:120px; }
+}

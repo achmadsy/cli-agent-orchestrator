@@ -1,0 +1,207 @@
+{
+  "$schema": "tmux-webui/deck-config@2",
+  "version": 2,
+  "_comment": "Schema v2. `pages` = rail tabs (Agent Deck reads these; falls back to hardcoded constants when absent). Each page: id, glyph, label(繁中 primary), label_en(optional), type=windows|ctrl|buttons, hidden?, buttons?. windows/ctrl are computed by the frontend (their buttons are ignored); buttons pages are fully editable. `panels` is the legacy layer, kept intact for the old deck.js fallback / dock path. Button schema (shared): label/label_en/icon/color(accent|warn|danger; neutral omitted)/confirm(slide)/action{type:input|key|macro, payload, steps, delays}. label=繁體中文（主語言）, label_en=optional English (deck-agent i18n falls back to label when absent), icon=emoji/glyph.",
+  "pages": [
+    { "id": "win", "type": "windows", "glyph": "⊞", "label": "窗口", "label_en": "WIN" },
+    { "id": "ctrl", "type": "ctrl", "glyph": "◎", "label": "控制", "label_en": "CTRL" },
+    {
+      "id": "prompt",
+      "type": "buttons",
+      "glyph": "»",
+      "label": "快捷",
+      "label_en": "PROMPT",
+      "buttons": [
+        { "label": "繼續", "label_en": "Continue", "icon": "▶", "color": "accent", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "繼續" }, { "type": "key", "payload": "Enter" } ] }, "title": "送出「繼續」" },
+        { "label": "改用繁中", "label_en": "Reply in zh-TW", "icon": "繁", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "請改用繁體中文回答" }, { "type": "key", "payload": "Enter" } ] }, "title": "送出語言切換要求" },
+        { "label": "跑 pytest", "label_en": "Run pytest", "icon": "🧪", "action": { "type": "input", "payload": "跑 pytest " }, "title": "填入不送出，待你補參數" },
+        { "label": "開 worktree", "label_en": "New worktree", "icon": "🌿", "action": { "type": "input", "payload": "開 worktree，分支名 " }, "title": "填入不送出，待你補分支名" },
+        { "label": "/compact", "icon": "🗜", "color": "accent", "action": { "type": "input", "payload": "/compact" }, "title": "釋放 context" },
+        { "label": "/clear", "icon": "🧹", "color": "danger", "confirm": "slide", "action": { "type": "input", "payload": "/clear" }, "title": "清空對話（滑動確認）" },
+        { "label": "切 Sonnet", "label_en": "To Sonnet", "icon": "🤖", "color": "accent", "title": "直接切換到 Sonnet（/model sonnet 一行指令，免選單導航）", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/model sonnet" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "壓縮後繼續", "label_en": "Compact + go", "icon": "🗜", "color": "accent", "title": "/compact 後自動送出「繼續」", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/compact" }, { "type": "key", "payload": "Enter" }, { "type": "input", "payload": "繼續" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 1200 } } },
+        { "label": "解釋設計", "label_en": "Explain design", "icon": "💡", "title": "請 Claude 解釋剛做的變更及設計理由", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "解釋你剛剛做的變更，重點是為什麼這樣設計，不需要列出每一行 diff" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 0 } } },
+        { "label": "新功能起手式", "label_en": "Feature kickoff", "icon": "🚀", "title": "開新 worktree 分支並確認 lint 環境", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "開新 worktree 分支、cd 進去、跑一次 lint 確認環境乾淨" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 0 } } },
+        { "label": "收尾 commit", "label_en": "Wrap-up commit", "icon": "✅", "color": "warn", "confirm": "slide", "title": "跑測試確認後 commit（滑動確認）", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "跑測試確認全部通過後，commit 目前的變更，commit message 請簡潔" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 0 } } },
+        { "label": "跑測試", "label_en": "Run tests", "icon": "🧪", "title": "請 Claude 找出並執行本模組的測試套件", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "找出這個模組的測試套件並執行，回報通過 / 失敗數量" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 0 } } }
+      ]
+    },
+    {
+      "id": "slash",
+      "type": "buttons",
+      "glyph": "/",
+      "label": "指令",
+      "label_en": "SLASH",
+      "buttons": [
+        { "label": "切換模型", "label_en": "sonnet/opus", "icon": "❖", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/model" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "費用統計", "label_en": "tokens $", "icon": "$", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/cost" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "context 用量", "label_en": "window", "icon": "◔", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/context" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "審查 PR", "label_en": "PR", "icon": "⌕", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/review" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "MCP 伺服器", "label_en": "servers", "icon": "⬡", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/mcp" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "子代理", "label_en": "subagents", "icon": "⧉", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/agents" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "接續會話", "label_en": "session", "icon": "☰", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/resume" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "壓縮摘要", "label_en": "summarize", "icon": "⌗", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/compact" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "指令說明", "label_en": "commands", "icon": "?", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/help" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "清空對話", "label_en": "reset", "icon": "⌫", "color": "danger", "confirm": "slide", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "/clear" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } }
+      ]
+    },
+    {
+      "id": "git",
+      "type": "buttons",
+      "glyph": "⎇",
+      "label": "GIT",
+      "label_en": "GIT",
+      "buttons": [
+        { "label": "狀態", "label_en": "STATUS", "icon": "ℹ", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "git status" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "差異", "label_en": "DIFF", "icon": "±", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "git diff" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "全部暫存", "label_en": "STAGE ALL", "icon": "⊕", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "stage all" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "提交", "label_en": "COMMIT", "icon": "●", "color": "warn", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "commit" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "推送", "label_en": "PUSH", "icon": "↥", "color": "warn", "confirm": "slide", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "push origin" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "拉取", "label_en": "PULL", "icon": "↧", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "pull latest" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "開分支", "label_en": "BRANCH", "icon": "⎇", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "new branch" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "暫置", "label_en": "STASH", "icon": "▤", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "stash" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "歷史", "label_en": "LOG", "icon": "☰", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "git log" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } },
+        { "label": "回滾上筆", "label_en": "REVERT", "icon": "⟲", "color": "danger", "confirm": "slide", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "revert last" }, { "type": "key", "payload": "Enter" } ], "delays": { "inter": 300 } } }
+      ]
+    }
+  ],
+  "panels": [
+    {
+      "id": "claude-idle",
+      "title": "Claude · Ready",
+      "source": "dynamic",
+      "when": "idle",
+      "grid": { "cols": 2 },
+      "buttons": [
+        { "label": "繼續", "label_en": "Continue", "icon": "▶", "color": "accent", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "繼續" }, { "type": "key", "payload": "Enter" } ] }, "title": "送出「繼續」" },
+        { "label": "改用繁中", "label_en": "Reply in zh-TW", "icon": "繁", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "請改用繁體中文回答" }, { "type": "key", "payload": "Enter" } ] }, "title": "送出語言切換要求" },
+        { "label": "跑 pytest", "label_en": "Run pytest", "icon": "🧪", "action": { "type": "input", "payload": "跑 pytest " }, "title": "填入不送出，待你補參數" },
+        { "label": "開 worktree", "label_en": "New worktree", "icon": "🌿", "action": { "type": "input", "payload": "開 worktree，分支名 " }, "title": "填入不送出，待你補分支名" },
+        { "label": "/compact", "icon": "🗜", "color": "accent", "action": { "type": "input", "payload": "/compact" }, "title": "釋放 context" },
+        { "label": "/clear", "icon": "🧹", "color": "danger", "confirm": "slide", "action": { "type": "input", "payload": "/clear" }, "title": "清空對話（滑動確認）" }
+      ]
+    },
+    {
+      "id": "claude-working",
+      "title": "Claude · Working…",
+      "source": "dynamic",
+      "when": "working",
+      "grid": { "cols": 2 },
+      "buttons": [
+        { "label": "中斷", "label_en": "Interrupt", "icon": "⎋", "color": "warn", "action": { "type": "key", "payload": "Escape" }, "title": "Esc — 中斷 Claude" },
+        { "label": "強制中斷", "label_en": "Force stop", "icon": "⌃C", "color": "danger", "action": { "type": "key", "payload": "C-c" }, "title": "Ctrl-C — 硬中斷" }
+      ]
+    },
+    {
+      "id": "claude-base",
+      "title": "Claude Code",
+      "source": "static",
+      "grid": { "cols": 2 },
+      "buttons": [
+        { "label": "繼續", "label_en": "Continue", "icon": "▶", "color": "accent", "action": { "type": "macro", "steps": [ { "type": "input", "payload": "繼續" }, { "type": "key", "payload": "Enter" } ] }, "title": "送出「繼續」" },
+        { "label": "/compact", "icon": "🗜", "action": { "type": "input", "payload": "/compact" }, "title": "釋放 context" },
+        { "label": "/model", "icon": "❖", "action": { "type": "input", "payload": "/model" }, "title": "切換模型" },
+        { "label": "/clear", "icon": "🧹", "color": "danger", "confirm": "slide", "action": { "type": "input", "payload": "/clear" }, "title": "清空對話（滑動確認）" }
+      ]
+    },
+    {
+      "id": "claude-macros",
+      "title": "巨集",
+      "source": "dynamic",
+      "when": "idle",
+      "grid": { "cols": 2 },
+      "buttons": [
+        {
+          "label": "切 Sonnet",
+          "label_en": "To Sonnet",
+          "icon": "🤖",
+          "color": "accent",
+          "title": "直接切換到 Sonnet（/model sonnet 一行指令，免選單導航）",
+          "action": {
+            "type": "macro",
+            "steps": [
+              { "type": "input", "payload": "/model sonnet" },
+              { "type": "key", "payload": "Enter" }
+            ],
+            "delays": { "inter": 300 }
+          }
+        },
+        {
+          "label": "壓縮後繼續",
+          "label_en": "Compact + go",
+          "icon": "🗜",
+          "color": "accent",
+          "title": "/compact 後自動送出「繼續」",
+          "action": {
+            "type": "macro",
+            "steps": [
+              { "type": "input", "payload": "/compact" },
+              { "type": "key", "payload": "Enter" },
+              { "type": "input", "payload": "繼續" },
+              { "type": "key", "payload": "Enter" }
+            ],
+            "delays": { "inter": 1200 }
+          }
+        },
+        {
+          "label": "解釋設計",
+          "label_en": "Explain design",
+          "icon": "💡",
+          "title": "請 Claude 解釋剛做的變更及設計理由",
+          "action": {
+            "type": "macro",
+            "steps": [
+              { "type": "input", "payload": "解釋你剛剛做的變更，重點是為什麼這樣設計，不需要列出每一行 diff" },
+              { "type": "key", "payload": "Enter" }
+            ],
+            "delays": { "inter": 0 }
+          }
+        },
+        {
+          "label": "新功能起手式",
+          "label_en": "Feature kickoff",
+          "icon": "🚀",
+          "title": "開新 worktree 分支並確認 lint 環境",
+          "action": {
+            "type": "macro",
+            "steps": [
+              { "type": "input", "payload": "開新 worktree 分支、cd 進去、跑一次 lint 確認環境乾淨" },
+              { "type": "key", "payload": "Enter" }
+            ],
+            "delays": { "inter": 0 }
+          }
+        },
+        {
+          "label": "收尾 commit",
+          "label_en": "Wrap-up commit",
+          "icon": "✅",
+          "color": "warn",
+          "confirm": "slide",
+          "title": "跑測試確認後 commit（滑動確認）",
+          "action": {
+            "type": "macro",
+            "steps": [
+              { "type": "input", "payload": "跑測試確認全部通過後，commit 目前的變更，commit message 請簡潔" },
+              { "type": "key", "payload": "Enter" }
+            ],
+            "delays": { "inter": 0 }
+          }
+        },
+        {
+          "label": "跑測試",
+          "label_en": "Run tests",
+          "icon": "🧪",
+          "title": "請 Claude 找出並執行本模組的測試套件",
+          "action": {
+            "type": "macro",
+            "steps": [
+              { "type": "input", "payload": "找出這個模組的測試套件並執行，回報通過 / 失敗數量" },
+              { "type": "key", "payload": "Enter" }
+            ],
+            "delays": { "inter": 0 }
+          }
+        }
+      ]
+    }
+  ]
+}

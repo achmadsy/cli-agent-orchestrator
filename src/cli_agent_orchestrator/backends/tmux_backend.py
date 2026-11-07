@@ -213,6 +213,10 @@ class TmuxBackend(TerminalBackend):
         # target is a pure function of its arguments and stays one.
         return self._client.attach_command(session_name, window_name)
 
+    def resolve_workspace_target(self, terminal_id: str, session_name: str) -> Dict[str, str]:
+        """Return exact owned tmux IDs for the optional workspace viewer."""
+        return self._client.resolve_workspace_target(terminal_id, session_name)
+
     # --- Pipe-pane ---
 
     def pipe_pane(self, session_name: str, window_name: str, file_path: str) -> None:

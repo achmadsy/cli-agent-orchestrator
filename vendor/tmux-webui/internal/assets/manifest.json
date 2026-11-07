@@ -1,0 +1,32 @@
+{
+  "name": "tmux Web Controller",
+  "short_name": "tmux",
+  "start_url": "/apps/tmux/",
+  "scope": "/apps/tmux/",
+  "display": "standalone",
+  "theme_color": "#0a0a12",
+  "background_color": "#0a0a12",
+  "icons": [
+    {
+      "src": "/apps/tmux/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/apps/tmux/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/apps/tmux/icon-192.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/apps/tmux/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

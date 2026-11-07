@@ -869,6 +869,15 @@ export const api = {
     return result
   },
 
+  // Optional workspace. Server owns capability cookie; URLs contain no bearer.
+  launchTerminalWorkspace: (terminalId: string) =>
+    fetchJSON<{ url: string; viewer_id: string; expires_in: number }>('/terminal/viewers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terminal_id: terminalId, base_path: BASE }),
+    }).then(viewer => ({ ...viewer, url: viewer.url.startsWith(`${BASE}/terminal/`) ? viewer.url : `${BASE}${viewer.url}` })),
+  revokeTerminalWorkspace: (viewerId: string) =>
+    fetchJSON<void>(`/terminal/viewers/${encodeURIComponent(viewerId)}`, { method: 'DELETE' }),
+
   // Terminals
   getTerminalStatus: (id: string) =>
     fetchJSON<Terminal>(`/terminals/${id}`).then(t => t.status),

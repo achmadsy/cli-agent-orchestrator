@@ -106,6 +106,11 @@ _OPEN_READS = {
     "/agents/profiles/templates/{category}/{name}/schema",
     # AG-UI event stream; carries its own auth story.
     "/agui/v1/stream",
+    # Viewer assets/history use a path-bound HttpOnly capability, not a Bearer
+    # header (iframe navigation cannot attach one). Launch requires write/admin;
+    # each GET rechecks the original credential + exact target. Not anonymous:
+    # test_terminal_workspace.py verifies missing/foreign/expired cookies fail.
+    "/terminal/v/{viewer_id}/{path:path}",
     # Every settings read (`/settings/agent-dirs`, `/settings/skill-dirs`,
     # `/settings/memory`) and every live session and terminal read — `/sessions`,
     # `/sessions/{name}/terminals`, `/terminals/{terminal_id}` and its inbox,

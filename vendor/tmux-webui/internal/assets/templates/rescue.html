@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<!-- Standalone rescue console. Deliberately self-contained (inline CSS/JS,
+     no /static or websocket dependency): this page must render and operate
+     while the tmux server — and therefore the main app — is wedged. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>tmux rescue</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: #0d1117; color: #c9d1d9;
+         font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  main { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 4px; color: #e6edf3; }
+  h1 a { color: #58a6ff; text-decoration: none; font-size: 13px; font-weight: normal; margin-left: 10px; }
+  .sub { color: #8b949e; font-size: 12px; margin-bottom: 16px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+          padding: 12px 14px; margin-bottom: 12px; }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 999px;
+          font-weight: 700; font-size: 13px; }
+  .chip.ok        { background: #1a7f37; color: #fff; }
+  .chip.no_server { background: #30363d; color: #c9d1d9; }
+  .chip.wedged    { background: #b62324; color: #fff; }
+  .chip.error     { background: #9e6a03; color: #fff; }
+  .chip.unknown   { background: #30363d; color: #8b949e; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 12px; }
+  th, td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: normal; }
+  .warn { color: #d29922; margin-top: 8px; font-size: 12px; }
+  .muted { color: #8b949e; font-size: 12px; }
+  button { display: block; width: 100%; margin: 8px 0; padding: 10px 12px;
+           border-radius: 6px; border: 1px solid #30363d; background: #21262d;
+           color: #c9d1d9; font: inherit; cursor: pointer; text-align: left; }
+  button:hover:not(:disabled) { border-color: #8b949e; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button .desc { display: block; color: #8b949e; font-size: 12px; margin-top: 2px; }
+  button.danger { border-color: #6e2224; }
+  button.danger:hover:not(:disabled) { border-color: #b62324; background: #2d1618; }
+  label { display: flex; gap: 8px; align-items: flex-start; font-size: 12px;
+          color: #d29922; margin-top: 12px; cursor: pointer; }
+  pre { background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+        padding: 10px; font-size: 11px; white-space: pre-wrap; word-break: break-all;
+        max-height: 45vh; overflow: auto; margin: 8px 0 0; }
+  pre:empty { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>tmux rescue <a href="./">&larr; back to app</a></h1>
+  <div class="sub">out-of-band console — every action here bypasses the tmux socket</div>
+
+  <div class="card" id="status-card">
+    <span class="chip unknown" id="state">probing…</span>
+    <span class="muted" id="detail"></span>
+    <div id="proc-tables"></div>
+    <div class="muted" id="socket"></div>
+    <div class="warn" id="inside-tmux" hidden>
+      &#9888; this webui runs INSIDE tmux — force-killing the server kills the webui too
+    </div>
+  </div>
+
+  <div class="card">
+    <button id="btn-diagnose">1. Collect evidence
+      <span class="desc">read-only: ps snapshot + stack sample of the server, saved to disk</span></button>
+    <button id="btn-hooks">2. Kill stuck hook children
+      <span class="desc">TERM then KILL the server's child processes — often unwedges the event loop</span></button>
+    <label><input type="checkbox" id="confirm-kill">
+      I understand: every tmux session and all running programs inside them will die.</label>
+    <button id="btn-server" class="danger" disabled>3. Force-kill server + clean socket
+      <span class="desc">SIGKILL the server process, remove the socket dir; next tmux command starts fresh</span></button>
+  </div>
+
+  <pre id="log"></pre>
+</main>
+<script>
+(() => {
+  'use strict';
+  // The webui may sit behind a stripping reverse proxy (e.g. /apps/tmux/ ->
+  // /), so API paths must stay relative to wherever this page is mounted.
+  const BASE = location.pathname.replace(/\/rescue\/?$/, '');
+  const $ = id => document.getElementById(id);
+  const log = $('log');
+
+  function say(text) {
+    log.textContent = text + '\n\n' + log.textContent;
+  }
+
+  function renderProcs(st) {
+    const rows = (title, procs) => procs.length
+      ? `<table><tr><th colspan="4">${title}</th></tr>
+         <tr><th>pid</th><th>cpu%</th><th>up</th><th>command</th></tr>` +
+        procs.map(p => `<tr><td>${p.pid}</td><td>${p.cpu}</td><td>${p.etime}</td><td>${esc(p.command)}</td></tr>`).join('') +
+        '</table>'
+      : '';
+    $('proc-tables').innerHTML =
+      rows('server process', st.servers) + rows('hook children', st.hook_children);
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  }
+
+  let lastState = null;
+  async function refresh() {
+    try {
+      const st = await (await fetch(BASE + '/api/rescue')).json();
+      const chip = $('state');
+      chip.className = 'chip ' + st.tmux;
+      chip.textContent = st.tmux.replace('_', ' ').toUpperCase();
+      $('detail').textContent = st.detail || '';
+      renderProcs(st);
+      $('socket').textContent = `socket dir: ${st.socket_dir} (${st.socket_exists ? 'exists' : 'absent'})`;
+      $('inside-tmux').hidden = !st.inside_tmux;
+      $('btn-hooks').disabled = st.hook_children.length === 0;
+      if (st.tmux !== lastState && lastState !== null) say(`state: ${lastState} -> ${st.tmux}`);
+      lastState = st.tmux;
+    } catch (e) {
+      $('state').className = 'chip unknown';
+      $('state').textContent = 'WEBUI UNREACHABLE';
+      $('detail').textContent = String(e);
+    }
+  }
+
+  async function post(path, body, btn) {
+    btn.disabled = true;
+    const old = btn.firstChild.textContent;
+    btn.firstChild.textContent = old + ' …working';
+    try {
+      const res = await fetch(BASE + path, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}) });
+      const data = await res.json();
+      say(`${path} -> ${res.status}\n` + JSON.stringify(data, null, 2));
+    } catch (e) {
+      say(`${path} FAILED: ${e}`);
+    } finally {
+      btn.firstChild.textContent = old;
+      btn.disabled = false;
+      refresh();
+    }
+  }
+
+  $('btn-diagnose').onclick = () => post('/api/rescue/diagnose', {}, $('btn-diagnose'));
+  $('btn-hooks').onclick = () => post('/api/rescue/kill-hooks', {}, $('btn-hooks'));
+  $('confirm-kill').onchange = e => { $('btn-server').disabled = !e.target.checked; };
+  $('btn-server').onclick = () => {
+    post('/api/rescue/kill-server', { confirm: true }, $('btn-server'));
+    $('confirm-kill').checked = false;
+    $('btn-server').disabled = true;
+  };
+
+  refresh();
+  setInterval(refresh, 3000);
+})();
+</script>
+</body>
+</html>

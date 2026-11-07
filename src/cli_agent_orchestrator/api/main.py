@@ -9394,6 +9394,11 @@ async def list_outcomes_endpoint(
     return {"outcomes": outcomes, "count": len(outcomes)}
 
 
+# Optional terminal workspace routes must precede the catch-all SPA mount.
+from cli_agent_orchestrator.api.terminal_workspace import router as _terminal_workspace_router
+
+app.include_router(_terminal_workspace_router)
+
 # Static file serving for built web UI.
 # Anchored to the package via importlib.resources so it works for both
 # editable installs (uv sync) and wheel installs (uv tool install, pip install).

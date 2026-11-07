@@ -1,0 +1,339 @@
+/* deck.css — Deck Mode (Stream-Deck style button wall).
+   100% additive: every selector is new and prefixed with #deck-root / .deck-
+   or #app.deck-mode. main.css is NOT modified. When deck mode is off
+   (#app has no .deck-mode class) the only active rule is #deck-root{display:none},
+   which matches no existing element → existing terminal view is byte-identical.
+   #app.deck-mode mirrors the existing #app.fullscreen-mode mode-class pattern. */
+
+#deck-root{ display:none; }
+
+/* Enter deck mode: hide terminal chrome (same approach as fullscreen-mode,
+   main.css:104-120), reveal the deck. Header stays visible so #deck-toggle
+   remains reachable to switch back. */
+#app.deck-mode #pane-container,
+#app.deck-mode .win-tabs,
+#app.deck-mode .tmux-status,
+#app.deck-mode .mobile-pane-tabs,
+#app.deck-mode footer{ display:none !important; }
+
+#app.deck-mode #deck-root{
+  display:flex; flex-direction:column; flex:1;
+  overflow-y:auto; gap:18px;
+  background:var(--bg);
+  padding:14px;
+  padding-top:calc(14px + env(safe-area-inset-top));
+  padding-bottom:calc(14px + env(safe-area-inset-bottom));
+}
+
+/* The scrollback scrub strip only makes sense in dock mode, where the terminal
+   is visible and there's something to scroll. In fullscreen there is no terminal,
+   so the strip is a no-op widget that just clutters the control column — hide it.
+   Dock mode (#app.deck-dock) leaves it visible. */
+#app.deck-mode #deck-dial-zone{ display:none !important; }
+
+.deck-panel-title{
+  font-size:11px; color:var(--dim);
+  text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px;
+}
+
+.deck-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(92px, 1fr));
+  gap:10px;
+}
+
+.deck-btn{
+  aspect-ratio:1/1;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:6px; padding:8px;
+  background:var(--surface2); color:var(--text);
+  border:1px solid var(--border); border-radius:var(--radius);
+  font-family:inherit; font-size:12px; cursor:pointer; text-align:center;
+  transition:all .15s; user-select:none; -webkit-user-select:none;
+  touch-action:manipulation;
+}
+.deck-btn:hover{ border-color:var(--accent); color:var(--accent-h); }
+.deck-btn:active{ background:var(--accent); color:#fff; border-color:var(--accent); transition:none; }
+.deck-btn[data-color="accent"]{ border-color:var(--accent); color:var(--accent-h); }
+.deck-btn[data-color="warn"]{ border-color:var(--yellow); color:var(--yellow); }
+.deck-btn[data-color="danger"]{ border-color:var(--red); color:var(--red); }
+
+.deck-ico{ font-size:24px; line-height:1; opacity:.9; }
+.deck-lbl{
+  font-size:11px; opacity:.85;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%;
+}
+
+/* toggle button active state — own selector, does not touch existing #tts-toggle.active */
+#deck-toggle.active{ background:var(--accent); color:#fff; border-color:var(--accent); }
+
+@media(pointer:coarse){ .deck-btn{ min-height:84px; } }
+
+/* slide-to-confirm (v2 S1) — drag-to-commit gate for irreversible actions */
+.deck-confirm{
+  position:fixed; inset:0; z-index:80;
+  display:flex; align-items:flex-end; justify-content:center;
+  background:rgba(0,0,0,.5);
+  padding:0 16px calc(24px + env(safe-area-inset-bottom));
+}
+.deck-confirm-panel{
+  width:min(92vw, 460px);
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px; display:flex; flex-direction:column; gap:12px;
+  box-shadow:0 8px 32px rgba(0,0,0,.45);
+}
+.deck-confirm-title{ font-size:13px; color:var(--text); text-align:center; }
+.deck-confirm-track{
+  --p:0; position:relative; height:56px; border-radius:28px;
+  background:var(--surface2); border:1px solid var(--border); overflow:hidden;
+}
+.deck-confirm-track::before{
+  content:''; position:absolute; inset:0;
+  width:calc(var(--p) * 100%); background:var(--accent); opacity:.22;
+}
+.deck-confirm-hint{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-size:12px; color:var(--dim); pointer-events:none; letter-spacing:.12em;
+  opacity:calc(1 - var(--p));
+}
+.deck-confirm-thumb{
+  position:absolute; left:4px; top:4px; width:48px; height:48px; border-radius:50%;
+  background:var(--accent); color:#fff;
+  display:flex; align-items:center; justify-content:center; font-size:18px;
+  cursor:grab; touch-action:none; user-select:none; -webkit-user-select:none;
+  will-change:transform;
+}
+.deck-confirm-thumb.springing{ transition:transform .22s cubic-bezier(.3,1.4,.5,1); }
+.deck-confirm-thumb.armed{ background:var(--green); }
+.deck-confirm-cancel{
+  align-self:center; padding:6px 18px; font-size:12px; font-family:inherit;
+  background:transparent; color:var(--dim);
+  border:1px solid var(--border); border-radius:var(--radius); cursor:pointer;
+}
+.deck-confirm-cancel:hover{ color:var(--text); border-color:var(--accent); }
+
+/* context-menu option buttons (v2 S1b) — labeled choices parsed by detectMenu */
+.deck-ctx-btn{
+  display:flex; align-items:center; gap:12px; width:100%;
+  padding:14px 16px; margin-bottom:8px;
+  background:var(--surface2); color:var(--text);
+  border:1px solid var(--border); border-radius:var(--radius);
+  font-family:inherit; font-size:14px; text-align:left; cursor:pointer;
+  transition:all .15s; touch-action:manipulation;
+}
+.deck-ctx-btn:hover{ border-color:var(--accent); }
+.deck-ctx-btn:active{ background:var(--accent); color:#fff; border-color:var(--accent); }
+.deck-ctx-num{
+  flex-shrink:0; width:28px; height:28px; border-radius:50%;
+  background:var(--accent); color:#fff;
+  display:flex; align-items:center; justify-content:center; font-weight:600; font-size:13px;
+}
+.deck-ctx-lbl{ flex:1; line-height:1.3; }
+
+/* ============================================================================
+   v2 wave1 — persistent chrome: status strip (live badges) + session rail
+   All selectors new + #deck-* scoped; deck-off byte-identical is preserved.
+   ============================================================================ */
+
+#deck-chrome{ display:flex; flex-direction:column; gap:10px; }
+#deck-panels{ display:flex; flex-direction:column; flex:1; gap:18px; }
+
+/* --- status strip: 🤖 model / ✍️ context / 💰 cost / ⏵ mode badges --------- */
+#deck-status-strip{
+  display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+}
+.deck-badge{
+  display:inline-flex; align-items:center; gap:6px;
+  padding:6px 10px; border-radius:999px;
+  background:var(--surface2); border:1px solid var(--border);
+  font-size:12px; line-height:1; white-space:nowrap;
+}
+.deck-badge-ico{ font-size:13px; opacity:.9; }
+.deck-badge-val{ color:var(--text); font-variant-numeric:tabular-nums; }
+.deck-badge.m-model .deck-badge-val{ color:var(--accent-h); }
+.deck-badge.m-cost  .deck-badge-val{ color:var(--green); }
+/* permission-mode badge takes a status color so it reads as a state light */
+.deck-badge.m-mode{ font-weight:600; letter-spacing:.04em; }
+.deck-badge.m-mode .deck-badge-val{ color:#fff; }
+.deck-badge.mode-plan{   background:var(--accent); border-color:var(--accent); }
+.deck-badge.mode-accept{ background:var(--yellow); border-color:var(--yellow); }
+.deck-badge.mode-accept .deck-badge-val{ color:#000; }
+.deck-badge.mode-accept .deck-badge-ico{ color:#000; }
+.deck-badge.mode-auto{   background:var(--green);  border-color:var(--green); }
+.deck-badge.mode-bypass{ background:var(--red);    border-color:var(--red); }
+
+/* --- rail: stacked session row + window row, each horizontally scrollable -- */
+#deck-rail{ display:flex; flex-direction:column; gap:6px; }
+.deck-rail-row{
+  display:flex; gap:8px; overflow-x:auto; padding-bottom:2px;
+  -webkit-overflow-scrolling:touch; scrollbar-width:none;
+}
+.deck-rail-row::-webkit-scrollbar{ display:none; }
+.deck-rail-pill{
+  flex-shrink:0; display:inline-flex; align-items:center; gap:6px;
+  padding:8px 12px; min-height:40px; border-radius:var(--radius);
+  background:var(--surface2); color:var(--text);
+  border:1px solid var(--border); font-family:inherit; font-size:13px;
+  cursor:pointer; user-select:none; -webkit-user-select:none;
+  touch-action:manipulation; transition:all .15s;
+}
+.deck-rail-pill:active{ background:var(--accent); color:#fff; border-color:var(--accent); transition:none; }
+.deck-rail-pill.active{ border-color:var(--accent); color:var(--accent-h); background:color-mix(in srgb, var(--accent) 14%, var(--surface2)); }
+.deck-rail-idx{
+  flex-shrink:0; min-width:18px; height:18px; padding:0 4px; border-radius:5px;
+  background:var(--bg); color:var(--dim);
+  display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:600;
+}
+.deck-rail-pill.active .deck-rail-idx{ background:var(--accent); color:#fff; }
+.deck-rail-name{ max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.deck-rail-panes{
+  flex-shrink:0; font-size:10px; color:var(--dim);
+  background:var(--bg); border-radius:4px; padding:1px 5px;
+}
+
+/* session pills sit on the upper row; a leading icon + accent tint sets them
+   apart from window pills so the two layers don't read as one flat list. */
+.deck-rail-session{ border-color:color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.deck-rail-session.active{ background:color-mix(in srgb, var(--accent) 22%, var(--surface2)); }
+.deck-rail-sico{ flex-shrink:0; font-size:13px; color:var(--accent-h); opacity:.95; }
+.deck-rail-attached{
+  flex-shrink:0; width:7px; height:7px; border-radius:50%;
+  background:var(--green); box-shadow:0 0 0 2px color-mix(in srgb, var(--green) 30%, transparent);
+}
+
+/* window-pill live status — folds the old separate status-lights row INTO the
+   rail, so the pill you read for the window name also shows whether it's working.
+   An inset left bar + border tint marks state; active uses its own background
+   tint so the two don't collide. idle / unknown carry no extra style. */
+.deck-rail-pill.st-working{
+  border-color:var(--green);
+  box-shadow:inset 3px 0 0 var(--green);
+}
+.deck-rail-pill.st-waiting{
+  border-color:var(--red);
+  box-shadow:inset 3px 0 0 var(--red);
+  animation:deck-rail-pulse 1.8s ease-in-out infinite;
+}
+@keyframes deck-rail-pulse{
+  0%,100%{ box-shadow:inset 3px 0 0 var(--red); }
+  50%{ box-shadow:inset 3px 0 0 color-mix(in srgb, var(--red) 40%, transparent); }
+}
+
+/* ============================================================================
+   deck-redesign-B — state-driven UI + tactile feedback
+   All new selectors are .deck-* scoped; deck-off byte-identical preserved.
+
+   MAIN THREAD CONTRACT (names the JS must use):
+   -----------------------------------------------
+   1. RIPPLE / SENT FEEDBACK
+      - Add class   .is-sent   immediately after dispatch() sends the action.
+      - Remove it   350ms later (matches the animation duration).
+      - No extra attributes needed.
+
+   2. STATE-DRIVEN: DISABLED
+      - Set attribute  data-disabled="1"  when the button is not applicable
+        in the current state (e.g. /plan button while Claude is already in plan
+        mode AND you want to prevent a double-send). Remove the attribute when
+        the state allows the action.
+
+   3. STATE-DRIVEN: MODE ACTIVE (glow)
+      - Set attribute  data-mode-on="1"   when the mode the button controls is
+        currently active (e.g. /plan button glows while Claude is in plan mode,
+        /auto button glows while auto-mode is on, etc.).
+      - Remove when the mode is off.
+
+   4. PROGRESS BAR (optional, future use)
+      - Add class  .deck-btn-prog  to a <span> child of .deck-btn.
+      - Set CSS custom property  --p  (0..1) on that element via JS:
+          el.style.setProperty('--p', '0.42');
+      - The bar auto-hides when .deck-btn-prog is absent.
+   ============================================================================ */
+
+/* --- 1. RIPPLE / SENT FEEDBACK -------------------------------------------- */
+/* Keyframe: a fast scale-up + fade-out that reads as "sent" not "pressed".
+   GPU-only properties: transform + opacity. */
+@keyframes deck-sent-flash {
+  0%   { transform:scale(1);    opacity:1; }
+  40%  { transform:scale(1.06); opacity:.85; }
+  100% { transform:scale(1);    opacity:1; }
+}
+
+/* Radial ripple pseudo-element: expands from centre, fades out. */
+@keyframes deck-sent-ripple {
+  0%   { transform:scale(0);   opacity:.55; }
+  100% { transform:scale(2.4); opacity:0;   }
+}
+
+.deck-btn.is-sent {
+  animation: deck-sent-flash 350ms cubic-bezier(.25,.8,.25,1) both;
+  /* Briefly accent border to reinforce "sent" */
+  border-color: var(--accent);
+}
+
+/* Ripple layer via ::after — contained within button's border-box. */
+.deck-btn{ position:relative; overflow:hidden; }   /* overflow already safe; position:relative is new */
+.deck-btn.is-sent::after {
+  content:'';
+  position:absolute;
+  inset:0;
+  margin:auto;
+  width:60%;
+  aspect-ratio:1/1;
+  border-radius:50%;
+  background:var(--accent);
+  opacity:0;
+  pointer-events:none;
+  animation: deck-sent-ripple 350ms cubic-bezier(.25,.8,.25,1) both;
+  will-change:transform, opacity;
+}
+
+
+/* --- 2. STATE-DRIVEN: DISABLED -------------------------------------------- */
+.deck-btn[data-disabled="1"] {
+  opacity:.4;
+  pointer-events:none;
+  cursor:not-allowed;
+  /* Override any color tints so the button reads as neutral-dimmed */
+  border-color:var(--border) !important;
+  color:var(--dim) !important;
+}
+
+
+/* --- 3. STATE-DRIVEN: MODE ACTIVE (glow) ---------------------------------- */
+/* Shows which mode is currently ON — matches the accent glow style used by
+   .deck-rail-pill.active so the visual language is consistent. */
+.deck-btn[data-mode-on="1"] {
+  border-color:var(--accent);
+  color:var(--accent-h);
+  background:color-mix(in srgb, var(--accent) 14%, var(--surface2));
+  /* Subtle outer glow — GPU-composited via box-shadow */
+  box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* When both mode-on AND is-sent fire at once, let is-sent win on border */
+.deck-btn[data-mode-on="1"].is-sent {
+  border-color:var(--accent);
+}
+
+/* Suppress :hover border override when already lit */
+.deck-btn[data-mode-on="1"]:hover {
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+
+/* --- 4. INLINE PROGRESS BAR (optional, cheap) ----------------------------- */
+/* ponytail: global bottom-bar, per-step progress if needed */
+.deck-btn{ isolation:isolate; }  /* stacking context for .deck-btn-prog */
+.deck-btn-prog {
+  display:block;
+  position:absolute;
+  bottom:0; left:0;
+  height:3px;
+  border-radius:0 0 var(--radius) var(--radius);
+  background:var(--accent);
+  opacity:.8;
+  width:calc(var(--p, 0) * 100%);
+  transition:width .2s linear;
+  pointer-events:none;
+}

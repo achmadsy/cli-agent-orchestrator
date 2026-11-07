@@ -53,6 +53,21 @@ describe('URL building under a path prefix', () => {
     )
   })
 
+  it('launches workspace with the external prefix and never duplicates it', async () => {
+    vi.stubEnv('BASE_URL', '/cao/')
+    vi.resetModules()
+    const { api } = await import('../api')
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200,
+      text: () => Promise.resolve(JSON.stringify({ url: '/cao/terminal/v/abc/', viewer_id: 'abc', expires_in: 600 })) })
+    vi.stubGlobal('fetch', mockFetch)
+    const viewer = await api.launchTerminalWorkspace('abcdef12')
+    expect(viewer.url).toBe('/cao/terminal/v/abc/')
+    expect(mockFetch).toHaveBeenCalledWith('/cao/terminal/viewers', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ terminal_id: 'abcdef12', base_path: '/cao' }),
+    }))
+    vi.unstubAllGlobals()
+  })
+
   it('prefixes REST calls', async () => {
     vi.stubEnv('BASE_URL', '/cao/')
     vi.resetModules()

@@ -1,0 +1,317 @@
+[
+  {
+    "name": "live_working_braille_title_bg_workflow",
+    "text": "✻ Waiting for 1 dynamic workflow to finish\n\n────────────────────────────────────────\n❯ \n────────────────────────────────────────\n    🔖 c43c │ 📁 tmux-webui │ ⎇ -\n    🤖 Fable 5 │ 💰 $259.1 │ ✍️  16/80%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\n\n  ◯ deck-agent-state-herdr-fix  Herdr-faithf… 2/4 agents done · 5m 47s · ↓ 495.4k tokens",
+    "title": "⠂ Fix agent state detection in dock mode",
+    "cmd": "2.1.198",
+    "expect": "working",
+    "synth": false,
+    "source": "live tmux capture %2 (2.1.198, braille-title working claude, bg Workflow 2/4)"
+  },
+  {
+    "name": "live_idle_recap_empty_box",
+    "text": "✻ Churned for 8m 26s\n\n※ recap: 少爺，剛才在修 tmux 切 pane 噴 127 錯誤的問題：孤兒 hook 已找到並拆除，驗證 45\n  秒無再觸發，邊線維持預設加亮橘 selected。下一步只剩您實際切幾次 pane 確認安靜即可。\n  (disable recaps in /config)\n\n────────────────────────────────────────\n❯ \n────────────────────────────────────────\n    🔖 232f │ 📁 work │ ⎇ -\n    🤖 Fable 5 │ 💰 $243.04 │ ✍️  50/80%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+    "title": "✳ Handle teammate availability notifications",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": false,
+    "source": "live tmux capture %3 (2.1.198, ✳-title idle claude; ✻ 'Churned' glyph is scrollback residue)"
+  },
+  {
+    "name": "live_exited_claude_residue",
+    "text": "    🔖 8549 │ 📁 workshop │ ⎇ main*4?339\n    🤖 Haiku 4.5 │ 💰 N/A │ ✍️  40/80%\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n\nResume this session with:\nclaude --resume 8549806f-996b-4ba1-a712-f029afd34fbb\n\n ~/workshop  main ⇡224 *1 !4 ?100 ·················· 1m 9s\n❯",
+    "title": "✳ 分析 memvault 查詢模式趨勢",
+    "cmd": "zsh",
+    "expect": "unknown",
+    "synth": false,
+    "source": "live tmux capture %9 (exited claude: status-bar + 'Resume this session with: claude --resume' + p10k prompt, cmd=zsh)"
+  },
+  {
+    "name": "live_plain_zsh_p10k_stale_star_title",
+    "text": " ~/workshop  main ⇡100 *1 ··················\n❯\n\n ~/workshop  main ⇡100 *1 !1 ?82 ·········\n ~/workshop  main ⇡100 *1 !1 ?82 ··················\n❯",
+    "title": "✳ Claude Code",
+    "cmd": "zsh",
+    "expect": "unknown",
+    "synth": false,
+    "source": "live tmux capture %5 (p10k zsh; ❯ prompt + stale ✳ title but cmd=zsh — gate must reject)"
+  },
+  {
+    "name": "live_plain_zsh_bare_prompt",
+    "text": " jones@Jones  ~ \n jones@Jones  ~ ",
+    "title": "JoneshongdeMac-mini.local",
+    "cmd": "zsh",
+    "expect": "unknown",
+    "synth": false,
+    "source": "live tmux capture %43 (bare zsh prompt, no claude chrome)"
+  },
+  {
+    "name": "lib_working_esc_interrupt_spinner",
+    "text": "⏺ I'll refactor the auth module now.\n\n  Let me start by reading the current implementation.\n\n⏺ Read(src/modules/auth/oauth.py)\n  ⎿  Read 214 lines\n\n✻ Simmering… (esc to interrupt · 8s · ↑ 2.1k tokens)",
+    "title": "",
+    "cmd": "claude",
+    "expect": "working",
+    "synth": false,
+    "source": "libs/agent-state/tests/fixtures/claude_working.txt"
+  },
+  {
+    "name": "lib_idle_bordered_prompt_box",
+    "text": "⏺ Done. The refactor is complete and all tests pass.\n\n  I updated three files and re-ran the suite — 42 passed.\n\n╭────────────────────────────────────────╮\n│ ❯                                                              │\n╰────────────────────────────────────────╯\n  ? for shortcuts                                    ⏵⏵ auto-accept edits off",
+    "title": "",
+    "cmd": "claude",
+    "expect": "idle",
+    "synth": false,
+    "source": "libs/agent-state/tests/fixtures/claude_idle.txt"
+  },
+  {
+    "name": "lib_bash_permission_do_you_want_to_proceed",
+    "text": "⏺ I'll run the test suite to check for regressions.\n\n╭────────────────────────────────────────╮\n│ Bash command                                                   │\n│                                                                │\n│   pytest -q                                                    │\n│   Run the full test suite                                      │\n╰────────────────────────────────────────╯\n\nDo you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again for pytest commands\n  3. No, and tell Claude what to do differently (esc)",
+    "title": "",
+    "cmd": "claude",
+    "expect": "waiting",
+    "synth": false,
+    "source": "libs/agent-state/tests/fixtures/claude_blocked.txt"
+  },
+  {
+    "name": "exitplanmode_plan_approval_menu",
+    "text": " Ready to code?\n\n Here is Claude's plan:\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n Plan: 建立 /tmp/hi.txt 內含 \"hi\"\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n\n Claude has written up a plan and is ready to execute. Would you like to proceed?\n\n ❯ 1. Yes, and use auto mode\n   2. Yes, manually approve edits\n   3. Tell Claude what to change\n      shift+tab to approve with this feedback\n\n ctrl+g to edit in  Vim  · ~/.claude/plans/clever-drifting-key.md",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": false,
+    "source": "outputs/tmux-webui-deck-mode/REAL-MENU-SAMPLES.md §1 (captured v2.1.183)"
+  },
+  {
+    "name": "synth_edit_permission_prompt",
+    "text": "⏺ Update(internal/ws/agentstate.go)\n  ⎿  Added 3 lines, removed 1 line\n\nDo you want to make this edit to agentstate.go?\n❯ 1. Yes\n  2. Yes, allow all edits during this session (shift+tab)\n  3. No, and tell Claude what to do differently (esc)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": true,
+    "source": "synth from claude_blocked.txt shape + real 'do you want to make this edit' chrome (agentstate.go blockedQuestions)"
+  },
+  {
+    "name": "synth_create_permission_prompt",
+    "text": "⏺ Write(tests/test_regions.py)\n  ⎿  Writing 42 lines\n\nDo you want to create tests/test_regions.py?\n❯ 1. Yes\n  2. No, and tell Claude what to do differently (esc)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": true,
+    "source": "synth from real 'do you want to create' chrome (agentstate.go blockedQuestions)"
+  },
+  {
+    "name": "synth_askuserquestion_select_menu",
+    "text": " What should I optimize for first?\n\n ❯ Latency (sub-100ms p50)\n   Throughput (batch)\n   Perceived speed (UX)\n\n ↑/↓ to navigate · Enter to select · Esc to cancel",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": true,
+    "source": "synth from task-supplied AskUserQuestion chrome ('Enter to select'/'Esc to cancel' + nav hint) — no live capture existed"
+  },
+  {
+    "name": "synth_model_picker_select_model",
+    "text": " Select model\n\n ❯ 1. Default (recommended)\n   2. Opus 4.8\n   3. Sonnet 5\n   4. Haiku 4.5\n\n Enter to confirm · Esc to cancel",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "skip",
+    "synth": true,
+    "source": "synth from real /model picker chrome ('Select model') — freeze/skip per task; no live capture existed"
+  },
+  {
+    "name": "synth_transcript_viewer_freeze",
+    "text": "⏺ Read(internal/ws/agentstate.go)\n  ⎿  Read 234 lines\n  user: fix the classifier\n  assistant: I'll port the manifest...\n  ... (full history) ...\n\n Showing detailed transcript · ctrl+o to expand · ctrl+e to edit · esc to close",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "skip",
+    "synth": true,
+    "source": "synth from real transcript-viewer chrome ('Showing detailed transcript' + ctrl+o/ctrl+e); matches agentstate.go transcript_viewer rule"
+  },
+  {
+    "name": "poison_quoted_menu_above_live_idle_box",
+    "text": " earlier in this turn i showed you the menu:\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)\n but you answered and we moved on.\n\n⏺ Done. Committed the fix and re-ran the suite — all green.\n here is a summary of what changed and why it is safe.\n the classifier now anchors to the bottom interaction zone only.\n scrollback that merely quotes a menu can no longer flip the state.\n nothing else is pending; the pane is idle awaiting your next prompt.\n (extra prose to push the quote out of the bottom-12 window)\n\n────────────────────────────────────────\n❯ \n────────────────────────────────────────\n    🔖 c43c │ 📁 tmux-webui │ ⎇ -\n    🤖 Fable 5 │ 💰 $259.1 │ ✍️  16/80%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+    "title": "✳ Handle teammate availability notifications",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "synth poison — quoted permission menu in scrollback + live empty ❯ box (mirrors poll_test.go 'quoted menu cursor above live box does not poison idle')"
+  },
+  {
+    "name": "poison_transcript_discusses_esc_to_interrupt",
+    "text": "⏺ The working-state signal in Claude Code is the string\n  'esc to interrupt', shown only while a turn is running. We key on it\n  but ONLY within the bottom non-empty zone, because scrollback that\n  merely discusses 'esc to interrupt' (like this very message) must not\n  be misread as an active spinner. This was a real 2026-06-20 bug.\n\n────────────────────────────────────────\n❯ \n────────────────────────────────────────\n    🔖 c43c │ 📁 tmux-webui │ ⎇ -\n    🤖 Fable 5 │ 💰 $259.1 │ ✍️  16/80%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+    "title": "✳ Handle teammate availability notifications",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "synth poison — prose discussing 'esc to interrupt' above a live idle box (mirrors poll.go tailNonEmpty bottom-zone anchoring, 2026-06-20 case)"
+  },
+  {
+    "name": "perm_question_above_real_ruled_composer_box",
+    "text": "Would you like to proceed?\n ❯ 1. Yes\n────────────────────────────────\n ❯ \n────────────────────────────────\n    🔖 c43c │ 📁 tmux-webui │ ⎇ -\n    🤖 Fable 5 │ 💰 $259.1 │ ✍️  16/80%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "regression (finding 1): live permission question directly above a REAL ─-ruled empty composer box. promptBoxBody isolated only the empty ❯ interior → live_prompt_box read visible-idle; prompt_above_composer_box (960) now fires waiting. Boxless twin is poll_test.go:54. | RELABELED 2026-07-02: live captures (AskUserQuestion / bash permission / ExitPlanMode, CC v2.1.198) prove a live menu and a composer box are mutually exclusive — this hybrid screen only occurs as a QUOTE above an idle box, so ground truth is idle."
+  },
+  {
+    "name": "bash_perm_above_real_ruled_composer_box",
+    "text": "⏺ I'll run the test suite.\nDo you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)\n────────────────────────────────\n ❯ \n────────────────────────────────\n    🔖 c43c │ 📁 tmux-webui\n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "regression (finding 1): 'do you want to proceed?' menu above a real ─-ruled composer box → waiting via prompt_above_composer_box. | RELABELED 2026-07-02: live captures (AskUserQuestion / bash permission / ExitPlanMode, CC v2.1.198) prove a live menu and a composer box are mutually exclusive — this hybrid screen only occurs as a QUOTE above an idle box, so ground truth is idle."
+  },
+  {
+    "name": "edit_perm_menu_above_composer_box",
+    "text": "Do you want to make this edit to agentstate.go?\n ❯ 1. Yes\n   2. Yes, allow all edits during this session\n   3. No, and tell Claude what to do differently (esc)\n────────────────────────────────\n ❯ \n────────────────────────────────\n    🔖 c43c │ 🤖 Fable 5\n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "regression (finding 1): edit-permission menu above a composer box → waiting. | RELABELED 2026-07-02: live captures (AskUserQuestion / bash permission / ExitPlanMode, CC v2.1.198) prove a live menu and a composer box are mutually exclusive — this hybrid screen only occurs as a QUOTE above an idle box, so ground truth is idle."
+  },
+  {
+    "name": "ask_menu_above_composer_box",
+    "text": "What should I optimize for first?\n ❯ Latency (sub-100ms p50)\n   Throughput (batch)\n   Perceived speed (UX)\n ↑/↓ to navigate · Enter to select · Esc to cancel\n────────────────────────────────\n ❯ \n────────────────────────────────\n    🔖 c43c │ 🤖 Fable 5\n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "regression (finding 1): AskUserQuestion select menu above a composer box → waiting (live_blocked_form bottom-12; prompt_above_composer_box backs it up). | RELABELED 2026-07-02: live captures (AskUserQuestion / bash permission / ExitPlanMode, CC v2.1.198) prove a live menu and a composer box are mutually exclusive — this hybrid screen only occurs as a QUOTE above an idle box, so ground truth is idle."
+  },
+  {
+    "name": "ask_menu_single_rule_statusbar_separator",
+    "text": "What should I optimize for first?\n ❯ Latency (sub-100ms p50)\n   Throughput (batch)\n   Perceived speed (UX)\n ↑/↓ to navigate · Enter to select · Esc to cancel\n────────────────────────────────\n    🔖 c43c │ 📁 tmux-webui\n    🤖 Fable 5 │ 💰 $259.1\n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": true,
+    "source": "regression (finding 3): a trailing ─ status-bar separator below the select chrome truncated afterLastHorizontalRule to the status bar → select menu read idle. live_blocked_form now uses bottomNonEmptyLines(12)."
+  },
+  {
+    "name": "ask_menu_missing_nav_hint",
+    "text": "What should I optimize for first?\n ❯ Latency (sub-100ms p50)\n   Throughput (batch)\n   Perceived speed (UX)\n Enter to select · Esc to cancel",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": true,
+    "source": "regression (finding 2): select menu with 'Enter to select · Esc to cancel' but no separate nav-hint line. The old 3-way conjunction (select+cancel+nav) failed → idle; relaxed match keys on 'enter to select' + a live cursor-option line."
+  },
+  {
+    "name": "ask_menu_esc_worded_go_back",
+    "text": "What should I optimize for first?\n ❯ Latency (sub-100ms p50)\n   Throughput (batch)\n   Perceived speed (UX)\n ↑/↓ to navigate · Enter to select · Esc to go back",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": true,
+    "source": "regression (finding 2): cancel hint worded 'Esc to go back' (not 'Esc to cancel') failed the old formSelectChrome conjunction → idle; relaxed match handles it."
+  },
+  {
+    "name": "poison_perm_menu_pushed_above_composer_box_is_idle",
+    "text": " earlier: Do you want to proceed?\n ❯ 1. Yes\n   2. No\n but you answered and we moved on.\n⏺ Done. Committed the fix and re-ran the suite — all green.\n here is a summary of what changed and why it is safe.\n the classifier now anchors to the bottom interaction zone only.\n scrollback that merely quotes a menu can no longer flip the state.\n nothing else is pending; the pane is idle awaiting your next prompt.\n (extra prose to push the quote out of the head window)\n────────────────────────────────\n ❯ \n────────────────────────────────\n    🔖 c43c │ 🤖 Fable 5",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "poison guard (finding 1 boundary): a permission menu quoted then PUSHED past the head window above the composer box must stay idle — prompt_above_composer_box only fires when the menu is directly above the box."
+  },
+  {
+    "name": "delete_perm_custom_question_above_composer_box",
+    "text": "⏺ I'll remove the old handler.\nDo you want to delete src/old_handler.py?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)\n────────────────────────────────\n ❯ \n────────────────────────────────\n    🔖 c43c │ 📁 tmux-webui\n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "regression (finding 1): a REAL permission question OUTSIDE the 4-phrase whitelist ('Do you want to delete …?') above a ─-ruled composer box read visible-idle → green on the deck for a human-blocked pane. prompt_above_composer_box now discriminates by CONTIGUITY (the menu is flush against the box), not by the question string. | RELABELED 2026-07-02: live captures (AskUserQuestion / bash permission / ExitPlanMode, CC v2.1.198) prove a live menu and a composer box are mutually exclusive — this hybrid screen only occurs as a QUOTE above an idle box, so ground truth is idle."
+  },
+  {
+    "name": "mcp_tool_perm_above_composer_box",
+    "text": "⏺ The memvault MCP tool wants to run recall.\nAllow this MCP tool to run?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)\n────────────────────────────────\n ❯ \n────────────────────────────────\n    🔖 c43c │ 🤖 Fable 5\n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "regression (finding 1): an MCP-tool approval ('Allow this MCP tool to run?') above a composer box — non-whitelisted wording that previously read idle. | RELABELED 2026-07-02: live captures (AskUserQuestion / bash permission / ExitPlanMode, CC v2.1.198) prove a live menu and a composer box are mutually exclusive — this hybrid screen only occurs as a QUOTE above an idle box, so ground truth is idle."
+  },
+  {
+    "name": "select_menu_long_list_cursor_top_no_box",
+    "text": " Resume a session:\n ❯ 1. fix-auth-middleware (2h ago)\n   2. add-paper-search (5h ago)\n   3. refactor-memvault (1d ago)\n   4. explore-testing (2d ago)\n   5. deck-agent-state (2d ago)\n   6. tts-voices-migrate (3d ago)\n   7. wingpu-cleanup (3d ago)\n   8. schedule-fix (4d ago)\n   9. oauth-helper (5d ago)\n   10. blog-gsc (6d ago)\n   11. hook-observatory (7d ago)\n   12. session-channel (8d ago)\n ↑/↓ to navigate · Enter to select · Esc to cancel",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": true,
+    "source": "regression (finding 2): a 12-item boxless select list with the cursor on option 1 pushed the highlighted ❯ line out of the fixed bottom-12 window → live_blocked_form missed it → idle. live_blocked_form now scans the whole screen for the cursor and only requires the 'Enter to select' footer to be bottom-anchored (no composer box)."
+  },
+  {
+    "name": "askq_7opt_above_composer_box_cursor_out",
+    "text": "What should I prioritize?\n ❯ 1. Latency\n   2. Throughput\n   3. Memory\n   4. Correctness\n   5. Simplicity\n   6. Portability\n   7. Cost\n ↑/↓ to navigate · Enter to select · Esc to cancel\n────────────────────────────────\n ❯ \n────────────────────────────────\n    🔖 c43c │ 📁 tmux-webui │ ⎇ -\n    🤖 Fable 5 │ 💰 $259.1 │ ✍️  16/80%\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "regression (finding 2): a 7-option AskUserQuestion above a composer box drops the highlighted ❯ line out of BOTH the bottom-12 and head-6 windows → live_prompt_box read visible-idle. prompt_above_composer_box now accepts the 'Enter to select' footer flush against the box as the live-menu signal when the cursor is scrolled out. | RELABELED 2026-07-02: live captures (AskUserQuestion / bash permission / ExitPlanMode, CC v2.1.198) prove a live menu and a composer box are mutually exclusive — this hybrid screen only occurs as a QUOTE above an idle box, so ground truth is idle."
+  },
+  {
+    "name": "working_spinner_scrollback_do_you_want_to_yes",
+    "text": "⏺ I'll walk through the flow. When Claude asks 'do you want to proceed?'\n  you answer yes and it continues. Earlier the menu showed ❯ 1. Yes.\n  Now I'm applying the edit and streaming the result.\n\n✻ Simmering… (esc to interrupt · 8s · ↑ 2.1k tokens)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "working",
+    "synth": true,
+    "source": "regression (finding 3): a genuinely-working pane (live 'esc to interrupt' spinner at the bottom, NO composer box) whose scrollback prose contains 'do you want to … yes' fired legacy_no_prompt_blocker → persistently read waiting (the debouncer never holds a waiting publish). The whole-screen text blockers are now NOT-gated by an actively-working bottom zone."
+  },
+  {
+    "name": "working_spinner_scrollback_answered_bash_perm",
+    "text": "⏺ Bash(pytest -q)\n  ⎿  42 passed\nDo you want to proceed?\n ❯ 1. Yes\n   2. No\n  (you already approved this; continuing)\n\n✻ Cogitating… (esc to interrupt · 3s · ↑ 700 tokens)",
+    "title": "",
+    "cmd": "2.1.198",
+    "expect": "working",
+    "synth": true,
+    "source": "regression (finding 3): a just-answered bash permission ('Bash(' + 'Do you want to proceed?' + '❯ 1. Yes') still visible in the scrollback of a working pane fired bash_permission_prompt → waiting. Bottom-zone-working NOT-gate now suppresses the stale blocker."
+  },
+  {
+    "name": "poison_quoted_menu_flush_prose_above_box_is_idle",
+    "text": "⏺ Done. Earlier you approved the pytest run when I asked:\n  Do you want to proceed?\n  ❯ 1. Yes\n  All tests passed. Nothing is pending now.\n────────────────────────────────\n ❯ \n────────────────────────────────\n    🔖 c43c │ 🤖 Fable 5",
+    "title": "✳ Handle teammate availability notifications",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": true,
+    "source": "poison guard (finding 4): an idle pane whose closing summary QUOTES a menu ('Do you want to proceed?' + '❯ 1. Yes') within 6 lines above the live empty composer box but with a prose line ('All tests passed…') flush against the box. The head-6 window alone did not prevent the flip; the contiguity check (line flush against box must be a menu component) keeps it idle."
+  },
+  {
+    "name": "real_askuserquestion_menu_v2198",
+    "text": "❯ Use the AskUserQuestion tool to ask me which color I prefer. Options: Red, Blue, Green. Just ask, nothing else.\n────────────────────────────────────────────────────────────────────────────────\n ☐ 顏色偏好\n少爺偏好哪個顏色？\n❯ 1. Red\n     紅色\n  2. Blue\n     藍色\n  3. Green\n     綠色\n  4. Type something.\n────────────────────────────────────────────────────────────────────────────────\n  5. Chat about this\nEnter to select · ↑/↓ to navigate · Esc to cancel",
+    "title": "✳ Ask user color preference",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": false,
+    "source": "live probe 2026-07-02, CC v2.1.198 (transcribed from capture-pane output) — AskUserQuestion menu: INTERNAL ─ rule between options and \"5. Chat about this\", NO composer box, stale idle ✳ title"
+  },
+  {
+    "name": "real_askuserquestion_timeout_idle_v2198",
+    "text": "❯ Use the AskUserQuestion tool to ask me which color I prefer. Options: Red, Blue, Green. Just ask, nothing else.\n\n⏺ Claude asked:\n  ⎿  · 少爺偏好哪個顏色？ (Red / Blue / Green)\n     ⏺ No response after 60s — continued without an answer\n\n⏺ 少爺目前沒有回應，這個顏色偏好問題稍後可以再問。\n\n✻ Crunched for 9s\n\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n❯ \n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n    🔖 7e45 │ 📁 tmux-webui │ ⎇ -\n    🤖 Sonnet 5 │ 💰 $347.25 │ ✍️  10/80%\n  ← for agents",
+    "title": "✳ Ask user color preference",
+    "cmd": "2.1.198",
+    "expect": "idle",
+    "synth": false,
+    "source": "live probe 2026-07-02 — same pane after the 60s AskUserQuestion timeout: question QUOTE (⏺ Claude asked …) + ✻ Crunched residue above a real empty composer box → genuinely idle"
+  },
+  {
+    "name": "real_model_picker_v2198",
+    "text": "  Select model\n  Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.\n\n    1. Default (recommended)  Opus 4.8 with 1M context · Best for everyday, complex tasks\n    2. Opus                   Opus 4.8 with 1M context · Best for everyday, complex tasks\n    3. Fable                  Fable 5 · Most capable for your hardest and longest-running tasks\n  ❯ 4. Sonnet ✔               Sonnet 5 · Efficient for routine tasks\n    5. Haiku                  Haiku 4.5 · Fastest for quick answers\n\n  ◉ xHigh effort ←/→ to adjust\n\n  Enter to set as default · s to use this session only · Esc to cancel",
+    "title": "✳ Ask user color preference",
+    "cmd": "2.1.198",
+    "expect": "skip",
+    "synth": false,
+    "source": "live probe 2026-07-02, CC v2.1.198 — /model picker; real footer \"Enter to set as default · s to use this session only · Esc to cancel\""
+  },
+  {
+    "name": "real_bash_permission_v2198",
+    "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n Bash command\n\n   touch /tmp/deck-perm-probe.txt\n   Create test file to probe permissions\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and always allow access to tmp/ from this project\n   3. No\n\n Esc to cancel · Tab to amend · ctrl+e to explain",
+    "title": "✳ Ask user color preference",
+    "cmd": "2.1.198",
+    "expect": "waiting",
+    "synth": false,
+    "source": "live probe 2026-07-02, CC v2.1.198 — bash permission prompt, NO composer box below, footer \"Esc to cancel · Tab to amend · ctrl+e to explain\""
+  }
+]

@@ -480,15 +480,15 @@ export function AgentPanel() {
           <div className="space-y-2">
             {activeSessionDetail.terminals.map(t => (
               <div key={t.id} className="bg-gray-900/50 border border-gray-700/30 rounded-lg p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <TermIcon size={14} className="text-gray-400" />
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 flex-wrap items-center gap-3">
+                    <TermIcon size={14} className="text-gray-400 shrink-0" />
                     <span className="text-sm font-mono text-gray-300">{t.id}</span>
                     <StatusBadge status={terminalStatuses[t.id] || null} />
                     <span className="text-xs text-gray-500">{t.provider}</span>
                     {t.agent_profile && <span className="text-xs text-emerald-400">{t.agent_profile}</span>}
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 [&>button]:min-h-11">
                     <button
                       onClick={() => setInboxTerminalId(t.id)}
                       className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs font-medium rounded-lg transition-colors"

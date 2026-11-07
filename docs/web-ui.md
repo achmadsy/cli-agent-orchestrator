@@ -87,6 +87,10 @@ Then open the same URLs (localhost:5173 or localhost:9889) in your local browser
 
 Manage sessions, spawn agents, browse and author agent profiles (create from templates or from scratch, edit, clone, delete — with server-side validation before every write), create scheduled flows, configure agent directories, and interact with live terminals — all from the browser. Includes live status badges, an inbox for agent-to-agent messaging, output viewer, and provider auto-detection.
 
+## Optional mobile-first terminal workspace
+
+The preview [terminal workspace](terminal-workspace.md) integrates pinned tmux-webui source behind CAO's authenticated, exact-target gateway. It is opt-in, requires a separately built loopback sidecar, and retains the classic PTY terminal as fallback. It does not replace CAO's agent/workflow orchestration or enable upstream rescue/session-management APIs.
+
 ## Related
 
 - [web/README.md](../web/README.md) — frontend architecture and component details

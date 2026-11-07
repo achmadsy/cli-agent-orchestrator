@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="tmux">
+<meta name="mobile-web-app-capable" content="yes">
+<!-- CAO enables installation separately after scoped PWA/auth verification. -->
+<link rel="stylesheet" href="static/css/main.css?v={{ git_hash }}">
+<link rel="stylesheet" href="static/css/deck.css?v={{ git_hash }}">
+<link rel="stylesheet" href="static/css/deck-dock.css?v={{ git_hash }}">
+<link rel="stylesheet" href="static/css/deck-agent.css?v={{ git_hash }}">
+<link rel="stylesheet" href="static/css/cao-workspace.css?v={{ git_hash }}">
+<title>CAO Terminal Workspace</title>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>tmux web controller</h1>
+    <div class="header-controls">
+      <span id="status"><span class="dot"></span> disconnected</span>
+      <!-- Hidden select stays as the state carrier: deck-rail.js / deck-agent.js
+           sync it via sel.value, and app.js reads it as the selection source. -->
+      <select id="sessions" class="session-select" hidden><option value="">--</option></select>
+      <div class="session-dd" id="session-dd">
+        <button type="button" class="session-dd-btn" id="session-dd-btn" title="tmux sessions">
+          <span class="session-dd-label" id="session-dd-label">-- session --</span>
+          <span class="session-dd-caret">&#x25BE;</span>
+        </button>
+        <div class="session-dd-panel" id="session-dd-panel" hidden></div>
+      </div>
+      <!-- Hidden select is the state carrier (badge click / pref restore write
+           layoutSelect.value); the custom dropdown renders SVG previews. -->
+      <select id="layout-select" title="Layout preset" hidden>
+        <option value="2x2">2x2 Grid</option>
+        <option value="4col">4 Columns</option>
+        <option value="auto" selected>Auto</option>
+        <option value="1+2">1 + 2</option>
+        <option value="3col">3 Columns</option>
+        <option value="1x1">Single</option>
+      </select>
+      <div class="layout-dd" id="layout-dd">
+        <button type="button" class="layout-dd-btn" id="layout-dd-btn" title="Layout preset">
+          <span class="layout-dd-ico" id="layout-dd-ico"></span>
+          <span class="layout-dd-label" id="layout-dd-label">Auto</span>
+          <span class="session-dd-caret">&#x25BE;</span>
+        </button>
+        <div class="layout-dd-panel" id="layout-dd-panel" hidden></div>
+      </div>
+      <button class="btn btn-sm" id="reset-layout" title="Reset resize weights">reset</button>
+      <button class="btn btn-sm" id="fit-toggle" title="Sync terminal size to browser viewport">Fit</button>
+      <button class="btn btn-sm" id="tts-toggle" onclick="window.toggleTTS()" title="TTS">&#x1F50A;</button>
+      <button class="btn btn-sm" id="push-enable" onclick="window.enablePush()" title="Enable lock-screen notifications">&#x1F514;</button>
+      <!-- Party button + panel (spec §3): click opens create/join/member-list panel -->
+      <div class="party-dd" id="party-dd">
+        <button class="btn btn-sm" id="link-toggle" title="Link mode: off">&#x1F517;</button>
+        <div class="party-dd-panel" id="party-dd-panel" hidden></div>
+      </div>
+      <button class="btn btn-sm" id="deck-toggle" title="Deck Mode">&#x25A6;</button>
+    </div>
+  </header>
+
+  <div class="win-tabs" id="win-tabs"></div>
+  <div id="pane-container">
+    <div class="welcome">select a tmux session to connect</div>
+  </div>
+  <div class="tmux-status" id="tmux-status"></div>
+
+  <!-- Mobile bottom pane tab bar -->
+  <div class="mobile-pane-tabs" id="mobile-pane-tabs"></div>
+
+  <footer>
+    <div class="footer-top">
+      <div class="quick-actions">
+        <button type="button" class="qbtn" data-key="Escape" title="Escape">Esc<span class="qico">&#x238B;</span></button>
+        <button type="button" class="qbtn" data-key="Tab" title="Tab">Tab<span class="qico">&#x21E5;</span></button>
+        <button type="button" class="qbtn" data-key="BTab" title="Shift+Tab">&#8679;Tab<span class="qico">&#x21E4;</span></button>
+        <button type="button" class="qbtn" data-key="C-c" title="Interrupt">C-c<span class="qico">&#x2303;</span></button>
+        <button type="button" class="qbtn" data-key="BSpace" title="Delete">Del<span class="qico">&#x232B;</span></button>
+        <button type="button" class="qbtn" data-key="Enter" title="Enter">Enter<span class="qico">&#x23CE;</span></button>
+        <div class="arrow-pad arrow-pad-mini" id="quick-arrow-pad"><div class="arrow-pad-label">&#8982;</div></div>
+        <button class="qbtn qbtn-ek-toggle" id="ek-toggle" title="Toggle extra keys">&#9776;</button>
+      </div>
+      <button class="exit-fullscreen" id="exit-fullscreen" title="Exit fullscreen">&#x26F6; exit</button>
+      <span class="focused-label" id="focused-label">no pane</span>
+    </div>
+    <div class="extra-keys" id="extra-keys">
+      <!-- Row 1: Modifiers (FSM: tap=armed, double-tap=locked) -->
+      <button class="ek mod" data-mod="C" title="Ctrl (tap=once, double-tap=lock)">Ctrl</button>
+      <button class="ek mod" data-mod="M" title="Alt/Option">Alt</button>
+      <button class="ek mod" data-mod="Shift" title="Shift">Shift</button>
+      <button class="ek mod" data-mod="S" title="Cmd/Super">Cmd</button>
+      <div class="ek-sep"></div>
+      <!-- Row 2: Control shortcuts -->
+      <button class="ek" data-ctrl="d" title="Ctrl+D (EOF/exit)" style="color:var(--red)">C-d</button>
+      <button class="ek" data-ctrl="z" title="Ctrl+Z (suspend)" style="color:var(--cyan)">C-z</button>
+      <button class="ek" data-ctrl="l" title="Ctrl+L (clear)" style="color:var(--green)">C-l</button>
+      <button class="ek" data-ek="BTab" title="Shift+Tab">⇧Tab</button>
+      <div class="ek-sep"></div>
+      <!-- Row 3: Shell chars (only ones hard to reach on mobile keyboard) -->
+      <button class="ek" data-ek="|">|</button>
+      <button class="ek" data-ek="~">~</button>
+      <button class="ek" data-ek="`">`</button>
+      <button class="ek" data-ek="\">\</button>
+      <div class="ek-sep"></div>
+      <!-- Arrow pad (swipe) -->
+      <div class="arrow-pad" id="arrow-pad"><div class="arrow-pad-label">&#8982;</div></div>
+    </div>
+    <div class="ac-wrap">
+      <div class="ac-list" id="ac-list"></div>
+      <div class="input-row">
+        <input type="file" id="file-input" accept="image/*,application/pdf,text/*,.json,.csv,.log,.md,.py,.js,.ts,.sh" multiple hidden>
+        <button class="upload-btn" id="upload-btn" title="Upload file" disabled>&#x1F4CE;</button>
+        <button class="relay-toggle" id="relay-toggle" title="Auto-Relay: OFF">&#x21C4;</button>
+        <textarea id="input" rows="1" placeholder="Type a message..." disabled></textarea>
+        <button id="send-btn" disabled>Send</button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Deck Mode panel (additive; hidden unless #app.deck-mode) -->
+  <div id="deck-root"></div>
+</div>
+
+<!-- TTS indicator (toast) -->
+<div class="tts-indicator" id="tts-indicator"></div>
+
+<!-- Gesture feedback indicator -->
+<div class="gesture-indicator" id="gesture-indicator"></div>
+
+<script>window.__CAO_WORKSPACE__ = true; window.__UI_CONFIG__ = {{ ui_config_json }};</script>
+<!-- Inline bootstrap cannot itself be lost as an external script request. Only
+     failed asset downloads are retried; executed scripts and input never replay. -->
+<script id="cao-workspace-bootstrap">
+(() => {
+  const files = ['terminal', 'metrics', 'app', 'keys', 'autocomplete', 'gestures',
+    'deck-detect', 'deck-confirm', 'deck-editor', 'deck-rail', 'deck-dial',
+    'deck-slider', 'deck-agent', 'deck', 'cao-workspace'];
+  let failed = false;
+  const notify = (type) => parent.postMessage({ type }, location.origin);
+  const fail = () => {
+    if (failed) return;
+    failed = true;
+    notify('cao:terminal-load-failed');
+  };
+  // A script that throws has partly executed: stop, do not retry its side effects.
+  const runtimeError = (event) => { if (event.message) fail(); };
+  window.addEventListener('error', runtimeError);
+  async function load(name) {
+    for (let attempt = 0; attempt < 3 && !failed; attempt++) {
+      try {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = `static/js/${name}.js?v={{ git_hash }}`;
+          script.async = false;
+          script.onload = () => { script.onload = script.onerror = null; resolve(); };
+          script.onerror = () => {
+            script.onload = script.onerror = null;
+            script.remove();
+            reject(new Error('asset download failed'));
+          };
+          document.body.append(script);
+        });
+        return;
+      } catch (error) {
+        if (attempt === 2) throw error;
+        await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+      }
+    }
+  }
+  (async () => {
+    try {
+      for (const file of files) {
+        await load(file);
+        if (failed) return;
+      }
+      window.__CAO_WORKSPACE_READY__ = true;
+      notify('cao:terminal-ready');
+    } catch (_) { fail(); }
+    finally { window.removeEventListener('error', runtimeError); }
+  })();
+})();
+</script>
+<!-- PWA/push disabled in the CAO baseline; no service worker is registered. -->
+</body>
+</html>

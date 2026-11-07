@@ -1,0 +1,16 @@
+.terminal-workspace { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--workspace-bg); color: var(--workspace-text); height: 100dvh; }
+.terminal-workspace-header { display: flex; align-items: center; gap: 12px; min-height: 60px; padding: max(8px, env(safe-area-inset-top)) 16px 8px; background: var(--workspace-surface); border-bottom: 1px solid var(--workspace-border); }
+.terminal-workspace-header button, .workspace-state button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--workspace-border); border-radius: 8px; color: var(--workspace-text); font-size: 14px; }
+.workspace-back { flex-shrink: 0; }
+.workspace-identity { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.workspace-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.workspace-identity > span { font-size: 12px; color: var(--workspace-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--workspace-bg); }
+.workspace-frame[hidden] { display: none; }
+.workspace-state { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; color: var(--workspace-dim); }
+.workspace-state h2 { color: var(--workspace-text); font-size: 20px; }
+.workspace-state button { color: var(--workspace-accent); }
+.terminal-workspace :focus-visible { outline-color: var(--workspace-accent); }
+.terminal-fallback-note { position: fixed; z-index: 60; bottom: max(12px, env(safe-area-inset-bottom)); left: 12px; right: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; background: var(--workspace-surface); color: var(--workspace-text); border: 1px solid var(--workspace-border); border-radius: 8px; font-size: 13px; }
+.terminal-fallback-note button { min-height: 44px; color: var(--workspace-accent); }
+@media(max-width:600px) { .terminal-workspace-header { padding-inline: max(8px, env(safe-area-inset-left)); gap: 8px; } .workspace-classic span { display: none; } .workspace-identity strong { font-size: 13px; } }

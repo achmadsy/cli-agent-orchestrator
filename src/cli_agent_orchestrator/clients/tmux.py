@@ -2147,6 +2147,46 @@ class TmuxClient:
                         ambiguous = True
         return matches, ambiguous
 
+    def resolve_workspace_target(self, terminal_id: str, session_name: str) -> Dict[str, str]:
+        """Resolve a viewer to exact owned IDs, without attaching or changing focus.
+
+        Legacy unmarked terminals deliberately use the classic PTY viewer rather
+        than authorizing an object by a reusable window name.
+        """
+        _require_cao_session_name(session_name, "view")
+        sessions = self._sessions_for_identity_scan(session_name)
+        if not sessions:
+            raise ValueError("Terminal session is unavailable")
+        matches, _ = self._scan_terminal_identity(sessions, terminal_id, None)
+        if len(matches) != 1:
+            raise ValueError("Terminal ownership cannot be resolved uniquely")
+        kind, target = matches[0]
+        if kind == "window":
+            window = target
+            # Pane-mode siblings may share a window stamped for the first
+            # terminal. A window lease must never choose a sibling's own ID.
+            panes = [
+                item for item in window.panes
+                if self._read_scoped_option(item, "-p") in (None, terminal_id)
+            ]
+            if not panes:
+                raise ValueError("Terminal window has no owned panes")
+            pane = panes[0]
+        else:
+            pane = target
+            window = pane.window
+        result = pane.cmd("display-message", "-p", "#{socket_path}")
+        if result.returncode != 0 or not result.stdout:
+            raise ValueError("Terminal socket cannot be resolved")
+        return {
+            "session": session_name,
+            "terminal": terminal_id,
+            "window_id": str(window.window_id),
+            "pane_id": str(pane.pane_id),
+            "mode": kind,
+            "socket": str(result.stdout[0]),
+        }
+
     def cleanup_terminal_exact(
         self,
         terminal_id: str,
