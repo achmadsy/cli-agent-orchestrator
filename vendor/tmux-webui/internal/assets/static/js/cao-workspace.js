@@ -56,7 +56,7 @@
   live.type = 'button'; live.className = 'btn cao-jump-live'; live.textContent = 'Jump to live';
   live.addEventListener('click', () => {
     const pane = window.tmuxState?.paneEls[window.tmuxState.focusedPane];
-    if (pane?.terminal) { pane.terminal.scrollTop = pane.terminal.scrollHeight; pane.terminal.dispatchEvent(new Event('scroll')); }
+    pane?.jumpToLive?.();
   });
   controls.append(live);
   // A pane last used from a phone keeps phone columns, so its text wraps on a
@@ -190,5 +190,58 @@
     drawer.querySelector('.cao-key-help')?.after(box);
     drawer.scrollTop = 0;
   });
+  // Direct keyboard passthrough for physical keyboards (desktop browsers).
+  // Explicitly toggled; the message composer keeps working when focused.
+  let directKeys = false;
+  const DIRECT_SPECIAL = {
+    Enter: 'Enter', Backspace: 'BSpace', Delete: 'DC', Insert: 'IC', Escape: 'Escape',
+    Tab: 'Tab', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+    Home: 'Home', End: 'End', PageUp: 'PPage', PageDown: 'NPage',
+  };
+  document.addEventListener('keydown', (e) => {
+    if (!directKeys) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (target && (target.isContentEditable || target.closest('input, textarea, select, button, a, [role="button"], [contenteditable]:not([contenteditable="false"])'))) return;
+    if (e.isComposing || e.keyCode === 229) return;
+    const key = e.key;
+    if (['Control', 'Shift', 'Alt', 'Meta', 'Dead', 'Process', 'CapsLock', 'NumLock', 'ScrollLock', 'Unidentified'].includes(key)) return;
+    if (e.metaKey) return; // OS/browser combinations stay native
+    // Never swallow tab/window management, reload, or devtools keys.
+    if ((e.ctrlKey || e.metaKey) && ['w', 't', 'n'].includes(key.toLowerCase()) && !e.altKey) return;
+    if (key === 'F5' || key === 'F11' || key === 'F12') return;
+    let send, mods;
+    if (key.length === 1) {
+      // e.key already carries Shift for printable characters (Shift+p → "P").
+      send = key;
+      mods = [e.ctrlKey && 'C', e.altKey && 'M'].filter(Boolean);
+    } else if (DIRECT_SPECIAL[key] || /^F([1-9]|1[0-2])$/.test(key)) {
+      send = DIRECT_SPECIAL[key] || key;
+      mods = [e.ctrlKey && 'C', e.altKey && 'M', e.shiftKey && 'Shift'].filter(Boolean);
+    } else {
+      return; // unknown browser keys stay native
+    }
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    window.sendEk(send, mods, true);
+  }, true);
+  const drawerHead = document.getElementById('extra-keys');
+  const directToggle = document.createElement('button');
+  directToggle.type = 'button';
+  directToggle.className = 'ek cao-direct-toggle';
+  directToggle.textContent = 'Direct keys';
+  directToggle.setAttribute('aria-pressed', 'false');
+  directToggle.title = 'Type straight into the terminal from your keyboard (desktop)';
+  const directHint = document.createElement('span');
+  directHint.className = 'cao-direct-hint';
+  directHint.hidden = true;
+  directHint.textContent = 'Typing now goes to the terminal. Click the message box to compose a message.';
+  directToggle.addEventListener('click', () => {
+    directKeys = !directKeys;
+    directToggle.setAttribute('aria-pressed', String(directKeys));
+    directHint.hidden = !directKeys;
+    if (directKeys) { input.blur(); directToggle.blur(); } // keys flow without focusing the composer
+  });
+  drawerHead.prepend(directHint);
+  drawerHead.prepend(directToggle);
   // Upstream already owns visualViewport/--kb-height. No second keyboard offset.
 })();

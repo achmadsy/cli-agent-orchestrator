@@ -1017,7 +1017,16 @@ function buildPaneEl(p) {
   jump.textContent = '⬇'; // ⬇ back to live
   jump.title = 'back to live';
   jump.hidden = true;
-  jump.addEventListener('click', (e) => { e.stopPropagation(); term.scrollTop = term.scrollHeight; });
+  function jumpToLive() {
+    scrolledByUser = false;
+    setTerminalScroll(term, term.scrollHeight);
+    // Also leave history mode when already at the bottom (no native event).
+    term.dispatchEvent(new Event('scroll'));
+  }
+  jump.addEventListener('click', (e) => {
+    e.stopPropagation();
+    jumpToLive();
+  });
   box.appendChild(jump);
 
   async function loadHistory() {
@@ -1037,7 +1046,7 @@ function buildPaneEl(p) {
         // First chunk: replace the live window with history+screen, anchored.
         const oldTop = term.scrollTop, oldH = term.scrollHeight;
         lineDiffUpdate(term, d.content);
-        term.scrollTop = histAnchor(oldTop, oldH, term.scrollHeight);
+        setTerminalScroll(term, histAnchor(oldTop, oldH, term.scrollHeight));
         hist.loaded = true;
       } else {
         // Older chunk: tmux clamps a fully-consumed range to a ≤1-line
@@ -1053,7 +1062,7 @@ function buildPaneEl(p) {
         }
         const oldTop = term.scrollTop, oldH = term.scrollHeight;
         term.insertBefore(frag, term.firstChild);
-        term.scrollTop = histAnchor(oldTop, oldH, term.scrollHeight);
+        setTerminalScroll(term, histAnchor(oldTop, oldH, term.scrollHeight));
       }
       // Offsets accumulate by REQUESTED size — tmux coordinates are absolute,
       // so the next chunk abuts this one regardless of what was returned.
@@ -1065,7 +1074,13 @@ function buildPaneEl(p) {
 
   term.addEventListener('scroll', () => {
     const dist = term.scrollHeight - term.scrollTop - term.clientHeight;
-    scrolledByUser = dist > followGatePx;
+    // A scroll WE caused (follow snap, history anchor, rebuild anchor) must not
+    // re-evaluate the reader flag: after a content-shrinking repaint the clamp
+    // would read as "at bottom" and re-arm auto-follow against the reader.
+    const expectedTop = term.dataset.caoScrollProg;
+    const programmatic = expectedTop !== undefined && Math.abs(term.scrollTop - Number(expectedTop)) < 1;
+    delete term.dataset.caoScrollProg;
+    if (!programmatic) scrolledByUser = dist > followGatePx;
     histLocked = dist > Math.max(term.clientHeight * freezeGateRatio, freezeGateMinPx);
     const frozen = histLocked || hist.loading || hist.loaded;
     jump.hidden = !frozen;
@@ -1076,14 +1091,18 @@ function buildPaneEl(p) {
       lineDiffUpdate(term, hist.pending); hist.pending = null;
       // Applying a newer frame can add rows after we reached the old bottom.
       // Keep explicit return-to-live at the NEW bottom, not one frame behind.
-      if (!scrolledByUser) requestAnimationFrame(() => { term.scrollTop = term.scrollHeight; });
+      requestAnimationFrame(() => {
+        if (!scrolledByUser) setTerminalScroll(term, term.scrollHeight);
+      });
     }
     if (!scrolledByUser && hist.loaded) {
       // Back at the bottom: leave history view (reset paging — history may
       // have grown; re-entry refetches from scratch), apply the stashed frame.
       hist.loaded = false; hist.exhausted = false; hist.offset = 0;
       if (hist.pending != null) { lineDiffUpdate(term, hist.pending); hist.pending = null; }
-      requestAnimationFrame(() => { term.scrollTop = term.scrollHeight; });
+      requestAnimationFrame(() => {
+        if (!scrolledByUser) setTerminalScroll(term, term.scrollHeight);
+      });
     }
   });
 
@@ -1159,7 +1178,8 @@ function buildPaneEl(p) {
   box.addEventListener('click', () => setFocus(p.id));
 
   S.paneEls[p.id] = {
-    box, terminal: term, scrolledByUser: () => scrolledByUser, resetScroll: () => { scrolledByUser = false; histLocked = false; },
+    box, terminal: term, scrolledByUser: () => scrolledByUser, jumpToLive,
+    resetScroll: () => { scrolledByUser = false; histLocked = false; delete term.dataset.caoScrollProg; },
     // H1 scroll-lock hooks for ws.onmessage 'output'
     histFrozen: () => histLocked || hist.loading || hist.loaded,
     histStash: (c) => { hist.pending = c; },
@@ -1400,6 +1420,16 @@ function histAnchor(oldTop, oldHeight, newHeight) {
   return Math.max(0, newHeight - (oldHeight - oldTop));
 }
 
+// Tag only real movement, using the browser's clamped destination. scrollHeight
+// itself is unreachable: the last viewport starts at scrollHeight-clientHeight.
+// A destination token also lets a reader scroll win if it precedes our async event.
+function setTerminalScroll(terminal, top) {
+  const target = Math.max(0, Math.min(top, terminal.scrollHeight - terminal.clientHeight));
+  if (Math.abs(terminal.scrollTop - target) < 1) return;
+  terminal.scrollTop = target;
+  terminal.dataset.caoScrollProg = String(terminal.scrollTop);
+}
+
 // posToCell maps a pixel offset inside a terminal to a 1-based (col,row) — the
 // coordinate a TUI's SGR mouse report uses. floor+1: pixel 0 is column 1. cellW/
 // cellH come from measureCell (the rendered monospace glyph box). Pure/tested.
@@ -1469,6 +1499,10 @@ function eventCell(term, info, clientX, clientY) {
 
 // Line-level diff update — only touch changed lines
 function lineDiffUpdate(terminal, newContent) {
+  // tmux captures the whole screen, including unused rows below the prompt.
+  // A tall pane cleared from a shorter browser otherwise follows that blank
+  // tail and hides the prompt. Keep internal/ANSI-painted rows untouched.
+  if (window.__CAO_WORKSPACE__) newContent = newContent.replace(/(?:\n[ \t]*)+$/, '');
   const newHtml = ansiToHtml(newContent);
   const newLines = newHtml.split('\n');
   const children = terminal.children;
@@ -1480,11 +1514,21 @@ function lineDiffUpdate(terminal, newContent) {
     && children[0]?.tagName === 'DIV'
     && children[0]?.classList?.contains('term-line');
 
+  const oldTop = terminal.scrollTop, oldH = terminal.scrollHeight;
+  function preserveReadingPosition() {
+    // Both small diffs and full rebuilds can shrink/clamp the viewport. Keep
+    // distance-from-bottom and do not mistake that clamp for a reader gesture.
+    setTerminalScroll(terminal, histAnchor(oldTop, oldH, terminal.scrollHeight));
+    if (Math.abs(oldTop - terminal.scrollTop) >= 1) {
+      terminal.dataset.caoScrollProg = String(terminal.scrollTop);
+    }
+  }
   if (!isStructured || children.length === 0 || Math.abs(children.length - newLines.length) > 20) {
-    // Full rebuild: wrap each line in a div for correct structure
+    // Full rebuild: wrap each line in a div for correct structure.
     terminal.innerHTML = newLines
       .map(l => '<div class="term-line">' + (l || '\u200b') + '</div>')
       .join('');
+    preserveReadingPosition();
     return;
   }
 
@@ -1502,6 +1546,7 @@ function lineDiffUpdate(terminal, newContent) {
       children[i].innerHTML = lineHtml;
     }
   }
+  preserveReadingPosition();
 }
 
 // ========================================================================
@@ -1645,7 +1690,9 @@ window.tmuxWs = (function() {
           refreshPaneBadge(paneId); // stale-title guard reads pane content — re-check per frame
           if (!pe.scrolledByUser()) {
             const t = pe.terminal;
-            requestAnimationFrame(() => { requestAnimationFrame(() => { t.scrollTop = t.scrollHeight; }); });
+            requestAnimationFrame(() => { requestAnimationFrame(() => {
+              if (!pe.scrolledByUser()) setTerminalScroll(t, t.scrollHeight);
+            }); });
           }
         }
       } else if (data.type === 'windows') {
