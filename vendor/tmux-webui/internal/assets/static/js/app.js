@@ -2097,7 +2097,7 @@ document.querySelectorAll('.qbtn[data-key]').forEach(btn => {
     const key = btn.dataset.key;
     if (!window.tmuxWs.isConnected() || !S.focusedPane) return;
     if (window.linkSendBlocked && window.linkSendBlocked()) return; // input follow-lock (spec §3 Slice 2)
-    if (window.sendEk) window.sendEk(key, [], key === 'C-c' || key === 'BTab');
+    if (window.sendEk) window.sendEk(key, [], key.startsWith('C-') || key === 'BTab');
     else window.tmuxWs.send({ type:'key', pane:S.focusedPane, key });
     if (S.paneEls[S.focusedPane]) S.paneEls[S.focusedPane].resetScroll();
   });

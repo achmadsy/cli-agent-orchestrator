@@ -8,19 +8,36 @@ const template = readFileSync(new URL(root + 'templates/index.html', import.meta
 const keys = readFileSync(new URL(root + 'static/js/keys.js', import.meta.url), 'utf8')
 const hooks = readFileSync(new URL(root + 'static/js/cao-workspace.js', import.meta.url), 'utf8')
 const autocomplete = readFileSync(new URL(root + 'static/js/autocomplete.js', import.meta.url), 'utf8')
+const app = readFileSync(new URL(root + 'static/js/app.js', import.meta.url), 'utf8')
+const quickActions = app.slice(app.indexOf('// 14. Quick-Action Buttons'), app.indexOf('// 15. Keyboard Shortcuts'))
 function setup(mobile = false, blockedStorage = false) {
   const dom = new JSDOM(template, { url: 'http://localhost/terminal/v/test/', runScripts: 'outside-only' })
   const w = dom.window
-  w.matchMedia = () => ({ matches: mobile, addEventListener: vi.fn() })
+  const mediaQueries = []
+  w.matchMedia = query => {
+    const listeners = []
+    const media = { media: query, matches: mobile, addEventListener: (_type, listener) => listeners.push(listener) }
+    mediaQueries.push({ media, listeners })
+    return media
+  }
+  const setCompact = matches => {
+    for (const { media, listeners } of mediaQueries) {
+      if (media.media !== '(max-width:600px), (max-height:500px)') continue
+      media.matches = matches
+      for (const listener of listeners) listener(media)
+    }
+  }
   w.requestAnimationFrame = fn => fn()
   const send = vi.fn()
   w.tmuxState = { focusedPane: '%1', paneEls: {} }
   w.tmuxWs = { send, isConnected: () => true }
   w.flashInputError = vi.fn()
   if (blockedStorage) Object.defineProperty(w, 'localStorage', { get() { throw Error('blocked') } })
+  // Production app.js owns qbtn clicks before keys/hooks move these same nodes.
+  w.eval(`const S = window.tmuxState;\n${quickActions}`)
   w.eval(keys)
   w.eval(hooks)
-  return { w, send, dom, doc: w.document }
+  return { w, send, dom, doc: w.document, setCompact }
 }
 
 describe('actual vendored workspace controls', () => {
@@ -79,6 +96,75 @@ describe('actual vendored workspace controls', () => {
     const { doc, send, w } = setup()
     for (const key of ['Left', 'Up', 'Down', 'Right']) doc.querySelector(`[data-ek="${key}"]`).click()
     expect(send.mock.calls.map(([m]) => m.key)).toEqual(['Left', 'Up', 'Down', 'Right'])
+    w.close()
+  })
+  it('keeps all four root shortcuts outside Keys on desktop and compact layouts', () => {
+    for (const mobile of [false, true]) {
+      const { doc, w, send, setCompact } = setup(mobile)
+      const toolbar = doc.querySelector('.quick-actions')
+      const originalKeys = ['Escape', 'Tab', 'BTab', 'C-c', 'BSpace', 'Enter', 'C-p']
+      const buttons = originalKeys.map(key => doc.querySelector(`.qbtn[data-key="${key}"]`))
+      for (const compact of [mobile, !mobile, mobile, false, true, false]) {
+        setCompact(compact)
+        for (const key of ['Tab', 'BTab', 'Enter', 'C-p']) {
+          const button = doc.querySelector(`.qbtn[data-key="${key}"]`)
+          expect(button.parentElement).toBe(toolbar)
+          expect(button.closest('#extra-keys')).toBeNull()
+          expect(doc.querySelectorAll(`.qbtn[data-key="${key}"]`)).toHaveLength(1)
+        }
+        expect([...toolbar.querySelectorAll('.qbtn[data-key]')].map(button => button.dataset.key))
+          .toEqual(compact ? ['Tab', 'BTab', 'Enter', 'C-p'] : originalKeys)
+        for (const [i, key] of originalKeys.entries()) {
+          expect(doc.querySelector(`.qbtn[data-key="${key}"]`)).toBe(buttons[i])
+        }
+      }
+      expect(doc.getElementById('extra-keys').classList.contains('visible')).toBe(false)
+      expect(send).not.toHaveBeenCalled()
+      w.close()
+    }
+  })
+  it('root shortcuts each send exactly one canonical key after layout changes', () => {
+    for (const mobile of [false, true]) {
+      const { doc, w, send, setCompact } = setup(mobile)
+      setCompact(!mobile); setCompact(mobile)
+      for (const key of ['Tab', 'BTab', 'Enter', 'C-p']) {
+        doc.querySelector(`.quick-actions > .qbtn[data-key="${key}"]`).click()
+      }
+      expect(send.mock.calls.map(([frame]) => ({ ...frame, modifiers: [...frame.modifiers] }))).toEqual([
+        { type: 'key', pane: '%1', key: 'Tab', modifiers: [] },
+        { type: 'key', pane: '%1', key: 'BTab', modifiers: [] },
+        { type: 'key', pane: '%1', key: 'Enter', modifiers: [] },
+        { type: 'key', pane: '%1', key: 'p', modifiers: ['C'] },
+      ])
+      w.close()
+    }
+  })
+  it('fixed root chords ignore virtual modifiers but plain keys still accept them', () => {
+    const { doc, w, send } = setup(true)
+    const shift = doc.querySelector('[data-mod="Shift"]')
+    shift.click(); shift.click()
+    for (const key of ['BTab', 'C-p', 'Tab', 'Enter']) doc.querySelector(`.qbtn[data-key="${key}"]`).click()
+    expect(send.mock.calls.map(([frame]) => [frame.key, [...frame.modifiers]])).toEqual([
+      ['BTab', []], ['p', ['C']], ['Tab', ['Shift']], ['Enter', ['Shift']],
+    ])
+    expect(shift.dataset.state).toBe('locked')
+    w.close()
+  })
+  it('root shortcuts respect connection, target and follow-lock gates without replay', () => {
+    const { doc, w, send } = setup(true)
+    const clickAll = () => {
+      for (const key of ['Tab', 'BTab', 'Enter', 'C-p']) doc.querySelector(`.qbtn[data-key="${key}"]`).click()
+    }
+    w.tmuxWs.isConnected = () => false; clickAll()
+    w.tmuxWs.isConnected = () => true
+    w.tmuxState.focusedPane = ''; clickAll()
+    w.tmuxState.focusedPane = '%1'
+    w.linkSendBlocked = () => true; clickAll()
+    expect(send).not.toHaveBeenCalled()
+    w.linkSendBlocked = () => false
+    expect(send).not.toHaveBeenCalled()
+    clickAll()
+    expect(send).toHaveBeenCalledTimes(4)
     w.close()
   })
   it('keeps composer Shift/IME text untouched while a modifier is armed', () => {

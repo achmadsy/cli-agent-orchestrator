@@ -397,15 +397,17 @@
   directLayout.addEventListener('change', placeDirect);
   placeDirect();
   toolbar.after(directHint);
-  // Reuse the same quick-action nodes/listeners in Keys on compact layouts.
-  // Arrows and Keys keep their front positions; no duplicate dispatch owners.
-  const compactKeys = [...document.querySelectorAll('.quick-actions > .qbtn[data-key]')];
+  // Reuse the same nodes/listeners; only secondary quick actions move into
+  // Keys on compact layouts. Root shortcuts stay beside arrows and Keys.
+  const quickActions = document.querySelector('.quick-actions');
+  const quickKeys = [...quickActions.querySelectorAll('.qbtn[data-key]')];
   const compactGroup = document.createElement('div'); compactGroup.className = 'cao-compact-keys';
   document.getElementById('extra-keys').prepend(compactGroup);
   function placeCompactKeys() {
-    for (const button of compactKeys) {
-      if (directLayout.matches) compactGroup.append(button);
-      else document.querySelector('.quick-actions').insertBefore(button, document.querySelector('.quick-actions > [data-ek]'));
+    for (const button of quickKeys) {
+      if (directLayout.matches) {
+        if (!button.hasAttribute('data-root-shortcut')) compactGroup.append(button);
+      } else quickActions.insertBefore(button, quickActions.querySelector('[data-ek]'));
     }
   }
   directLayout.addEventListener('change', placeCompactKeys);
