@@ -32,6 +32,7 @@ NODE_TOKEN = os.environ.get("CAO_NODE_TOKEN") or None
 FLEET_DOMAIN = os.environ.get("CAO_FLEET_DOMAIN", "zlink.my.id")
 FLEET_HOST_PREFIX = os.environ.get("CAO_FLEET_HOST_PREFIX", "cao-")
 SYNC_COMMAND = os.environ.get("CAO_FLEET_SYNC_COMMAND", "/usr/local/sbin/cao-fleet-sync")
+INGRESS_COMMAND = os.environ.get("CAO_FLEET_INGRESS_COMMAND", "/usr/local/sbin/cao-fleet-ingress")
 
 if PANEL_PASSWORD and not PANEL_SESSION_SECRET:
     raise RuntimeError("CAO_PANEL_SESSION_SECRET is required when CAO_PANEL_PASSWORD is set")

@@ -15,8 +15,9 @@ const ANSI16 = {
 
 const PAL256 = (() => {
   const p = [];
-  const std = ['#000000','#c0392b','#27ae60','#f39c12','#2980b9','#8e44ad','#16a085','#bdc3c7'];
-  const bri = ['#7f8c8d','#e74c3c','#2ecc71','#f1c40f','#3498db','#9b59b6','#1abc9c','#ecf0f1'];
+  const std = Array.from({length:8},(_,i)=>ANSI16[30+i]);
+  const bri = Array.from({length:8},(_,i)=>ANSI16[90+i]);
+  for (let i=0;i<8;i++) { ANSI16[40+i]=std[i]; ANSI16[100+i]=bri[i]; }
   for (let i = 0; i < 8; i++) p[i] = std[i];
   for (let i = 0; i < 8; i++) p[i+8] = bri[i];
   for (let i = 0; i < 216; i++) {
@@ -32,13 +33,24 @@ const PAL256 = (() => {
   return p;
 })();
 
+function terminalTextHtml(text) {
+  const escaped = escHtml(text);
+  if (!window.__CAO_WORKSPACE__) return escaped;
+  // CSS fixes each supported symbol to the base font cell without merging or
+  // altering separately licensed font binaries. No terminal text becomes markup.
+  return escaped.replace(/[---]/g, glyph => {
+    const family = glyph.charCodeAt(0) < 0xED00 ? 'powerline' : 'awesome';
+    return '<span class="cao-symbol-cell"><span class="cao-symbol-' + family + '">' + glyph + '</span></span>';
+  });
+}
+
 function ansiToHtml(str) {
-  // Strip non-SGR escape sequences
-  str = str.replace(/\x1b\[[0-9;]*[ABCDEFGHJKSTfnsu]/g, '');
-  str = str.replace(/\x1b\[\?[0-9;]*[hl]/g, '');
+  // Consume protocols, never execute OSC clipboard/links or private modes.
   str = str.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
-  str = str.replace(/\x1b\(B/g, '');
-  str = str.replace(/\x1b\[[0-9;]*[ -/]*[@-ln-~]/g, '');
+  str = str.replace(/\x1b\[([0-9;:<=>?]*[ -/]*)([@-~])/g, (raw, params, final) => final === 'm' && /^[0-9;:]*$/.test(params) ? raw : '');
+  str = str.replace(/\x1b(?!\[)[ -/]*[0-~]|\x1b$/g, '');
+  // Normalize common ISO colon color forms, including omitted color space.
+  str = str.replace(/\x1b\[([0-9;:]*)m/g, (_, params) => '\x1b[' + params.replace(/(38|48):2:(?:0:|:)?(\d+):(\d+):(\d+)/g, '$1;2;$2;$3;$4').replace(/(38|48):5:(\d+)/g, '$1;5;$2').replace(/4:[1-5]/g, '4') + 'm');
 
   let fg = '', bg = '', bold = false, dim = false, italic = false,
       underline = false, strike = false, inverse = false;
@@ -62,7 +74,7 @@ function ansiToHtml(str) {
   }
 
   while ((m = re.exec(str)) !== null) {
-    html += escHtml(str.slice(last, m.index));
+    html += terminalTextHtml(str.slice(last, m.index));
     last = m.index + m[0].length;
     const codes = (m[1] || '0').split(';').map(Number);
     let i = 0;
@@ -98,7 +110,7 @@ function ansiToHtml(str) {
     }
     emitSpan();
   }
-  html += escHtml(str.slice(last));
+  html += terminalTextHtml(str.slice(last));
   if (spanOpen) html += '</span>';
   return html;
 }

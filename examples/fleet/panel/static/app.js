@@ -1,6 +1,5 @@
 import { authFetch, authJson, clearAuthState, setCsrfToken } from "./auth-client.js";
 import { buildTile } from "./wall.js";
-import { openConsole } from "./console.js";
 import { dampFleet } from "./fleet.js";
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -27,12 +26,13 @@ const loginForm = $("#login-form");
 const loginMsg = $("#login-msg");
 const tileMap = new Map(); // `${machine}::${session}` -> tile { el, poller, update }
 const emptyMap = new Map(); // machine name -> "no sessions" card element
-let consoleHandle = null;
 let lastFleet = { machines: [] };
 const fleetState = new Map(); // per-machine health debounce (see fleet.js)
 
-function openFullGui(machine) {
-  window.open(`/api/machines/${encodeURIComponent(machine)}/open`, "_blank", "noopener");
+function openFullGui(machine, session) {
+  const query = session == null ? "" : `?session=${encodeURIComponent(session)}`;
+  // Open synchronously in this user gesture; resolve/authenticate server-side.
+  window.open(`/api/machines/${encodeURIComponent(machine)}/open${query}`, "_blank", "noopener");
 }
 
 async function api(path, opts) {
@@ -42,7 +42,6 @@ async function api(path, opts) {
 function showLogin(message = "") {
   clearAuthState();
   clearTimeout(installPoll);
-  if (consoleHandle) consoleHandle.close();
   for (const tile of tileMap.values()) tile.poller.stop();
   loginMsg.textContent = message;
   appShell.hidden = true;
@@ -90,8 +89,7 @@ $("#logout-btn").addEventListener("click", async () => {
 });
 
 function onOpen(machine, session) {
-  if (consoleHandle) consoleHandle.close();
-  consoleHandle = openConsole({ machine, session, onClosed: () => { consoleHandle = null; } });
+  openFullGui(machine, session);
 }
 
 function renderMachines(machines) {

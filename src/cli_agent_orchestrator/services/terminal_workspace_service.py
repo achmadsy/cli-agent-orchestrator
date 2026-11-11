@@ -25,7 +25,7 @@ from cli_agent_orchestrator.security.auth import (
     SCOPE_ADMIN, SCOPE_WRITE, extract_scopes_from_token, is_auth_enabled,
 )
 
-VERSION = "cao-terminal/195ad23136c500b10fc88ba50397a25fa7b8c4d9"
+VERSION = "cao-terminal/195ad23136c500b10fc88ba50397a25fa7b8c4d9-grid-v2"
 LEASE_SECONDS = 600
 MAX_VIEWERS = 128
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -34,6 +34,10 @@ COOKIE_NAME = "cao_terminal_viewer"
 
 class WorkspaceUnavailable(ValueError):
     """Optional service or target is not eligible for the workspace."""
+
+
+class HistoryChanged(WorkspaceUnavailable):
+    """A bounded history page no longer shares the reader's coordinates."""
 
 
 def sidecar_config() -> tuple[str, str]:
@@ -66,6 +70,8 @@ def _get(path: str, query: dict[str, str] | None = None) -> tuple[bytes, str]:
                 headers={"X-CAO-Terminal-Token": token}, timeout=(2, 10),
                 allow_redirects=False, stream=True,
             ) as response:
+                if path == "/api/history" and response.status_code == 409:
+                    raise HistoryChanged("History changed; return to the live screen")
                 if response.status_code != 200:
                     raise WorkspaceUnavailable("Terminal sidecar or target is unavailable")
                 chunks, size = [], 0

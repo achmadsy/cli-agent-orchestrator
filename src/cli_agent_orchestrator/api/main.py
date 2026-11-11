@@ -4572,6 +4572,32 @@ async def get_terminal_output(
         )
 
 
+@app.get("/terminals/{terminal_id}/screen")
+async def get_terminal_screen(
+    terminal_id: TerminalId,
+    ansi: bool = True,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    """Get the currently rendered viewport (capture-pane -S 0).
+
+    The fleet panel's live wall/console polls this. Unlike ``/output`` (the
+    rolling FIFO buffer, whose raw stream contains the agent TUI's
+    protocol-init burst — private modes, kitty keyboard, charset), this is
+    the rendered screen: SGR escapes retained when ``ansi=true``, plain text
+    when ``ansi=false``. Read-gated at the same tier as ``/output``.
+    """
+    try:
+        # Blocking tmux capture-pane — off the loop.
+        return await asyncio.to_thread(terminal_service.get_screen, terminal_id, ansi)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get screen: {str(e)}",
+        )
+
+
 @app.get("/terminals/{terminal_id}/output/range", response_model=TerminalOutputRange)
 async def get_terminal_output_range(
     terminal_id: TerminalId,

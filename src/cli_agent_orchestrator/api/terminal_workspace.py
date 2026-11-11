@@ -5,8 +5,10 @@ import asyncio
 from contextlib import suppress
 import ipaddress
 import json
+import os
 import re
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket
 from pydantic import BaseModel, Field
 from websockets.legacy.client import connect
@@ -16,11 +18,13 @@ from cli_agent_orchestrator.security.auth import (
     SCOPE_ADMIN, SCOPE_WRITE, _extract_bearer, is_auth_enabled, require_any_scope,
 )
 from cli_agent_orchestrator.services import terminal_workspace_service as service
+from cli_agent_orchestrator.services import terminal_attachment_service as attachments
 
 router = APIRouter(prefix="/terminal", tags=["terminal-workspace"])
 write_access = require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)
 _ASSET = re.compile(r"^static/(?:css|js)/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.(?:css|js)$")
-_ALLOWED_MESSAGES = {"input", "key", "mouse", "focus", "fit", "resize", "fit_enable", "fit_disable",
+_FONT = re.compile(r"^static/fonts/(?:mono-(?:regular|bold|italic|bold-italic)\.ttf|(?:powerline|fontawesome)\.otf|LICENSE-(?:DejaVu|Powerline|FontAwesome)\.txt|README\.md|provenance\.json)$")
+_ALLOWED_MESSAGES = {"input", "paste", "key", "mouse", "focus", "fit", "resize", "fit_enable", "fit_disable",
                      "switch_window", "refresh_panes", "autocomplete", "pong"}
 
 
@@ -91,6 +95,86 @@ async def revoke(viewer_id: str, request: Request):
     return Response(status_code=204)
 
 
+def _upload_origin(request: Request) -> None:
+    _request_gate(request)
+    if not request.headers.get("origin"):
+        raise HTTPException(403, "Image upload requires a same-origin browser request")
+
+
+async def attachment_write_access(viewer_id: str, request: Request) -> service.Viewer:
+    """Capability scope gate: validate original WRITE/ADMIN authority on each call.
+
+    Iframe requests intentionally never expose the original bearer to JavaScript.
+    This dependency is the explicit equivalent of write_access for these routes.
+    """
+    _upload_origin(request)
+    return await _viewer(viewer_id, request)
+
+
+@router.post("/v/{viewer_id}/attachments")
+async def upload_image(viewer_id: str, request: Request,
+                       viewer: service.Viewer = Depends(attachment_write_access)):
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+    if content_type not in {v[1] for v in attachments.FORMATS.values()}:
+        raise HTTPException(415, "Use PNG, JPEG or WebP")
+    item = None
+    store = None
+    published = False
+    try:
+        store = attachments.store()
+        await asyncio.to_thread(attachments.shared_filesystem, viewer.target, store.root, store.fd)
+        item, fd = store.reserve(viewer)
+        size = 0
+        published = False
+        with os.fdopen(fd, "wb") as stream:
+            with anyio.fail_after(30):
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > attachments.MAX_IMAGE:
+                        raise attachments.AttachmentError("Image exceeds 10 MiB", 413)
+                    await anyio.to_thread.run_sync(stream.write, chunk)
+        async with attachments._decode_slots:
+            extension = await anyio.to_thread.run_sync(attachments.verify_image, store.root / (item.id + ".part"), content_type)
+        await asyncio.to_thread(attachments.shared_filesystem, viewer.target, store.root, store.fd)
+        # Look up the capability again: an upload can outlive viewer revocation,
+        # not merely its token/target validation performed before streaming.
+        await _viewer(viewer_id, request)
+        store.publish(item, extension, size)
+        published = True
+        return Response(json.dumps({"id": item.id, "expires_at": item.expires}), media_type="application/json", headers={"Cache-Control": "no-store"})
+    except attachments.AttachmentError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    except service.WorkspaceUnavailable as exc:
+        raise HTTPException(401, str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(408, "Image upload timed out") from exc
+    finally:
+        if item is not None and not published and store is not None:
+            store.discard(item)
+
+
+@router.post("/v/{viewer_id}/attachments/{attachment_id}/confirm")
+async def confirm_image(viewer_id: str, attachment_id: str, request: Request,
+                        viewer: service.Viewer = Depends(attachment_write_access)):
+    try:
+        store = attachments.store()
+        await asyncio.to_thread(attachments.shared_filesystem, viewer.target, store.root, store.fd)
+        await _viewer(viewer_id, request)
+        return Response(json.dumps(store.confirm(attachment_id, viewer)), media_type="application/json", headers={"Cache-Control": "no-store"})
+    except attachments.AttachmentError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
+@router.delete("/v/{viewer_id}/attachments/{attachment_id}")
+async def cancel_image(viewer_id: str, attachment_id: str, request: Request,
+                       viewer: service.Viewer = Depends(attachment_write_access)):
+    try:
+        attachments.store().cancel(attachment_id, viewer)
+    except attachments.AttachmentError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/v/{viewer_id}/{path:path}")
 async def view(viewer_id: str, path: str, request: Request):
     viewer = await _viewer(viewer_id, request)
@@ -114,14 +198,16 @@ async def view(viewer_id: str, path: str, request: Request):
     query = None
     if path == "api/history":
         query = viewer.query()
-        for key in ("pane", "lines", "offset"):
+        for key in ("pane", "lines", "offset", "boundary", "snapshot"):
             if key in request.query_params:
                 query[key] = request.query_params[key]
-    elif path and not _ASSET.fullmatch(path):
+    elif path and not (_ASSET.fullmatch(path) or _FONT.fullmatch(path)):
         # No upstream CRUD/upload/rescue/link/notification/PWA bypass surfaces.
         raise HTTPException(404, "Not found")
     try:
         payload, content_type = await service.fetch("/" + path, query)
+    except service.HistoryChanged as exc:
+        raise HTTPException(409, str(exc)) from exc
     except service.WorkspaceUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     return Response(payload, headers={**headers, "Content-Type": content_type})

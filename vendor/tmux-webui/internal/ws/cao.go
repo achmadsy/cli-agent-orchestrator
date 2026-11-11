@@ -83,8 +83,8 @@ const (
 	caoResizeMaxRows = 200
 )
 
-// caoResize resizes exactly the target's own pinned window. Automatic layout
-// fitting stays disabled; this runs only for an explicit user request.
+// caoResize resizes only the pinned window. Caller must validate exact target
+// and hold the restricted sizing claim; never use upstream global layout fit.
 func caoResize(ctx context.Context, tx *tmuxctl.Client, t CAOTarget, cols, rows int) error {
 	if cols < caoResizeMinCols || cols > caoResizeMaxCols || rows < caoResizeMinRows || rows > caoResizeMaxRows {
 		return errors.New("resize out of range")
@@ -124,19 +124,20 @@ func CAOTargetFromRequest(r *http.Request) (CAOTarget, error) {
 // The stable pane anchor must still belong to this session/window. Replacement
 // objects, renamed sessions and moved panes fail closed instead of being followed.
 func caoPanes(ctx context.Context, tx *tmuxctl.Client, t CAOTarget) ([]tmuxctl.Pane, error) {
-	raw, err := tx.Run(ctx, "list-panes", "-s", "-t", "="+t.Session, "-F", "#{pane_id}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{mouse_any_flag}\t#{pane_current_command}\t#{pane_title}")
+	raw, err := tx.Run(ctx, "display-message", "-t", t.PaneID, "-p", "#{socket_path}", ";", "list-panes", "-s", "-t", "="+t.Session, "-F", "#{pane_id}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{pane_active}\t#{pane_width}\t#{pane_height}\t#{mouse_any_flag}\t#{pane_current_command}\t#{window_panes}\t#{pane_title}")
 	if err != nil {
 		return nil, errors.New("terminal unavailable")
 	}
-	actual, err := tx.Run(ctx, "display-message", "-t", t.PaneID, "-p", "#{socket_path}")
-	if err != nil || strings.TrimSpace(actual) != t.Socket {
+	actual, rest, ok := strings.Cut(raw, "\n")
+	if !ok || actual != t.Socket {
 		return nil, errors.New("tmux socket mismatch")
 	}
+	raw = rest
 	anchor := false
 	var panes []tmuxctl.Pane
-	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
-		p := strings.SplitN(line, "\t", 11)
-		if len(p) < 11 || p[1] != t.WindowID {
+	for _, line := range strings.Split(strings.TrimSuffix(raw, "\n"), "\n") {
+		p := strings.SplitN(line, "\t", 12)
+		if len(p) < 12 || p[1] != t.WindowID {
 			continue
 		}
 		if p[0] == t.PaneID {
@@ -156,7 +157,7 @@ func caoPanes(ctx context.Context, tx *tmuxctl.Client, t CAOTarget) ([]tmuxctl.P
 				continue
 			}
 		}
-		panes = append(panes, tmuxctl.Pane{Window: caoAtoi(p[2]), WindowName: p[3], Pane: caoAtoi(p[4]), Active: caoAtoi(p[5]), Width: caoAtoi(p[6]), Height: caoAtoi(p[7]), MouseMode: caoAtoi(p[8]), Command: p[9], Title: p[10], ID: p[0]})
+		panes = append(panes, tmuxctl.Pane{Window: caoAtoi(p[2]), WindowName: p[3], Pane: caoAtoi(p[4]), Active: caoAtoi(p[5]), Width: caoAtoi(p[6]), Height: caoAtoi(p[7]), WindowPanes: caoAtoi(p[10]), MouseMode: caoAtoi(p[8]), Command: p[9], Title: p[11], ID: p[0]})
 	}
 	if !anchor || len(panes) == 0 {
 		return nil, errors.New("terminal target changed")
@@ -173,6 +174,7 @@ func caoPanes(ctx context.Context, tx *tmuxctl.Client, t CAOTarget) ([]tmuxctl.P
 }
 
 func CAOHistory(tx *tmuxctl.Client) http.Handler {
+	cache := &caoHistoryCache{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t, err := CAOTargetFromRequest(r)
 		if err != nil {
@@ -207,30 +209,60 @@ func CAOHistory(tx *tmuxctl.Client) http.Handler {
 			http.Error(w, "history limit", 400)
 			return
 		}
-		var content string
-		if offset == 0 {
-			content, err = tx.CapturePane(r.Context(), pane, lines)
+		before, e := tx.ScreenMeta(r.Context(), pane)
+		if e != nil {
+			http.Error(w, "screen unavailable", 503)
+			return
+		}
+		boundary := r.URL.Query().Get("boundary")
+		if before.Alternate || boundary != "" && boundary != before.Boundary {
+			http.Error(w, "history boundary changed", 409)
+			return
+		}
+		snapshotID := r.URL.Query().Get("snapshot")
+		var snapshot caoHistorySnapshot
+		if offset > 0 {
+			var ok bool
+			snapshot, ok = cache.get(snapshotID, t, pane, before.Boundary)
+			if !ok {
+				http.Error(w, "history snapshot expired", 409)
+				return
+			}
 		} else {
-			content, err = tx.CapturePaneRange(r.Context(), pane, offset+lines, offset+1)
+			// One bounded immutable capture per reader, not relative pagination
+			// into a history buffer that can evict equal-sized rows at its cap.
+			content, captureErr := tx.CapturePane(r.Context(), pane, caoHistoryDepth)
+			if captureErr != nil {
+				http.Error(w, "capture unavailable", 503)
+				return
+			}
+			if len(content) > caoHistoryBytes {
+				http.Error(w, "history response too large", 413)
+				return
+			}
+			after, metaErr := tx.ScreenMeta(r.Context(), pane)
+			if metaErr != nil || after.Boundary != before.Boundary {
+				http.Error(w, "history boundary changed", 409)
+				return
+			}
+			snapshotID, snapshot = cache.put(t, pane, before.Boundary, content, before.Rows)
+			if snapshotID == "" {
+				http.Error(w, "history unavailable", 503)
+				return
+			}
 		}
-		if err != nil {
-			http.Error(w, "capture unavailable", 503)
-			return
-		}
-		if len(content) > 512<<10 {
-			http.Error(w, "history response too large", 413)
-			return
-		}
+		content, exhausted := snapshot.page(lines, offset)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(map[string]any{"content": content, "lines": lines, "offset": offset})
+		_ = json.NewEncoder(w).Encode(map[string]any{"content": content, "lines": lines, "offset": offset, "boundary": before.Boundary, "snapshot": snapshotID, "exhausted": exhausted})
 	})
 }
 
 // CAOHandler reuses upstream's wire types, renderer and input primitives while
-// limiting each connection to exact, live CAO-owned targets. Fit is deliberately
-// non-mutating: tmux layouts are shared with other agents and attached clients.
+// limiting each connection to exact, live CAO-owned targets. Restricted sizing
+// is arbitrated per window; upstream global/layout fit stays non-mutating.
 func CAOHandler(tx *tmuxctl.Client) http.Handler {
+	sizing := &caoSizing{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t, err := CAOTargetFromRequest(r)
 		if err != nil {
@@ -246,6 +278,8 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 			return
 		}
 		defer conn.Close(websocket.StatusNormalClosure, "viewer closed")
+		owner := &caoSizingOwner{}
+		defer sizing.release(t, owner)
 		conn.SetReadLimit(65536)
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
@@ -282,17 +316,29 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 		defer ticker.Stop()
 		ping := time.NewTicker(15 * time.Second)
 		defer ping.Stop()
-		last := map[string]string{}
+		last := map[string]tmuxctl.Screen{}
+		epochs := map[string]uint64{}
+		var sequence uint64
+		activeUntil := time.Now()
+		captureQueued := false
+		requestCapture := func() {
+			activeUntil = time.Now().Add(1200 * time.Millisecond)
+			if !captureQueued {
+				ticker.Reset(30 * time.Millisecond)
+				captureQueued = true
+			}
+		}
 		lastSig := ""
 		lastRecv := time.Now()
 		seen := map[string]bool{}
 		var nonces []string
 		refresh := func() error {
+			captureQueued = false
 			panes, e := caoPanes(ctx, tx, t)
 			if e != nil {
 				return e
 			}
-			sig := paneListSig(panes, 0)
+			sig := paneListSig(panes, 0) + fmt.Sprint(panes[0].WindowPanes)
 			if sig != lastSig {
 				lastSig = sig
 				if e = send(outWindows{Type: "windows", Windows: []tmuxctl.Window{{Index: panes[0].Window, Name: panes[0].WindowName, Active: 1, Panes: len(panes)}}, Active: panes[0].Window}); e != nil {
@@ -302,22 +348,32 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 					return e
 				}
 			}
-			changed := map[string]string{}
+			changed := map[string]caoSnapshot{}
 			for _, p := range panes {
-				s, e := tx.CapturePane(ctx, p.ID, 300)
+				s, e := tx.CaptureScreen(ctx, p.ID)
 				if e != nil {
-					return e
-				}
-				if len(s) > 2<<20 {
-					return errors.New("capture limit")
-				}
-				if old, ok := last[p.ID]; !ok || old != s {
-					changed[p.ID] = s
+					continue
+				} // bounded unstable capture: retain last good grid
+				old, ok := last[p.ID]
+				if !ok || old != s {
+					if !ok || old.Alternate != s.Alternate || old.Cols != s.Cols || old.Rows != s.Rows {
+						epochs[p.ID]++
+					}
+					sequence++
+					changed[p.ID] = caoSnapshot{Screen: s, Seq: sequence, Epoch: epochs[p.ID]}
 					last[p.ID] = s
 				}
 			}
 			if len(changed) > 0 {
-				return send(outOutput{Type: "output", Panes: changed})
+				activeUntil = time.Now().Add(1200 * time.Millisecond)
+			}
+			interval := 400 * time.Millisecond
+			if time.Now().Before(activeUntil) {
+				interval = 80 * time.Millisecond
+			}
+			ticker.Reset(interval)
+			if len(changed) > 0 {
+				return send(outScreens{Type: "screens", Version: 2, Panes: changed})
 			}
 			return nil
 		}
@@ -362,7 +418,7 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 						return
 					}
 					continue
-				case "input", "key", "mouse", "focus", "fit", "resize":
+				case "input", "paste", "key", "mouse", "focus", "fit", "resize":
 					if !found {
 						return
 					}
@@ -373,19 +429,43 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 				case "focus", "fit":
 					continue // client focus only; never auto-mutate shared layout
 				case "resize":
-					// One-shot, viewer-requested geometry for THIS terminal's own
-					// window. A pane left at phone columns wraps on desktop; the
-					// user asking to fit is the same act as attaching a client of
-					// that size. Bounded; other windows are never touched.
-					if e := caoResize(ctx, tx, t, msg.Cols, msg.Rows); e != nil {
-						_ = send(newInputError("Resize unavailable"))
+					if msg.Release {
+						sizing.release(t, owner)
+						_ = send(outSizing{Type: "sizing", State: "released", Seq: msg.SeqResize})
 						continue
 					}
-					if refresh() != nil {
+					state := sizing.apply(t, owner, msg.Takeover && !msg.Auto, time.Now(), func() string {
+						if _, err := caoPanes(ctx, tx, t); err != nil {
+							return "target_changed"
+						}
+						if msg.Auto && !caoSinglePane(ctx, tx, t) {
+							return "shared_window"
+						}
+						return ""
+					}, func() error {
+						// A dimensionless automatic request renews an owned claim;
+						// it never reapplies old geometry on a heartbeat.
+						if msg.Auto && msg.Cols == 0 && msg.Rows == 0 {
+							return nil
+						}
+						return caoResize(ctx, tx, t, msg.Cols, msg.Rows)
+					})
+					if send(outSizing{Type: "sizing", State: state, Seq: msg.SeqResize}) != nil {
+						return
+					}
+					if state == "owned" && msg.Cols != 0 && refresh() != nil {
 						return
 					}
 					continue
-				case "input":
+				case "input", "paste":
+					if msg.Type == "paste" {
+						meta, err := tx.ScreenMeta(ctx, msg.Pane)
+						unsafe := strings.ContainsAny(msg.Text, "\r\n\t")
+						if err != nil || (unsafe && !meta.BracketPaste) || strings.ContainsFunc(msg.Text, func(r rune) bool { return (r < 32 && r != '\n' && r != '\t') || r == 127 }) {
+							_ = send(outInputError{Type: "input_error", Nonce: msg.Nonce, Message: "Paste blocked: unsupported control data or target paste mode; use the composer"})
+							continue
+						}
+					}
 					if len(msg.Text) > 60000 || len(msg.Nonce) > 128 {
 						return
 					}
@@ -407,10 +487,15 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 					}
 					var random [12]byte
 					_, _ = rand.Read(random[:])
-					e = tx.SendTextWithBuf(ctx, msg.Pane, msg.Text, "cao_web_"+hex.EncodeToString(random[:]))
-					if e == nil {
-						e = tx.SendEnter(ctx, msg.Pane)
+					if msg.Type == "paste" {
+						e = tx.PasteLiteral(ctx, msg.Pane, msg.Text, "cao_web_"+hex.EncodeToString(random[:]))
+					} else {
+						e = tx.SendTextWithBuf(ctx, msg.Pane, msg.Text, "cao_web_"+hex.EncodeToString(random[:]))
+						if e == nil {
+							e = tx.SendEnter(ctx, msg.Pane)
+						}
 					}
+					requestCapture()
 					if e != nil {
 						_ = send(outInputError{Type: "input_error", Nonce: msg.Nonce, Message: "Delivery uncertain; inspect output before retrying"})
 					} else {
@@ -422,6 +507,7 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 						_ = send(newInputError("Unsupported key"))
 						continue
 					}
+					requestCapture()
 					if len([]rune(key)) == 1 {
 						_ = tx.SendText(ctx, msg.Pane, key)
 						continue
@@ -440,5 +526,5 @@ func CAOHandler(tx *tmuxctl.Client) http.Handler {
 }
 
 func CAOVersion() string {
-	return fmt.Sprintf("cao-terminal/%s", "195ad23136c500b10fc88ba50397a25fa7b8c4d9")
+	return fmt.Sprintf("cao-terminal/%s", "195ad23136c500b10fc88ba50397a25fa7b8c4d9-grid-v2")
 }

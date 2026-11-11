@@ -91,6 +91,11 @@ func (c *Client) SendEnter(ctx context.Context, target string) error {
 	return c.SendKey(ctx, target, "Enter")
 }
 
+// PasteLiteral always uses the application's bracketed paste mode, with no Enter.
+func (c *Client) PasteLiteral(ctx context.Context, target, text, buf string) error {
+	return c.pasteText(ctx, target, text, buf)
+}
+
 func (c *Client) pasteText(ctx context.Context, target, text, buf string) error {
 	cmd := c.command(ctx, "load-buffer", "-b", buf, "-")
 	stdin, err := cmd.StdinPipe()

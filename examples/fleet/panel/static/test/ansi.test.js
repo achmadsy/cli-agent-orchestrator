@@ -52,3 +52,56 @@ test("adjacent runs with identical style merge into one segment", () => {
   const segs = parseAnsiLine("\x1b[31ma\x1b[31mb");
   assert.deepEqual(segs, [{ text: "ab", fg: 1, bold: false }]);
 });
+
+// Raw-stream fallback content: the agent TUI's protocol-init burst.
+test("private-mode set/reset sequences are consumed (bracketed paste, mouse)", () => {
+  for (const seq of ["\x1b[?2004h", "\x1b[?2004l", "\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h"]) {
+    assert.deepEqual(parseAnsiLine(`${seq}ok`), [{ text: "ok", fg: null, bold: false }], seq);
+  }
+});
+
+test("kitty/modifyOtherKeys sequences are consumed, never parsed as SGR", () => {
+  for (const seq of ["\x1b[<u", "\x1b[>5u", "\x1b[>4;2m", "\x1b[=u"]) {
+    assert.deepEqual(parseAnsiLine(`${seq}ok`), [{ text: "ok", fg: null, bold: false }], seq);
+  }
+  // >4;2m must not leak style: text after it stays default even mid-line.
+  assert.deepEqual(
+    parseAnsiLine("\x1b[>4;2m\x1b[32mok"),
+    [{ text: "ok", fg: 2, bold: false }],
+  );
+});
+
+test("charset selection ESC(B and single-char escapes are consumed", () => {
+  assert.deepEqual(parseAnsiLine("\x1b(B❯ ls"), [{ text: "❯ ls", fg: null, bold: false }]);
+  assert.deepEqual(parseAnsiLine("\x1bM\x1b7ok"), [{ text: "ok", fg: null, bold: false }]);
+});
+
+test("OSC title strings end at BEL or ST", () => {
+  assert.deepEqual(
+    parseAnsiLine("\x1b]0;title\x07ok"),
+    [{ text: "ok", fg: null, bold: false }],
+  );
+  assert.deepEqual(
+    parseAnsiLine("\x1b]2;tab\x1b\\ok"),
+    [{ text: "ok", fg: null, bold: false }],
+  );
+});
+
+test("a lone trailing ESC fragment from a cross-line split is dropped", () => {
+  assert.deepEqual(parseAnsiLine("ok\x1b"), [{ text: "ok", fg: null, bold: false }]);
+});
+
+test("the reported fleet burst renders as clean prompt text", () => {
+  const burst = "\x1b(B\x1b[?2004h\x1b[<u\x1b[>5u\x1b[>4;2m\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h ❯ ls";
+  assert.deepEqual(parseAnsiLine(burst), [{ text: " ❯ ls", fg: null, bold: false }]);
+});
+
+test("SGR still colours around consumed protocol sequences", () => {
+  assert.deepEqual(
+    parseAnsiLine("\x1b[32m\x1b[?2004hok\x1b[0m\x1b(Bbye"),
+    [
+      { text: "ok", fg: 2, bold: false },
+      { text: "bye", fg: null, bold: false },
+    ],
+  );
+});

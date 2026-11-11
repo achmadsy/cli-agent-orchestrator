@@ -20,7 +20,7 @@
   const modifierGroup = document.createElement('div');
   modifierGroup.className = 'cao-mobile-modifiers';
   extraKeysEl.prepend(modifierGroup);
-  const phoneLayout = matchMedia('(max-width:600px)');
+  const phoneLayout = matchMedia('(max-width:600px), (max-height:500px)');
   function placeModifiers() {
     for (const button of modifierButtons) {
       if (phoneLayout.matches) modifierGroup.append(button);

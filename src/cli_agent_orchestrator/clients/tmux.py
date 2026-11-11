@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import secrets
 import shlex
 import subprocess
 import sys
@@ -2154,6 +2155,97 @@ class TmuxClient:
         than authorizing an object by a reusable window name.
         """
         _require_cao_session_name(session_name, "view")
+        return self._resolve_workspace_batched(terminal_id, session_name)
+
+    def _resolve_workspace_batched(self, terminal_id: str, session_name: str) -> Dict[str, str]:
+        """Same uniqueness/own-option proof in two subprocess round trips.
+
+        Never cache authorization or trust inherited formatted option values.
+        The second command queue reads every object's own scoped options and
+        repeats the identity listing so topology changes fail closed.
+        """
+        fmt = "#{session_name}\t#{window_id}\t#{pane_id}\t#{socket_path}"
+
+        def read(result):
+            if result.returncode != 0 or result.stderr:
+                raise ValueError("Terminal identity query failed")
+            return list(result.stdout or [])
+
+        listing = ["list-panes", "-s", "-t", "=" + session_name, "-F", fmt]
+        rows = read(self.server.cmd(*listing))
+        if not rows or len(rows) > 256:
+            raise ValueError("Terminal identity listing is unavailable or too large")
+        records = [line.split("\t") for line in rows]
+        if any(
+            len(row) != 4
+            or row[0] != session_name
+            or not re.fullmatch(r"@[0-9]+", row[1])
+            or not re.fullmatch(r"%[0-9]+", row[2])
+            or not row[3].startswith("/")
+            for row in records
+        ):
+            raise ValueError("Invalid terminal identity listing")
+        if len({row[2] for row in records}) != len(records) or len({row[3] for row in records}) != 1:
+            raise ValueError("Inconsistent terminal identity listing")
+        objects = list(dict.fromkeys(("-w", row[1]) for row in records))
+        objects.extend(("-p", row[2]) for row in records)
+        marker = "cao_identity_" + secrets.token_hex(16)
+        args = []
+        for index, (scope, target) in enumerate(objects):
+            if args:
+                args.append(";")
+            args.extend([
+                "display-message", "-t", records[0][2], "-p", marker + str(index),
+                ";", "show-options", scope, "-t", target,
+            ])
+        args.extend([
+            ";", "display-message", "-t", records[0][2], "-p", marker + "end",
+            ";", *listing,
+        ])
+        output = read(self.server.cmd(*args))
+        values = {}
+        cursor = 0
+        for index, obj in enumerate(objects):
+            if cursor >= len(output) or output[cursor] != marker + str(index):
+                raise ValueError("Invalid terminal option envelope")
+            cursor += 1
+            own = None
+            while cursor < len(output) and not output[cursor].startswith(marker):
+                line = output[cursor]
+                if line.startswith(TERMINAL_ID_OPTION + " "):
+                    if own is not None:
+                        raise ValueError("Duplicate terminal option")
+                    own = line[len(TERMINAL_ID_OPTION) + 1:]
+                cursor += 1
+            values[obj] = own
+        if (
+            cursor >= len(output)
+            or output[cursor] != marker + "end"
+            or output[cursor + 1:] != rows
+        ):
+            raise ValueError("Terminal topology changed during identity validation")
+        matches = [obj for obj, value in values.items() if value == terminal_id]
+        if len(matches) != 1:
+            raise ValueError("Terminal ownership cannot be resolved uniquely")
+        scope, target = matches[0]
+        if scope == "-w":
+            eligible = [
+                row for row in records
+                if row[1] == target and values[("-p", row[2])] in (None, terminal_id)
+            ]
+        else:
+            eligible = [row for row in records if row[2] == target]
+        if not eligible:
+            raise ValueError("Terminal window has no owned panes")
+        record = eligible[0]
+        return {
+            "session": session_name, "terminal": terminal_id,
+            "window_id": record[1], "pane_id": record[2],
+            "mode": "window" if scope == "-w" else "pane", "socket": record[3],
+        }
+
+    def _resolve_workspace_unbatched(self, terminal_id: str, session_name: str) -> Dict[str, str]:
+        # Kept as an explicit reference for ownership regression fixtures.
         sessions = self._sessions_for_identity_scan(session_name)
         if not sessions:
             raise ValueError("Terminal session is unavailable")

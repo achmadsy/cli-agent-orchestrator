@@ -177,11 +177,35 @@ def _machine_or_404(name):
 
 
 @app.get("/api/machines/{name}/open")
-async def open_machine(name: str):
+async def open_machine(name: str, session: str | None = None):
     machine = _machine_or_404(name)
     if not config.NODE_TOKEN:
         raise HTTPException(status_code=503, detail="node access token is not configured")
-    location = f"https://{config.public_hostname(machine['name'])}/#token={quote(config.NODE_TOKEN, safe='')}"
+    query = ""
+    if session is not None:
+        _safe_segment(session, "session")
+        async with client.async_client(client.TIMEOUT, config.NODE_TOKEN) as c:
+            try:
+                detail = await client.get_session(c, config.base_url(machine), session)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    raise HTTPException(status_code=404, detail="session no longer exists") from exc
+                raise HTTPException(status_code=502, detail="node session lookup failed") from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail="node is unreachable") from exc
+        terminals = detail.get("terminals") if isinstance(detail, dict) else None
+        terminal = terminals[0] if isinstance(terminals, list) and terminals else None
+        if not isinstance(terminal, dict):
+            raise HTTPException(status_code=404, detail="session has no terminal to open")
+        terminal_id = terminal.get("id")
+        if (
+            not isinstance(terminal_id, str)
+            or not _SAFE_SEGMENT.fullmatch(terminal_id)
+            or terminal.get("tmux_session") != session
+        ):
+            raise HTTPException(status_code=502, detail="node returned an invalid terminal target")
+        query = f"?terminal_session={quote(session, safe='')}&terminal_id={quote(terminal_id, safe='')}"
+    location = f"https://{config.public_hostname(machine['name'])}/{query}#token={quote(config.NODE_TOKEN, safe='')}"
     return RedirectResponse(
         location,
         status_code=303,

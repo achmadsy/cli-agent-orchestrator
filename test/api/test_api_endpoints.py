@@ -1678,6 +1678,52 @@ class TestGetTerminalOutput:
         assert response.status_code == 404
         assert "Terminal not found" in response.json()["detail"]
 
+
+class TestGetTerminalScreen:
+    """Tests for GET /terminals/{terminal_id}/screen endpoint."""
+
+    def test_get_screen_ansi_passthrough(self, client):
+        """GET /terminals/{id}/screen returns the rendered viewport with ansi flag."""
+        with patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc:
+            mock_svc.get_screen.return_value = {"screen": "\x1b[32mok\x1b[0m", "ansi": True}
+
+            response = client.get("/terminals/abcd1234/screen")
+
+        assert response.status_code == 200
+        assert response.json() == {"screen": "\x1b[32mok\x1b[0m", "ansi": True}
+        mock_svc.get_screen.assert_called_once_with("abcd1234", True)
+
+    def test_get_screen_strips_escapes_when_ansi_false(self, client):
+        """GET /terminals/{id}/screen?ansi=false asks the service for plain text."""
+        with patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc:
+            mock_svc.get_screen.return_value = {"screen": "ok", "ansi": False}
+
+            response = client.get("/terminals/abcd1234/screen?ansi=false")
+
+        assert response.status_code == 200
+        assert response.json() == {"screen": "ok", "ansi": False}
+        mock_svc.get_screen.assert_called_once_with("abcd1234", False)
+
+    def test_get_screen_terminal_not_found(self, client):
+        """GET /terminals/{id}/screen returns 404 for nonexistent terminal."""
+        with patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc:
+            mock_svc.get_screen.side_effect = ValueError("Terminal not found")
+
+            response = client.get("/terminals/deadbeef/screen")
+
+        assert response.status_code == 404
+        assert "Terminal not found" in response.json()["detail"]
+
+    def test_get_screen_server_error(self, client):
+        """GET /terminals/{id}/screen returns 500 on backend failure."""
+        with patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc:
+            mock_svc.get_screen.side_effect = Exception("capture failed")
+
+            response = client.get("/terminals/abcd1234/screen")
+
+        assert response.status_code == 500
+        assert "Failed to get screen" in response.json()["detail"]
+
     def test_get_output_server_error(self, client):
         """GET /terminals/{id}/output returns 500 on error."""
         with patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc:

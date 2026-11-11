@@ -1,0 +1,13 @@
+{
+  "source": "Reduced content-free measurements shared by the user from the dummy page on Chrome iOS, 2026-11-10. Not a live terminal trace.",
+  "samples": [
+    {"ms":0,"innerHeight":742,"visualHeight":742,"frameHeight":682,"focused":true,"direct":false,"keyboardHeight":0,"rows":23},
+    {"ms":4335,"innerHeight":742,"visualHeight":742,"frameHeight":682,"focused":true,"direct":true,"keyboardHeight":0,"rows":23},
+    {"ms":4441,"innerHeight":430,"visualHeight":430,"frameHeight":370,"focused":true,"direct":true,"keyboardHeight":0,"rows":23},
+    {"ms":5014,"innerHeight":430,"visualHeight":430,"frameHeight":370,"focused":true,"direct":true,"keyboardHeight":0,"rows":11},
+    {"ms":15079,"innerHeight":742,"visualHeight":742,"frameHeight":682,"focused":false,"direct":true,"keyboardHeight":0,"rows":11},
+    {"ms":35578,"innerHeight":742,"visualHeight":742,"frameHeight":682,"focused":false,"direct":true,"keyboardHeight":0,"rows":11},
+    {"ms":50162,"innerHeight":742,"visualHeight":742,"frameHeight":682,"focused":true,"direct":true,"keyboardHeight":0,"rows":11},
+    {"ms":50609,"innerHeight":742,"visualHeight":742,"frameHeight":682,"focused":true,"direct":true,"keyboardHeight":0,"rows":26}
+  ]
+}

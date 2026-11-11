@@ -231,7 +231,8 @@ function genWorkspaceCss(upstream = false) {
   const names = { accentHover: "accent-h" };
   const colors = Object.entries(w).filter(([, value]) => typeof value === "string");
   const prefix = upstream ? "" : "workspace-";
-  return HEADER_HASH + "\n:root {\n" + colors.map(([key, value]) =>
+  const selector = upstream ? ':root' : '.terminal-workspace, .terminal-fallback-note';
+  return HEADER_HASH + `\n${selector} {\n` + colors.map(([key, value]) =>
     `  --${prefix}${names[key] || key}: ${value};`
   ).join("\n") + `\n  --${prefix}font-size: ${w.fontSize}px;\n  --${prefix}font-size-desktop: ${w.fontSize}px;\n  --${prefix}font-size-mobile: ${w.fontSizeMobile}px;\n  --${prefix}radius: ${w.radius}px;\n}\n`;
 }

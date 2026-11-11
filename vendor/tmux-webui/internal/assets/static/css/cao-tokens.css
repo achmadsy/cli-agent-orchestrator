@@ -3,18 +3,18 @@
    CI (`gen.mjs --check`) fails on drift. */
 
 :root {
-  --bg: #181E28;
-  --surface: #202936;
-  --surface2: #263242;
-  --border: #2B3746;
-  --text: #DCE4EE;
-  --dim: #98A8BC;
-  --accent: #87B6FA;
-  --accent-h: #AECDFB;
-  --green: #86D3AE;
-  --red: #F59B9B;
-  --yellow: #E8C784;
-  --cyan: #8DCED5;
+  --bg: #191B1C;
+  --surface: #222526;
+  --surface2: #2B2F30;
+  --border: #3A4041;
+  --text: #E6E4DF;
+  --dim: #A7AAA5;
+  --accent: #A9C1B0;
+  --accent-h: #C3D6C9;
+  --green: #A9C1B0;
+  --red: #E3A6A0;
+  --yellow: #D5C298;
+  --cyan: #A4C5C5;
   --font-size: 16px;
   --font-size-desktop: 16px;
   --font-size-mobile: 14px;

@@ -30,6 +30,11 @@ type InboundMsg struct {
 	// fit
 	Cols int `json:"cols,omitempty"`
 	Rows int `json:"rows,omitempty"`
+	// Restricted CAO resize policy. Owner identity is server connection-local.
+	Auto      bool   `json:"auto,omitempty"`
+	Takeover  bool   `json:"takeover,omitempty"`
+	Release   bool   `json:"release,omitempty"`
+	SeqResize uint64 `json:"resize_seq,omitempty"`
 
 	// select_pane_direction
 	Direction string `json:"direction,omitempty"`
@@ -105,6 +110,18 @@ type outPanes struct {
 type outOutput struct {
 	Type  string            `json:"type"`
 	Panes map[string]string `json:"panes"`
+}
+
+// Restricted snapshots keep active screen separate from paged history.
+type caoSnapshot struct {
+	tmuxctl.Screen
+	Seq   uint64 `json:"seq"`
+	Epoch uint64 `json:"epoch"`
+}
+type outScreens struct {
+	Type    string                 `json:"type"`
+	Version int                    `json:"version"`
+	Panes   map[string]caoSnapshot `json:"panes"`
 }
 
 // outMetrics carries system + LLM usage metrics for the statusline.

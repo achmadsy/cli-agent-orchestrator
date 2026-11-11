@@ -2,7 +2,9 @@
 
 import hashlib
 import io
+import json
 import os
+import shlex
 import re
 import shutil
 import subprocess
@@ -14,16 +16,11 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config
+from . import config, node_release
 
 _REMOTE_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
-WHEEL_PATH = Path(
-    os.environ.get(
-        "CAO_FLEET_WHEEL",
-        "/home/ubuntu/workspace/cao/cli-agent-orchestrator/dist/cli_agent_orchestrator-2.5.3-py3-none-any.whl",
-    )
-)
-REMOTE_COMMAND = "install -d -m 700 ~/.cache/cao-fleet-install && tar -xf - -C ~/.cache/cao-fleet-install && bash ~/.cache/cao-fleet-install/install.sh"
+_REMOTE_SCRIPT = 'set -euo pipefail; umask 077; d=$(mktemp -d /tmp/cao-fleet-install.XXXXXXXX); trap \'rm -rf -- "$d"\' EXIT; tar --no-same-owner --no-same-permissions -xf - -C "$d"; bash "$d/install.sh"'
+REMOTE_COMMAND = "bash -c " + shlex.quote(_REMOTE_SCRIPT)
 INSTALL_TIMEOUT = int(os.environ.get("CAO_FLEET_INSTALL_TIMEOUT", "600"))
 
 CBM_VERSION = "0.10.8"
@@ -167,10 +164,17 @@ source "$(dirname "$0")/node.env"
 export PATH="$HOME/.local/bin:/home/linuxbrew/.linuxbrew/bin:$PATH"
 [ "$(uname -s)" = Linux ] || { echo "unsupported OS: Linux required"; exit 20; }
 grep -q '^ID=ubuntu' /etc/os-release || { echo "unsupported OS: Ubuntu required"; exit 21; }
-python3 - <<'PY'
-import sys
-assert sys.version_info >= (3, 10), "Python 3.10+ required"
-PY
+umask 077
+unset PYTHONPATH PYTHONHOME
+PYTHON=""
+for candidate in /home/linuxbrew/.linuxbrew/bin/python3.14 python3.14 python3.13 python3.12 python3; do
+  command -v "$candidate" >/dev/null 2>&1 || continue
+  if "$candidate" -I -c 'import sys; assert sys.version_info[:2] in ((3,12),(3,13),(3,14))' >/dev/null 2>&1; then
+    PYTHON="$(command -v "$candidate")"; break
+  fi
+done
+[ -n "$PYTHON" ] || { echo "installed Python 3.12, 3.13 or 3.14 required"; exit 26; }
+"$PYTHON" -I "$(dirname "$0")/node_install.py" preflight
 command -v tailscale >/dev/null || { echo "tailscale missing"; exit 22; }
 command -v uv >/dev/null || { echo "uv missing"; exit 23; }
 command -v tmux >/dev/null || { echo "tmux missing"; exit 24; }
@@ -299,36 +303,18 @@ ensure_workspace_mcp() {
 }
 
 ensure_workspace_mcp
-install -d -m 700 "$CAO_HOME_DIR" "$HOME/.config/cao" "$HOME/.config/systemd/user"
-uv tool install "$(dirname "$0")/cli_agent_orchestrator-2.5.3-py3-none-any.whl" --reinstall
-CAO_HOME_DIR="$CAO_HOME_DIR" cao install code_supervisor
-install -m 600 "$(dirname "$0")/cao-server.env" "$HOME/.config/cao/cao-server.env"
-cat > "$HOME/.config/systemd/user/cao-server.service" <<UNIT
-[Unit]
-Description=CLI Agent Orchestrator server
-After=network-online.target tailscaled.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-Environment=PATH=/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
-EnvironmentFile=$HOME/.config/cao/cao-server.env
-ExecStart=$HOME/.local/bin/cao-server --host $CAO_BIND_HOST --port 9889
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=default.target
-UNIT
-systemctl --user daemon-reload
-systemctl --user enable --now cao-server.service
-for _ in 1 2 3 4 5; do curl -fsS --max-time 5 "http://$CAO_BIND_HOST:9889/health" >/dev/null && break; sleep 2; done
-curl -fsS --max-time 5 "http://$CAO_BIND_HOST:9889/health" >/dev/null
-echo "CAO fleet install complete"
+export CAO_HOME_DIR
+"$PYTHON" -I "$(dirname "$0")/node_install.py" install "$PYTHON"
 """
 
 
 def _payload(machine, peer, user, host, token, arch="amd64"):
+    machine = config.validate_name(machine)
+    user = validate_user(user)
+    host = config.validate_host(host)
+    if not isinstance(token, str) or len(token) < 32 or not re.fullmatch(r"[A-Za-z0-9_.~-]+", token):
+        raise ValueError("node authentication token is unavailable or not install-safe")
+    manifest, blobs = node_release.load_release(node_release.configured_manifest(), map_arch(arch))
     hostname = config.public_hostname(machine)
     remote_home = f"/home/{user}"
     node_env = "\n".join(
@@ -354,36 +340,51 @@ def _payload(machine, peer, user, host, token, arch="amd64"):
     ).encode()
     install_env = f"CAO_HOME_DIR={remote_home}/.local/share/cao\nCAO_BIND_HOST={host}\n".encode()
     cbm_archive = ensure_cbm_archive(arch)
+    cbm_data = cbm_archive.read_bytes()
+    if hashlib.sha256(cbm_data).hexdigest() != CBM_ASSETS[map_arch(arch)]["sha256"]:
+        raise RuntimeError("bundled codebase-memory-mcp checksum mismatch")
+    app = Path(__file__).absolute().parent
+    entries = {
+        "install.sh": _install_script().encode(), "node.env": install_env,
+        "cao-server.env": node_env, "manifest.json": (json.dumps(manifest) + "\n").encode(),
+        "node_release.py": (app / "node_release.py").read_bytes(),
+        "node_install.py": (app / "node_install.py").read_bytes(),
+        cbm_archive.name: cbm_data,
+    }
+    if set(entries) & set(blobs):
+        raise ValueError("release artifact collides with installer payload")
+    entries.update(blobs)
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for name, data, mode in (
-            ("install.sh", _install_script().encode(), 0o700),
-            ("node.env", install_env, 0o600),
-            ("cao-server.env", node_env, 0o600),
-        ):
+        for name, data in entries.items():
             info = tarfile.TarInfo(name)
             info.size = len(data)
-            info.mode = mode
+            info.mode = 0o700 if name == "install.sh" else 0o600
             archive.addfile(info, io.BytesIO(data))
-        archive.add(WHEEL_PATH, arcname=WHEEL_PATH.name, recursive=False)
-        ti = tarfile.TarInfo(cbm_archive.name)
-        ti.size = cbm_archive.stat().st_size
-        ti.mode = 0o600
-        with cbm_archive.open("rb") as stream:
-            archive.addfile(ti, stream)
     return buffer.getvalue()
+
+
+def _ingress_check(*args, marker):
+    result = subprocess.run(
+        ["sudo", "-n", config.INGRESS_COMMAND, *args],
+        check=True, capture_output=True, text=True, timeout=60,
+    )
+    if marker not in result.stdout.splitlines():
+        raise RuntimeError("fleet attachment ingress proof missing")
 
 
 def _run(job, host, token):
     job.status = "running"
     job.steps.append("Validated target against live Tailscale peer list")
     try:
+        _ingress_check("--check-policy", marker="CAO_FLEET_POLICY_OK_V1")
+        job.steps.append("Central attachment ingress policy is ready")
         arch = probe_remote_arch(job.user, job.peer)
         job.steps.append(f"Probed remote architecture: {arch}")
         ensure_cbm_archive(arch)
         job.steps.append(f"Prepared verified codebase-memory-mcp {CBM_VERSION} ({arch})")
         payload = _payload(job.machine, job.peer, job.user, host, token, arch)
-        job.steps.append("Built signed-version local install payload")
+        job.steps.append("Built checksum-verified CAO and terminal release payload")
         result = subprocess.run(
             ["tailscale", "ssh", f"{job.user}@{job.peer}", REMOTE_COMMAND],
             input=payload,
@@ -405,7 +406,9 @@ def _run(job, host, token):
                 job.steps.append(line_str)
         if result.returncode:
             raise RuntimeError(f"Tailscale SSH install exited {result.returncode}")
-        job.steps.append("Remote authenticated CAO health check passed")
+        if "CAO fleet install complete" not in output.splitlines() or "Authenticated CAO and terminal health passed" not in output.splitlines():
+            raise RuntimeError("remote install completion/health proof missing")
+        job.steps.append("Remote authenticated CAO and terminal health checks passed")
         machine = config.add_machine(
             {
                 "name": job.machine,
@@ -424,9 +427,20 @@ def _run(job, host, token):
                 text=True,
                 timeout=90,
             )
+            _ingress_check("--verify-ingress", machine["name"], marker="CAO_FLEET_INGRESS_VERIFIED_V1")
         except Exception:
-            config.remove_machine(machine["name"])
-            raise RuntimeError("fleet routing sync failed after install")
+            try:
+                config.remove_machine(machine["name"])
+                # Reconcile through the existing routing lifecycle after registry
+                # compensation. Never uninstall the remote node or erase its data.
+                subprocess.run(
+                    ["sudo", "-n", config.SYNC_COMMAND], check=True,
+                    capture_output=True, text=True, timeout=90,
+                )
+            except Exception:
+                raise RuntimeError("fleet routing/ingress failed; registration cleanup incomplete") from None
+            raise RuntimeError("fleet routing/attachment ingress failed after install; registration reverted") from None
+        job.steps.append("Verified 10 MiB attachment ingress and ordinary request limit")
         job.steps.append(f"Registered {machine['name']} in fleet")
         job.status = "installed"
     except Exception as exc:
@@ -435,8 +449,12 @@ def _run(job, host, token):
 
 
 def start_job(machine, peer, user, host, token):
-    if not WHEEL_PATH.is_file():
-        raise RuntimeError("verified CAO wheel is unavailable")
+    try:
+        node_release.load_release(node_release.configured_manifest())
+    except (OSError, ValueError, KeyError) as exc:
+        raise RuntimeError("verified CAO and terminal release is unavailable") from exc
+    if not isinstance(token, str) or len(token) < 32:
+        raise ValueError("node authentication token is unavailable")
     job = Job(
         id=uuid.uuid4().hex,
         machine=config.validate_name(machine),

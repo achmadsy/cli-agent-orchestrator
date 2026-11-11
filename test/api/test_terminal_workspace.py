@@ -104,15 +104,40 @@ def test_history_query_cannot_replace_bound_target(workspace, monkeypatch):
     assert fetch.call_args.args[1]["terminal"] == "abcdef12"
 
 
+@pytest.mark.parametrize('asset', ['mono-regular.ttf', 'mono-bold.ttf', 'mono-italic.ttf', 'mono-bold-italic.ttf', 'powerline.otf', 'fontawesome.otf', 'LICENSE-DejaVu.txt', 'LICENSE-Powerline.txt', 'LICENSE-FontAwesome.txt', 'README.md', 'provenance.json'])
+def test_only_exact_bundled_fonts_and_notices_are_served(workspace, monkeypatch, asset):
+    fetch = AsyncMock(return_value=(b'fixture', 'application/octet-stream'))
+    monkeypatch.setattr(service, 'fetch', fetch)
+    url = launch(workspace).json()['url']
+    assert workspace.get(url + 'static/fonts/' + asset).status_code == 200
+    fetch.assert_awaited_once_with('/static/fonts/' + asset, None)
+    fetch.reset_mock()
+    assert workspace.get(url + 'static/fonts/arbitrary.otf').status_code == 404
+    assert workspace.get(url + 'static/fonts/meslo-regular.ttf').status_code == 404
+    fetch.assert_not_awaited()
+
+
+def test_changed_history_coordinates_reach_browser_as_conflict(workspace, monkeypatch):
+    monkeypatch.setattr(service, "fetch", AsyncMock(side_effect=service.HistoryChanged("History changed")))
+    url = launch(workspace).json()["url"]
+    assert workspace.get(url + "api/history?pane=%252").status_code == 409
+
+
 @pytest.mark.parametrize("payload", ['{"type":"close_pane"}', '{"type":"link_join"}', '{"type":"resize_pane"}', '[]', '{"type":"input","text":"' + 'x'*65536 + '"}'])
 def test_ws_message_allowlist(payload):
     with pytest.raises(ValueError):
         routes._validate_frame(payload)
 
 
-def test_ws_resize_frame_is_forwarded():
-    frame = routes._validate_frame('{"type":"resize","pane":"%2","cols":180,"rows":48}')
-    assert frame["type"] == "resize" and frame["cols"] == 180
+@pytest.mark.parametrize("payload", [
+    '{"type":"resize","pane":"%2","cols":180,"rows":48,"auto":true,"resize_seq":1}',
+    '{"type":"resize","pane":"%2","release":true,"resize_seq":2}',
+    '{"type":"resize","pane":"%2","auto":true,"resize_seq":3}',
+    '{"type":"resize","pane":"%2","cols":180,"rows":48,"takeover":true}',
+])
+def test_ws_resize_frame_is_forwarded(payload):
+    frame = routes._validate_frame(payload)
+    assert frame["type"] == "resize" and frame["pane"] == "%2"
 
 
 def test_sidecar_endpoint_rejects_arbitrary_hosts(monkeypatch):

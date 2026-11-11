@@ -18,6 +18,7 @@ import pytest
 
 from cli_agent_orchestrator.api.main import app
 from cli_agent_orchestrator.security import auth
+from cli_agent_orchestrator.api.terminal_workspace import attachment_write_access
 
 # Mutating HTTP methods that must be scope-gated when present on a route.
 _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -35,6 +36,22 @@ _EXEMPT = {
     ("POST", "/agents/profiles/templates/preview"),
     ("POST", "/agents/profiles/validate"),
 }
+
+
+# Only these capability-based mutations can use the named viewer dependency.
+# It validates the original credential's WRITE/ADMIN scopes on every call; this
+# is not a blanket exemption for /terminal or a name-based marker.
+_CAPABILITY_WRITES = {
+    '/terminal/v/{viewer_id}/attachments': {'POST'},
+    '/terminal/v/{viewer_id}/attachments/{attachment_id}/confirm': {'POST'},
+    '/terminal/v/{viewer_id}/attachments/{attachment_id}': {'DELETE'},
+}
+
+
+def _has_capability_write_dependency(route, methods):
+    if _CAPABILITY_WRITES.get(route.path) != methods:
+        return False
+    return any(dep.call is attachment_write_access for dep in route.dependant.dependencies)
 
 
 def _has_scope_dependency(route) -> bool:
@@ -60,13 +77,19 @@ def _mutating_routes():
         yield route, mutating
 
 
+def test_capability_write_allowlist_has_no_stale_routes():
+    present = {route.path for route, methods in _mutating_routes()
+               if _has_capability_write_dependency(route, methods)}
+    assert present == set(_CAPABILITY_WRITES)
+
+
 def test_every_mutating_route_is_scope_gated():
     """No mutating route may be missing a scope dependency (regression guard)."""
     missing = []
     for route, mutating in _mutating_routes():
         if any((m, route.path) in _EXEMPT for m in mutating):
             continue
-        if not _has_scope_dependency(route):
+        if not _has_scope_dependency(route) and not _has_capability_write_dependency(route, mutating):
             missing.append(f"{sorted(mutating)} {route.path}")
     assert not missing, "mutating routes missing a require_any_scope dependency: " + ", ".join(
         missing

@@ -1,4 +1,5 @@
-import { useEffect, useState, Suspense } from 'react'
+import { useCallback, useEffect, useState, Suspense } from 'react'
+import { readTerminalLink, stripTerminalLink } from './terminalLink'
 import { api } from './api'
 import { useStore } from './store'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -76,7 +77,10 @@ function Snackbar() {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<TabKey>('home')
+  const [terminalLink, setTerminalLink] = useState(readTerminalLink)
+  const [tab, setTab] = useState<TabKey>(() => terminalLink ? 'agents' : 'home')
+  const consumeTerminalLink = useCallback(() => setTerminalLink(null), [])
+  useEffect(() => { if (terminalLink) stripTerminalLink() }, [])
 
   // The ONLY way any surface changes tabs. Refuses while an in-flight
   // interaction (an authoring modal's save) holds the navigation lock:
@@ -87,6 +91,7 @@ export default function App() {
   // stale value.
   const requestTabChange = (t: TabKey) => {
     if (useStore.getState().navLockCount > 0) return
+    if (t !== 'agents') consumeTerminalLink()
     setTab(t)
   }
   // Default false (fail-closed): a dead backend hides the tab rather than showing a broken panel
@@ -201,7 +206,7 @@ export default function App() {
           <Suspense fallback={<div className="text-gray-500 text-sm py-12 text-center">Loading...</div>}>
             {tab === 'home' && <DashboardHome onNavigate={(t) => requestTabChange(t as TabKey)} />}
             {tab === 'profiles' && <ProfilesPanel />}
-            {tab === 'agents' && <AgentPanel />}
+            {tab === 'agents' && <AgentPanel terminalLink={terminalLink} onTerminalLinkConsumed={consumeTerminalLink} />}
             {tab === 'flows' && <FlowsPanel />}
             {tab === 'settings' && <SettingsPanel />}
             {tab === 'memory' && <MemoryPanel />}

@@ -9,6 +9,7 @@ import { CustomSelect, SelectOption } from './CustomSelect'
 import { TerminalMeta } from '../api'
 import { StatusBadge } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
+import type { TerminalLink } from '../terminalLink'
 
 export const FALLBACK_PROVIDERS = ['kiro_cli', 'claude_code', 'q_cli', 'codex', 'gemini_cli', 'hermes', 'kimi_cli', 'copilot_cli', 'opencode_cli', 'cursor_cli', 'grok_cli']
 
@@ -20,7 +21,10 @@ const SOURCE_LABELS: Record<string, string> = {
   'opencode_cli': 'OpenCode',
 }
 
-export function AgentPanel() {
+export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
+  terminalLink?: TerminalLink | null
+  onTerminalLinkConsumed?: () => void
+} = {}) {
   const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, deleteSession, terminalStatuses, setTerminalStatus } = useStore()
   const [monitoring, setMonitoring] = useState<Record<string, { reason: string; observed_status?: string } | null>>({})
   const [provider, setProvider] = useState('kiro_cli')
@@ -285,9 +289,44 @@ export function AgentPanel() {
     setSwitching(false)
   }
 
+  const [terminalLinkError, setTerminalLinkError] = useState<string | null>(null)
+  const linkGeneration = useRef(0)
+  const cancelTerminalLink = () => {
+    linkGeneration.current++
+    onTerminalLinkConsumed?.()
+  }
   const openTerminal = (terminalId: string, provider?: string, agentProfile?: string | null) => {
+    cancelTerminalLink()
     setLiveTerminal({ id: terminalId, provider, agentProfile })
   }
+
+  useEffect(() => {
+    if (!terminalLink) return
+    const generation = ++linkGeneration.current
+    const current = () => generation === linkGeneration.current
+    setTerminalLinkError(null)
+    if (terminalLink.error) {
+      setTerminalLinkError(terminalLink.error)
+      onTerminalLinkConsumed?.()
+      return
+    }
+    const { session, terminalId } = terminalLink.request!
+    api.getSession(session).then(async detail => {
+      if (!current()) return
+      const terminal = detail.terminals.find(t => t.id === terminalId && t.tmux_session === session)
+      if (!terminal) throw new Error('This terminal is no longer in the requested session.')
+      await selectSession(session)
+      if (!current()) return
+      // Reuse exactly the same viewer as the Open Terminal button. Consume
+      // before opening, so refreshes/close never re-run this navigation request.
+      openTerminal(terminal.id, terminal.provider, terminal.agent_profile)
+    }).catch(() => {
+      if (!current()) return
+      setTerminalLinkError('Cannot open the requested terminal. It may be unavailable or you may need to sign in. Choose an agent below.')
+      onTerminalLinkConsumed?.()
+    })
+    return () => { if (current()) linkGeneration.current++ }
+  }, [terminalLink, onTerminalLinkConsumed, selectSession])
 
   // Fetch working directories for terminals in session detail
   useEffect(() => {
@@ -327,6 +366,12 @@ export function AgentPanel() {
 
   return (
     <div className="space-y-6">
+      {terminalLink && !terminalLinkError && (
+        <div role="status" className="flex items-center gap-3 text-sm text-gray-300">
+          Opening terminal… <button type="button" onClick={cancelTerminalLink}>Cancel</button>
+        </div>
+      )}
+      {terminalLinkError && <div role="alert" className="text-sm text-red-300">{terminalLinkError}</div>}
       {/* Sessions List */}
       <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-5">
         <div className="flex items-center justify-between mb-1">
@@ -368,7 +413,7 @@ export function AgentPanel() {
                 className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${
                   activeSession === s.id ? 'bg-emerald-900/30 border border-emerald-700/50' : 'bg-gray-900/50 border border-gray-700/30 hover:bg-gray-800/80'
                 }`}
-                onClick={() => selectSession(activeSession === s.id ? null : s.id)}
+                onClick={() => { cancelTerminalLink(); selectSession(activeSession === s.id ? null : s.id) }}
               >
                 <div className="flex items-center gap-3">
                   <Bot size={16} className="text-emerald-400" />

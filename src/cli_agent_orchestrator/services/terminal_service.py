@@ -4135,6 +4135,33 @@ def exit_terminal_cli(terminal_id: str) -> None:
         send_input(terminal_id, exit_command)
 
 
+def get_screen(terminal_id: str, ansi: bool = True) -> dict:
+    """Get the currently rendered viewport of a terminal.
+
+    ``capture-pane -S 0`` (``visible_only``) returns the actual rendered
+    screen — SGR colour escapes retained when ``ansi=True``, plain text when
+    ``ansi=False``. The fleet panel polls this for its live wall/console;
+    unlike ``get_output``'s rolling FIFO buffer, the viewport never contains
+    the agent TUI's protocol-init burst (private modes, kitty keyboard,
+    charset), only what is actually on screen.
+    """
+    _SCREEN_MAX_BYTES = 512 << 10  # matches the sidecar history endpoint cap
+
+    metadata = get_terminal_metadata(terminal_id)
+    if not metadata:
+        raise ValueError(f"Terminal '{terminal_id}' not found")
+
+    screen = get_backend().get_history(
+        metadata["tmux_session"],
+        metadata["tmux_window"],
+        strip_escapes=not ansi,
+        visible_only=True,
+    )
+    if len(screen) > _SCREEN_MAX_BYTES:
+        screen = screen[-_SCREEN_MAX_BYTES:]
+    return {"screen": screen, "ansi": ansi}
+
+
 def get_output(terminal_id: str, mode: OutputMode = OutputMode.FULL) -> str:
     """Get terminal output.
 

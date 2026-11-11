@@ -267,6 +267,9 @@ const THEME_COLOR_VARS = {
 };
 
 function applyTheme() {
+  // The embedded terminal owns its generated theme. Old runtime config must
+  // not write inline colors over the terminal stylesheet after a UI update.
+  if (window.__CAO_WORKSPACE__) return;
   const root = document.documentElement;
   const colors = cfgGet('theme.colors', null);
   if (colors && typeof colors === 'object') {
@@ -497,12 +500,19 @@ window.__cfgTest = { cfgGet, buildQuickBar, applySlashPalette };
 // 6. Helpers
 // ========================================================================
 
+function focusMessageInput() {
+  // Async ACK/timeout/selection handlers must not steal focus into a hidden
+  // composer while Direct keys owns typing. Draft/ACK state stays mounted.
+  if (window.__CAO_WORKSPACE__ && document.getElementById('app')?.classList.contains('cao-direct-active')) return;
+  inputEl.focus();
+}
+
 window.sendSkillOrAction = function(cmdStr) {
   if (!window.tmuxWs || !window.tmuxWs.isConnected() || !S.focusedPane) return;
   if (window.linkSendBlocked && window.linkSendBlocked()) return; // input follow-lock (spec §3 Slice 2)
   if (cmdStr.endsWith(' ')) {
     inputEl.value = cmdStr;
-    inputEl.focus();
+    focusMessageInput();
   } else {
     window.tmuxWs.send({ type:'input', pane:S.focusedPane, text:cmdStr });
     if (S.paneEls[S.focusedPane]) S.paneEls[S.focusedPane].resetScroll();
@@ -534,7 +544,7 @@ window.handleInputAck = function(nonce, ok, message) {
   } else {
     window.flashInputError(message);
   }
-  inputEl.focus();
+  focusMessageInput();
 };
 
 window.sendInput = function() {
@@ -558,7 +568,7 @@ window.sendInput = function() {
   const timer = setTimeout(() => {
     if (window._inputPending && window._inputPending.nonce === nonce) {
       window._inputPending = null; _setInputSending(false);
-      window.flashInputError('Send timed out'); inputEl.focus();
+      window.flashInputError('Send timed out'); focusMessageInput();
     }
   }, cfgGet('input.sendAckTimeoutMs', 5000));
   window._inputPending = { nonce, text, pane, timer };
@@ -652,7 +662,7 @@ fileInput.addEventListener('change', async () => {
     const end = inputEl.selectionEnd || start;
     inputEl.value = inputEl.value.slice(0, start) + insert + inputEl.value.slice(end);
     inputEl.selectionStart = inputEl.selectionEnd = start + insert.length;
-    inputEl.focus();
+    focusMessageInput();
   }
   if (errors.length) {
     window.flashInputError(errors.join('; '));
@@ -1017,7 +1027,9 @@ function buildPaneEl(p) {
   jump.textContent = '⬇'; // ⬇ back to live
   jump.title = 'back to live';
   jump.hidden = true;
+  const screenController = window.__CAO_WORKSPACE__ && window.createCaoScreen?.(term, p.id, jump);
   function jumpToLive() {
+    if (screenController) { screenController.live(); return; }
     scrolledByUser = false;
     setTerminalScroll(term, term.scrollHeight);
     // Also leave history mode when already at the bottom (no native event).
@@ -1073,6 +1085,7 @@ function buildPaneEl(p) {
   }
 
   term.addEventListener('scroll', () => {
+    if (screenController) return; // v2 distinguishes gesture intent from layout clamps
     const dist = term.scrollHeight - term.scrollTop - term.clientHeight;
     // A scroll WE caused (follow snap, history anchor, rebuild anchor) must not
     // re-evaluate the reader flag: after a content-shrinking repaint the clamp
@@ -1126,22 +1139,40 @@ function buildPaneEl(p) {
   // TUI click passthrough (slice 2): a TAP on a mouse-mode pane injects a left
   // press+release at that cell (yazi select, lazygit panel, htop row). Pointer
   // events fire reliably on iOS; a tap is short + still (drag/scroll is left for
-  // slice 3). Focus still happens via box's click so the keyboard routes here.
-  let downXY = null, downT = 0;
+  // slice 3). The same qualified user tap can reopen the Direct keys keyboard
+  // on plain shells too; never synthesize terminal input just to focus it.
+  let downXY = null, downT = 0, typingTap = 0;
   term.addEventListener('pointerdown', (e) => {
-    // Record every down (even on a non-mouse pane) so a mouse_mode flip between
-    // down and up can't strand the gesture; the inject decision is at pointerup.
-    downXY = { x: e.clientX, y: e.clientY }; downT = e.timeStamp;
+    typingTap = 0;
+    if (e.isPrimary === false || e.button !== 0) { downXY = null; return; }
+    downXY = { x: e.clientX, y: e.clientY, pointerId: e.pointerId }; downT = e.timeStamp;
   });
+  term.addEventListener('pointermove', (e) => {
+    if (downXY && !isTapGesture(e.clientX - downXY.x, e.clientY - downXY.y, e.timeStamp - downT)) downXY = null;
+  });
+  term.addEventListener('pointercancel', () => { downXY = null; typingTap = 0; });
   term.addEventListener('pointerup', (e) => {
+    const down = downXY; downXY = null;
+    if (!down || e.pointerId !== down.pointerId || e.button !== 0 || e.isPrimary === false) return;
+    if (!isTapGesture(e.clientX - down.x, e.clientY - down.y, e.timeStamp - downT)) return;
+    if (window.getSelection()?.toString()) return; // preserve native text selection
+    const control = e.target instanceof Element && e.target.closest('button, a, input, textarea, [contenteditable="true"]');
+    if (control) return;
+    typingTap = e.timeStamp + 750;
     const info = S.paneInfo[p.id];
-    if (!info || !info.mouse_mode || !downXY) return;
-    const tap = isTapGesture(e.clientX - downXY.x, e.clientY - downXY.y, e.timeStamp - downT);
-    downXY = null;
-    if (!tap) return; // a drag/scroll/long-press — not a click (slice 3)
+    if (!info?.mouse_mode) return;
     const { col, row } = eventCell(term, info, e.clientX, e.clientY);
     window.tmuxWs?.send({ type: 'mouse', pane: p.id, mbutton: 'left', mphase: 'press', mx: col, my: row });
     window.tmuxWs?.send({ type: 'mouse', pane: p.id, mbutton: 'left', mphase: 'release', mx: col, my: row });
+  });
+
+  term.addEventListener('click', (e) => {
+    const expires = typingTap; typingTap = 0;
+    if (!expires || e.timeStamp > expires || window.getSelection()?.toString()) return;
+    // Focus on the compatibility click, after pointerup's default focus changes.
+    // Still a synchronous user gesture (required by native phone keyboards).
+    setFocus(p.id);
+    window.caoDirectTapToType?.(p.id);
   });
 
   // TUI touch-swipe → wheel: on a phone the `wheel` event never fires; a finger
@@ -1151,12 +1182,14 @@ function buildPaneEl(p) {
   // passive:false preventDefault own the gesture so the page doesn't scroll.
   let swipeY = null;
   term.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) downXY = null;
     const info = S.paneInfo[p.id];
     const tui = !!(info && info.mouse_mode) && e.touches.length === 1;
     term.style.touchAction = tui ? 'none' : '';
     swipeY = tui ? e.touches[0].clientY : null;
   }, { passive: true });
   term.addEventListener('touchmove', (e) => {
+    if (e.touches.length !== 1) { downXY = null; swipeY = null; return; }
     if (swipeY == null) return; // not a TUI-pane swipe → leave native scroll
     const info = S.paneInfo[p.id];
     if (!info || !info.mouse_mode) { swipeY = null; return; }
@@ -1178,8 +1211,9 @@ function buildPaneEl(p) {
   box.addEventListener('click', () => setFocus(p.id));
 
   S.paneEls[p.id] = {
-    box, terminal: term, scrolledByUser: () => scrolledByUser, jumpToLive,
-    resetScroll: () => { scrolledByUser = false; histLocked = false; delete term.dataset.caoScrollProg; },
+    box, terminal: term, screenController, destroy: () => screenController?.destroy(),
+    scrolledByUser: () => screenController ? screenController.reading : scrolledByUser, jumpToLive,
+    resetScroll: () => { if (screenController) { screenController.live(); return; } scrolledByUser = false; histLocked = false; delete term.dataset.caoScrollProg; },
     // H1 scroll-lock hooks for ws.onmessage 'output'
     histFrozen: () => histLocked || hist.loading || hist.loaded,
     histStash: (c) => { hist.pending = c; },
@@ -1213,7 +1247,7 @@ function setFocus(paneId) {
       inputEl.style.height = 'auto';
       window.tmuxWs?.send({ type: 'focus', pane: paneId });
       // Initial pane selection is also a switch; don't open a phone keyboard.
-      if (!window.matchMedia('(pointer: coarse)').matches) inputEl.focus();
+      if (!window.matchMedia('(pointer: coarse)').matches) focusMessageInput();
       // Emit pane follow only for real user switches — never re-broadcast a
       // link-driven focus (S.linkApplying), which would echo-loop the party.
       if (!S.linkApplying) window.linkBroadcast?.({ pane: paneId });
@@ -1249,7 +1283,7 @@ function renderPanes(panes) {
   container.querySelectorAll('.skeleton-loading, .welcome').forEach(el => el.remove());
 
   for (const gone of existingIds) {
-    if (!newIds.has(gone)) { S.paneEls[gone].box.remove(); delete S.paneEls[gone]; delete S.paneInfo[gone]; delete S.paneInputs[gone]; }
+    if (!newIds.has(gone)) { S.paneEls[gone].destroy?.(); S.paneEls[gone].box.remove(); delete S.paneEls[gone]; delete S.paneInfo[gone]; delete S.paneInputs[gone]; }
   }
   for (const p of panes) {
     if (!S.paneEls[p.id]) {
@@ -1292,6 +1326,10 @@ function renderPanes(panes) {
   }
 
   window.linkOnPanesFrame?.(); // clears S.linkApplying once a link-driven switch_window lands
+  if (window.__CAO_WORKSPACE__) {
+    document.getElementById('app').classList.toggle('cao-single-pane', panes.length === 1);
+    window.dispatchEvent(new Event('cao:panes'));
+  }
 }
 
 // ========================================================================
@@ -1464,6 +1502,7 @@ function isTapGesture(dx, dy, dt) {
 // Probe width + line-rect height is the only clean pair. Cached per element
 // (font is fixed per session) ONLY when both came from real measurements.
 function measureCell(term) {
+  if (window.caoCell) return window.caoCell.measure(term);
   if (term.__cell) return term.__cell;
   const cs = getComputedStyle(term);
   const probe = document.createElement('span');
@@ -1502,7 +1541,7 @@ function lineDiffUpdate(terminal, newContent) {
   // tmux captures the whole screen, including unused rows below the prompt.
   // A tall pane cleared from a shorter browser otherwise follows that blank
   // tail and hides the prompt. Keep internal/ANSI-painted rows untouched.
-  if (window.__CAO_WORKSPACE__) newContent = newContent.replace(/(?:\n[ \t]*)+$/, '');
+  if (window.__CAO_WORKSPACE__ && terminal.dataset.caoFullGrid !== 'true') newContent = newContent.replace(/(?:\n[ \t]*)+$/, '');
   const newHtml = ansiToHtml(newContent);
   const newLines = newHtml.split('\n');
   const children = terminal.children;
@@ -1549,12 +1588,14 @@ function lineDiffUpdate(terminal, newContent) {
   preserveReadingPosition();
 }
 
+window.caoLineDiffUpdate = lineDiffUpdate;
+
 // ========================================================================
 // 12. WebSocket with Exponential Backoff Reconnection
 // ========================================================================
 
 window.tmuxWs = (function() {
-  let ws = null;
+  let ws = null, connectionGeneration = 0;
   const INITIAL_DELAY = cfgGet('reconnect.initialDelayMs', 1000);
   const MAX_DELAY = cfgGet('reconnect.maxDelayMs', 30000);
   let reconnectDelay = INITIAL_DELAY;
@@ -1569,7 +1610,7 @@ window.tmuxWs = (function() {
 
   function send(data) {
     if (window.__CAO_WORKSPACE__) {
-      const permitted = new Set(['input','key','mouse','focus','fit','resize','fit_enable','fit_disable','switch_window','refresh_panes','autocomplete','pong']);
+      const permitted = new Set(['input','paste','key','mouse','focus','fit','resize','fit_enable','fit_disable','switch_window','refresh_panes','autocomplete','pong']);
       if (!permitted.has(data.type)) { window.flashInputError?.('Manage agents from CAO'); return; }
       if (['fit','fit_enable','fit_disable'].includes(data.type)) return; // layouts are shared
     }
@@ -1578,8 +1619,9 @@ window.tmuxWs = (function() {
 
   function setStatus(state, text) {
     statusEl.className = state;
+    if (window.__CAO_WORKSPACE__) window.dispatchEvent(new CustomEvent('cao:connection', { detail: state }));
     if (state === 'connected') {
-      statusEl.innerHTML = `<span class="dot"></span> ${text}`;
+      statusEl.innerHTML = `<span class="dot"></span> ${window.__CAO_WORKSPACE__ ? 'Connected' : text}`;
       // Keep the custom dropdown label in sync — deck-rail/deck-agent switch
       // sessions by writing the hidden <select> and reconnecting, ending here.
       syncSessionLabel();
@@ -1587,7 +1629,7 @@ window.tmuxWs = (function() {
       sendBtn.disabled = false;
       uploadBtn.disabled = false;
       // Do not summon the phone keyboard on initial connect/reconnect.
-      if (!window.matchMedia('(pointer: coarse)').matches) inputEl.focus();
+      if (!window.matchMedia('(pointer: coarse)').matches) focusMessageInput();
       reconnectDelay = INITIAL_DELAY;
       // Remove reconnect overlay if present
       const overlay = document.getElementById('reconnect-overlay');
@@ -1639,6 +1681,7 @@ window.tmuxWs = (function() {
     const isReconnect = (S.currentSession === session);
 
     if (ws) { ws.close(); ws = null; }
+    connectionGeneration++;
     S.currentSession = session;
     S.paneInputs = savedInputs;
     S.currentTool = null;
@@ -1648,6 +1691,7 @@ window.tmuxWs = (function() {
     if (!isReconnect) {
       // Fresh connection: full reset
       S.focusedPane = '';
+      Object.values(S.paneEls).forEach(pe => pe.destroy?.());
       S.paneEls = {};
       S.paneInfo = {};
       S.paneOrder = [];
@@ -1675,6 +1719,13 @@ window.tmuxWs = (function() {
       const data = JSON.parse(e.data);
       if (data.type === 'panes') {
         renderPanes(data.panes);
+      } else if (data.type === 'screens' && window.__CAO_WORKSPACE__ && data.version === 2) {
+        for (const [paneId, snapshot] of Object.entries(data.panes)) {
+          const pe = S.paneEls[paneId];
+          if (!pe) continue;
+          pe.screenController?.apply(snapshot);
+          refreshPaneBadge(paneId);
+        }
       } else if (data.type === 'output') {
         for (const [paneId, content] of Object.entries(data.panes)) {
           const pe = S.paneEls[paneId];
@@ -1700,9 +1751,13 @@ window.tmuxWs = (function() {
         renderWindowTabs(data.windows, data.active);
       } else if (data.type === 'metrics') {
         window.renderMetrics?.(data.metrics);
+      } else if (data.type === 'sizing' && window.__CAO_WORKSPACE__) {
+        window.dispatchEvent(new CustomEvent('cao:sizing', { detail: data }));
       } else if (data.type === 'input_ok') {
+        window.dispatchEvent(new CustomEvent('cao:input-ack', {detail:{nonce:data.nonce,ok:true}}));
         window.handleInputAck?.(data.nonce, true);
       } else if (data.type === 'input_error') {
+        window.dispatchEvent(new CustomEvent('cao:input-ack', {detail:{nonce:data.nonce,ok:false,message:data.message}}));
         window.handleInputAck?.(data.nonce, false, data.message);
       } else if (data.type === 'autocomplete') {
         window.handleAutocomplete?.(data.results);
@@ -1768,6 +1823,7 @@ window.tmuxWs = (function() {
     container.classList.remove('has-maximized');
     document.getElementById('app').classList.remove('fullscreen-mode');
     container.innerHTML = '<div class="welcome">select a tmux session to connect</div>';
+    Object.values(S.paneEls).forEach(pe => pe.destroy?.());
     S.paneEls = {};
     S.paneInfo = {};
     S.paneOrder = [];
@@ -1794,7 +1850,7 @@ window.tmuxWs = (function() {
     setTimeout(zombieCheck, 20000);
   });
 
-  return { connect, disconnect, send, isConnected };
+  return { connect, disconnect, send, isConnected, connectionId: () => connectionGeneration };
 })();
 
 // ========================================================================

@@ -2,19 +2,19 @@
    Edit design-tokens/tokens.json, then run `node design-tokens/gen.mjs`.
    CI (`gen.mjs --check`) fails on drift. */
 
-:root {
-  --workspace-bg: #181E28;
-  --workspace-surface: #202936;
-  --workspace-surface2: #263242;
-  --workspace-border: #2B3746;
-  --workspace-text: #DCE4EE;
-  --workspace-dim: #98A8BC;
-  --workspace-accent: #87B6FA;
-  --workspace-accent-h: #AECDFB;
-  --workspace-green: #86D3AE;
-  --workspace-red: #F59B9B;
-  --workspace-yellow: #E8C784;
-  --workspace-cyan: #8DCED5;
+.terminal-workspace, .terminal-fallback-note {
+  --workspace-bg: #191B1C;
+  --workspace-surface: #222526;
+  --workspace-surface2: #2B2F30;
+  --workspace-border: #3A4041;
+  --workspace-text: #E6E4DF;
+  --workspace-dim: #A7AAA5;
+  --workspace-accent: #A9C1B0;
+  --workspace-accent-h: #C3D6C9;
+  --workspace-green: #A9C1B0;
+  --workspace-red: #E3A6A0;
+  --workspace-yellow: #D5C298;
+  --workspace-cyan: #A4C5C5;
   --workspace-font-size: 16px;
   --workspace-font-size-desktop: 16px;
   --workspace-font-size-mobile: 14px;

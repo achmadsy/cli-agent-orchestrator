@@ -128,24 +128,133 @@
   }, { passive: true });
 
   // ── Virtual keyboard height tracking ──
+  // Events settle animations; focused touch editing also needs a watchdog:
+  // a native keyboard may be dismissed silently long after those events stop.
+  // Keep semantic occlusion separate from the remaining local iframe inset.
 
   if (window.visualViewport) {
-    const updateKeyboard = () => {
-      // Zoom is not a keyboard resize. Inside a same-origin CAO iframe the
-      // top-level visual viewport owns the soft keyboard occlusion.
-      const host = window.__CAO_WORKSPACE__ ? window.parent : window;
-      const viewport = host.visualViewport || window.visualViewport;
-      const editing = document.activeElement?.tagName === 'TEXTAREA';
-      const kbH = editing && viewport.scale === 1 ? Math.max(0, host.innerHeight - viewport.height - viewport.offsetTop) : 0;
-      document.documentElement.style.setProperty('--kb-height', kbH + 'px');
+    const workspace = !!window.__CAO_WORKSPACE__;
+    const host = workspace ? window.parent : window;
+    const viewport = host.visualViewport || window.visualViewport;
+    const detach = [];
+    // A child viewport can report zero safe-area env values. Read the physical
+    // host once per sample and subtract clearance its iframe already provides.
+    const makeSafeProbe = doc => {
+      const probe = doc.createElement('div');
+      probe.dataset.caoSafeProbe = '';
+      probe.setAttribute('aria-hidden', 'true');
+      probe.style.cssText = 'all:initial;position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none;padding-right:env(safe-area-inset-right,0px);padding-bottom:env(safe-area-inset-bottom,0px);padding-left:env(safe-area-inset-left,0px)';
+      doc.documentElement.appendChild(probe);
+      return probe;
     };
-    window.visualViewport.addEventListener('resize', updateKeyboard);
-    if (window.__CAO_WORKSPACE__ && window.parent !== window) {
-      const viewport = window.parent.visualViewport;
-      viewport?.addEventListener('resize', updateKeyboard);
-      window.addEventListener('pagehide', () => viewport?.removeEventListener('resize', updateKeyboard), { once: true });
+    const safeProbe = workspace ? makeSafeProbe(host.document) : null;
+    const localSafeProbe = workspace && host !== window ? makeSafeProbe(document) : safeProbe;
+    let disposed = false, timer = null, lastKey = '', settleUntil = 0;
+    // Some mobile browsers shrink BOTH layout and visual viewports for the
+    // keyboard. Preserve a same-width pre-edit baseline; overlap alone is zero.
+    let layoutBase = { width: host.innerWidth, height: host.innerHeight };
+    const visible = () => !document.hidden && !host.document.hidden;
+    const editable = () => !!document.activeElement?.matches('textarea, input:not([type="checkbox"]), [contenteditable="true"]');
+    const touch = () => matchMedia('(pointer: coarse)').matches;
+    const queue = delay => {
+      clearTimeout(timer);
+      timer = setTimeout(sample, delay);
+    };
+    function sample() {
+      clearTimeout(timer); timer = null;
+      if (disposed || !visible()) return;
+      const editing = editable(), scale = viewport.scale;
+      // VisualViewport is top-level even when the focused editable is inside
+      // the iframe. The semantic occlusion pauses real tmux sizing. The local
+      // CSS inset is only the part not ALREADY removed by the iframe's layout.
+      const overlap = host.innerHeight - viewport.height - viewport.offsetTop;
+      if (scale === 1) {
+        if (Math.abs(layoutBase.width - host.innerWidth) > 2 || !editing || !touch()) {
+          layoutBase = { width: host.innerWidth, height: host.innerHeight };
+        } else layoutBase.height = Math.max(layoutBase.height, host.innerHeight);
+      }
+      // A substantial same-width touch/editing shrink is semantic keyboard
+      // occlusion, even when the layout already removed ALL of that space.
+      // Small toolbar changes are not keyboards; rotation rebases above.
+      const layoutDrop = layoutBase.height - host.innerHeight;
+      const contentKb = editing && touch() && scale === 1 && layoutDrop > Math.max(120, layoutBase.height * 0.18)
+        ? layoutDrop : 0;
+      const occlusion = Math.max(overlap, contentKb);
+      const kb = editing && scale === 1 && occlusion > 25
+        ? Math.min(occlusion, Math.max(layoutBase.height, host.innerHeight) * 0.8) : 0;
+      const rect = workspace && host !== window ? window.frameElement?.getBoundingClientRect() : null;
+      const bottom = rect?.height > 0 ? rect.bottom : host.innerHeight;
+      // Presentation is an intersection, NOT a keyboard-height guess. Layout
+      // and visual metrics can settle before the fixed iframe does, including
+      // residual clipping below the semantic keyboard threshold. Never apply
+      // pinch zoom as a keyboard inset or subtract already-removed space twice.
+      const remaining = Math.max(0, bottom - viewport.height - viewport.offsetTop);
+      const inset = workspace && scale === 1
+        ? Math.min(rect?.height || host.innerHeight, viewport.height > 0 ? remaining : Math.min(kb, remaining))
+        : !workspace && kb && overlap > 25 ? Math.min(kb, remaining) : 0;
+      const safe = [0, 0, 0]; // remaining bottom, left, right content clearance
+      if (safeProbe && scale === 1) {
+        const style = host.getComputedStyle(safeProbe);
+        const local = localSafeProbe === safeProbe ? style : getComputedStyle(localSafeProbe);
+        const physicalHeight = Math.max(layoutBase.height, host.innerHeight, bottom);
+        const physicalWidth = Math.max(host.innerWidth, rect?.right || 0);
+        const rawBottom = Math.max(parseFloat(style.paddingBottom) || 0, parseFloat(local.paddingBottom) || 0);
+        const rawLeft = Math.max(parseFloat(style.paddingLeft) || 0, parseFloat(local.paddingLeft) || 0);
+        const rawRight = Math.max(parseFloat(style.paddingRight) || 0, parseFloat(local.paddingRight) || 0);
+        safe[0] = Math.min(rawBottom, Math.max(0, bottom - inset - (physicalHeight - rawBottom)));
+        safe[1] = Math.min(rawLeft, Math.max(0, rawLeft - (rect?.left || 0)));
+        safe[2] = Math.min(rawRight, Math.max(0, (rect?.right ?? host.innerWidth) - (physicalWidth - rawRight)));
+        for (const [i, edge] of ['bottom', 'left', 'right'].entries()) {
+          document.documentElement.style.setProperty('--cao-safe-' + edge, safe[i] + 'px');
+        }
+      }
+      document.documentElement.style.setProperty('--kb-height', inset + 'px');
+      const geometry = [viewport.width, viewport.height, viewport.offsetTop, viewport.offsetLeft,
+        host.innerWidth, host.innerHeight, rect?.width, rect?.height, rect?.left, rect?.top];
+      const key = JSON.stringify([kb, inset, scale, ...safe, ...geometry.map(n => Math.round((n || 0) * 2) / 2)]);
+      if (key !== lastKey) {
+        lastKey = key;
+        settleUntil = Date.now() + 1000;
+        if (workspace) {
+          // Geometry can change at kb=0 (toolbar, iframe or width restoration).
+          // One source/event, no second parent offset or speculative focus.
+          window.__caoViewport = { keyboardHeight: kb, scale };
+          window.dispatchEvent(new Event('cao:viewport'));
+        }
+      }
+      // A keyboard may close much later with no resize/blur at all. Watch only
+      // the visible editing/occlusion lifecycle, not every page forever. One
+      // cancellable timer replaces the previous branching settle timers.
+      if (Date.now() < settleUntil) queue(120);
+      else if (touch() && host.document.hasFocus() && (editing || kb > 0)) queue(400);
     }
-    document.addEventListener('focusin', updateKeyboard);
-    document.addEventListener('focusout', () => setTimeout(updateKeyboard, 0));
+    const trigger = () => {
+      if (disposed) return;
+      settleUntil = Date.now() + 1000;
+      sample();
+    };
+    const on = (obj, name, fn = trigger) => {
+      obj.addEventListener(name, fn);
+      detach.push(() => obj.removeEventListener(name, fn));
+    };
+    for (const v of new Set([window.visualViewport, viewport])) {
+      on(v, 'resize'); on(v, 'scroll');
+    }
+    for (const win of new Set([window, host])) {
+      on(win, 'resize'); on(win, 'orientationchange'); on(win, 'focus');
+      // Focusout/blur activeElement is settled only after event dispatch.
+      on(win, 'blur', () => { clearTimeout(timer); if (!disposed) timer = setTimeout(trigger, 0); });
+    }
+    on(document, 'focusin');
+    on(document, 'focusout', () => { clearTimeout(timer); if (!disposed) timer = setTimeout(trigger, 0); });
+    for (const doc of new Set([document, host.document])) on(doc, 'visibilitychange');
+    const destroy = () => {
+      disposed = true; clearTimeout(timer); timer = null;
+      safeProbe?.remove();
+      if (localSafeProbe !== safeProbe) localSafeProbe?.remove();
+      detach.forEach(remove => remove());
+    };
+    on(window, 'pagehide', destroy);
+    sample();
   }
 })();

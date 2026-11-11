@@ -46,8 +46,8 @@ async function boot(outcome) {
 describe('Workspace asset bootstrap', () => {
   it('loads dependencies in order and announces readiness only after the CAO hooks', async () => {
     const run = await boot(() => 'ok')
-    expect(run.executed.slice(0, 4)).toEqual(['terminal', 'metrics', 'app', 'keys'])
-    expect(run.executed.at(-1)).toBe('cao-workspace')
+    expect(run.executed.slice(0, 6)).toEqual(['terminal', 'cao-cell', 'cao-screen', 'metrics', 'app', 'keys'])
+    expect(run.executed.slice(-3)).toEqual(['cao-workspace', 'cao-clipboard', 'cao-attachments'])
     expect(run.postMessage).toHaveBeenCalledExactlyOnceWith({ type: 'cao:terminal-ready' }, 'http://localhost')
     expect(run.window.__CAO_WORKSPACE_READY__).toBe(true)
   })
