@@ -40,10 +40,30 @@
     if (allowed) { const paste = document.createElement('button'); paste.textContent = 'Paste text'; paste.onclick = () => { sendPaste(text, c, true); dialog.close(); }; dialog.append(paste); }
     dialog.onclose = () => dialog.remove(); document.body.append(dialog); dialog.showModal();
   }
-  document.addEventListener('copy', e => {
+  function selectedText() {
     const selection = getSelection();
-    if (selection?.toString() && document.querySelector('.pane-terminal')?.contains(selection.anchorNode) && e.clipboardData) {
-      e.clipboardData.setData('text/plain', selection.toString()); e.preventDefault();
+    // An explicit selection elsewhere (composer/dialog/page) keeps native copy.
+    if (selection?.toString()) {
+      const node = selection.anchorNode;
+      const term = (node instanceof Element ? node : node?.parentElement)?.closest('.pane-terminal');
+      if (!term?.contains(selection.focusNode)) return null;
+      return window.caoSelection?.read() || { text: selection.toString(), clear() {} };
+    }
+    return window.caoSelection?.read() || null;
+  }
+  async function copySelection() {
+    const selected = selectedText();
+    if (!selected?.text) { showStatus('Select terminal text first.'); return; }
+    try { await navigator.clipboard.writeText(selected.text); selected.clear(); showStatus('Copied.'); }
+    catch (_) { showStatus('Copy unavailable. Use the browser clipboard menu.'); }
+  }
+  window.caoCopySelection = copySelection;
+  document.addEventListener('copy', e => {
+    const target = e.target instanceof Element ? e.target : null;
+    if (target?.closest('dialog, input:not(#cao-direct-funnel), textarea, [contenteditable]')) return;
+    const selected = selectedText();
+    if (selected?.text && e.clipboardData) {
+      e.clipboardData.setData('text/plain', selected.text); e.preventDefault(); selected.clear();
     }
   });
   window.caoPasteText = sendPaste;
@@ -64,8 +84,14 @@
       e.preventDefault(); e.stopImmediatePropagation(); sendPaste(text);
     }
   }, true);
+  const selectArea = document.createElement('button');
+  selectArea.type = 'button'; selectArea.className = 'ek cao-select-area'; selectArea.textContent = 'Select area';
+  selectArea.setAttribute('aria-pressed', 'false'); selectArea.title = 'Copy a rectangle without neighboring panels. Shortcut: Alt+drag';
+  selectArea.onclick = () => window.caoSelection?.setEnabled(!(window.caoSelection.enabled || window.caoSelection.active()));
+  window.addEventListener('cao:selection', () => selectArea.setAttribute('aria-pressed', String(window.caoSelection?.enabled || window.caoSelection?.active())));
+  document.querySelector('.quick-actions').append(selectArea);
   for (const [label, action] of [
-    ['Copy', async () => { const text = getSelection()?.toString(); if (!text) { status.textContent = 'Select terminal text first.'; return; } await navigator.clipboard.writeText(text); status.textContent = 'Copied.'; }],
+    ['Copy', copySelection],
     ['Paste', async () => {
       const c = context(), wasDirect = direct();
       const apply = (text, files = []) => {

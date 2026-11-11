@@ -72,6 +72,16 @@ describe('actual workspace auto-fit controller', () => {
       s.controller.destroy(); s.w.close()
     }
   })
+  it('sends no resize or release on area selection and resumes using fresh dimensions', () => {
+    const s = setup(); s.tick(); s.ack('owned')
+    let selecting = true; s.w.caoSelection = { owns: () => selecting }
+    const count = s.sends.length
+    s.fire('cao:selection'); s.resize(); s.tick(); s.heartbeat(); s.controller.fitHere()
+    expect(s.sends).toHaveLength(count)
+    s.setDims({ cols: 90, rows: 25 }); selecting = false; s.fire('cao:selection'); s.tick()
+    expect(s.sends.at(-1)).toMatchObject({ cols: 90, rows: 25, auto: true })
+    s.controller.destroy(); s.w.close()
+  })
   it('renews claims without replaying geometry and fits after acquiring ownership', () => {
     const s = setup(); s.tick(); s.ack('other_viewer')
     s.heartbeat()

@@ -993,6 +993,7 @@ function buildPaneEl(p) {
   const term = document.createElement('div');
   term.className = 'pane-terminal';
   box.appendChild(term);
+  const areaSelection = window.__CAO_WORKSPACE__ && window.caoSelection?.create(term, p.id);
 
   let scrolledByUser = false; // >60px off bottom — stop auto-following
   let histLocked = false;     // deep in scrollback — freeze DOM updates
@@ -1125,6 +1126,7 @@ function buildPaneEl(p) {
   // through to the native scroll (history). passive:false so preventDefault can
   // suppress the DOM scroll when we inject.
   term.addEventListener('wheel', (e) => {
+    if (window.caoSelection?.owns(term)) return; // selection scroll stays local
     const info = S.paneInfo[p.id];
     if (!info || !info.mouse_mode) return; // plain pane → history scroll
     e.preventDefault();
@@ -1144,7 +1146,7 @@ function buildPaneEl(p) {
   let downXY = null, downT = 0, typingTap = 0;
   term.addEventListener('pointerdown', (e) => {
     typingTap = 0;
-    if (e.isPrimary === false || e.button !== 0) { downXY = null; return; }
+    if (window.caoSelection?.owns(term) || e.isPrimary === false || e.button !== 0) { downXY = null; return; }
     downXY = { x: e.clientX, y: e.clientY, pointerId: e.pointerId }; downT = e.timeStamp;
   });
   term.addEventListener('pointermove', (e) => {
@@ -1155,7 +1157,7 @@ function buildPaneEl(p) {
     const down = downXY; downXY = null;
     if (!down || e.pointerId !== down.pointerId || e.button !== 0 || e.isPrimary === false) return;
     if (!isTapGesture(e.clientX - down.x, e.clientY - down.y, e.timeStamp - downT)) return;
-    if (window.getSelection()?.toString()) return; // preserve native text selection
+    if (window.caoSelection?.owns(term) || window.getSelection()?.toString()) return; // preserve local selection
     const control = e.target instanceof Element && e.target.closest('button, a, input, textarea, [contenteditable="true"]');
     if (control) return;
     typingTap = e.timeStamp + 750;
@@ -1168,7 +1170,7 @@ function buildPaneEl(p) {
 
   term.addEventListener('click', (e) => {
     const expires = typingTap; typingTap = 0;
-    if (!expires || e.timeStamp > expires || window.getSelection()?.toString()) return;
+    if (!expires || e.timeStamp > expires || window.caoSelection?.owns(term) || window.getSelection()?.toString()) return;
     // Focus on the compatibility click, after pointerup's default focus changes.
     // Still a synchronous user gesture (required by native phone keyboards).
     setFocus(p.id);
@@ -1184,13 +1186,13 @@ function buildPaneEl(p) {
   term.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1) downXY = null;
     const info = S.paneInfo[p.id];
-    const tui = !!(info && info.mouse_mode) && e.touches.length === 1;
+    const tui = !window.caoSelection?.owns(term) && !!(info && info.mouse_mode) && e.touches.length === 1;
     term.style.touchAction = tui ? 'none' : '';
     swipeY = tui ? e.touches[0].clientY : null;
   }, { passive: true });
   term.addEventListener('touchmove', (e) => {
     if (e.touches.length !== 1) { downXY = null; swipeY = null; return; }
-    if (swipeY == null) return; // not a TUI-pane swipe → leave native scroll
+    if (swipeY == null || window.caoSelection?.owns(term)) return; // selection/native scroll stays local
     const info = S.paneInfo[p.id];
     if (!info || !info.mouse_mode) { swipeY = null; return; }
     e.preventDefault();
@@ -1211,7 +1213,7 @@ function buildPaneEl(p) {
   box.addEventListener('click', () => setFocus(p.id));
 
   S.paneEls[p.id] = {
-    box, terminal: term, screenController, destroy: () => screenController?.destroy(),
+    box, terminal: term, screenController, destroy: () => { areaSelection?.destroy(); screenController?.destroy(); },
     scrolledByUser: () => screenController ? screenController.reading : scrolledByUser, jumpToLive,
     resetScroll: () => { if (screenController) { screenController.live(); return; } scrolledByUser = false; histLocked = false; delete term.dataset.caoScrollProg; },
     // H1 scroll-lock hooks for ws.onmessage 'output'
@@ -1736,7 +1738,7 @@ window.tmuxWs = (function() {
           if (pe.histFrozen?.()) { pe.histStash?.(content); continue; }
           // Skip update if user is selecting text in this terminal
           const sel = window.getSelection();
-          if (sel && sel.toString() && pe.terminal.contains(sel.anchorNode)) continue;
+          if (window.caoSelection?.active(pe.terminal) || sel && sel.toString() && pe.terminal.contains(sel.anchorNode)) continue;
           lineDiffUpdate(pe.terminal, content);
           refreshPaneBadge(paneId); // stale-title guard reads pane content — re-check per frame
           if (!pe.scrolledByUser()) {

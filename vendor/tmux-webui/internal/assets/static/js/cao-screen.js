@@ -3,7 +3,7 @@
   window.createCaoScreen = (term, pane, jump) => {
     let current = null, reading = false, generation = 0, request = null, frame = 0;
     let history = '', historySnapshot = '', offset = 0, exhausted = false, disposed = false;
-    let touchY = null, touching = false, towardLive = false, returnTimer = null;
+    let touchY = null, touching = false, towardLive = false, returnTimer = null, areaHeld = false;
     const cancelReturn = () => { clearTimeout(returnTimer); returnTimer = null; };
     const listeners = [];
     const listen = (el, name, fn, opts) => { el.addEventListener(name, fn, opts); listeners.push(() => el.removeEventListener(name, fn, opts)); };
@@ -36,6 +36,7 @@
       });
     }
     function live() {
+      if (window.caoSelection?.active(term)) window.caoSelection.clear();
       cancelReturn(); towardLive = false;
       invalidate(); reading = false; history = ''; historySnapshot = ''; offset = 0; exhausted = false;
       jump.hidden = true;
@@ -53,7 +54,7 @@
         if (r.status === 409) { live(); return; }
         if (!r.ok) return;
         const data = await r.json();
-        if (ticket !== generation || disposed || data.boundary !== boundary || current.boundary !== boundary || current.alternate) return;
+        if (ticket !== generation || disposed || window.caoSelection?.owns(term) || data.boundary !== boundary || current.boundary !== boundary || current.alternate) return;
         const content = data.content.replace(/\n$/, '');
         const count = content ? content.split('\n').length : 0;
         if (offset && count <= 1) { exhausted = true; return; }
@@ -67,7 +68,7 @@
       finally { if (ticket === generation && request === controller) request = null; }
     }
     const atBottom = () => term.scrollTop + term.clientHeight >= term.scrollHeight - 2;
-    const selected = () => { const s = getSelection(); return !!s?.toString() && term.contains(s.anchorNode); };
+    const selected = () => { const s = getSelection(); return window.caoSelection?.active(term) || !!s?.toString() && term.contains(s.anchorNode); };
     function settleReturn() {
       cancelReturn();
       if (disposed || touching || !towardLive || !reading || request || selected() || !atBottom()) return;
@@ -79,7 +80,7 @@
       }, 140);
     }
     function intent(delta) {
-      if (!current || !delta || window.tmuxState?.paneInfo[pane]?.mouse_mode) return;
+      if (!current || !delta || window.caoSelection?.owns(term) || window.tmuxState?.paneInfo[pane]?.mouse_mode) return;
       if (delta < 0) {
         cancelReturn(); towardLive = false;
         // A live grid can itself overflow when the keyboard is open. Explicit
@@ -111,6 +112,11 @@
     for (const name of ['cao:viewport', 'cao:terminal-layout', 'cao:font-size']) listen(window, name, anchor);
     listen(window, 'cao:connection', () => { cancelReturn(); towardLive = false; touching = false; touchY = null; invalidate(); current = null; reading = false; history = ''; historySnapshot = ''; offset = 0; exhausted = false; jump.hidden = true; });
     listen(window, 'cao:terminal-reset', () => { cancelReturn(); towardLive = false; touching = false; touchY = null; invalidate(); });
+    listen(window, 'cao:selection', () => {
+      const held = !!window.caoSelection?.owns(term), wasHeld = areaHeld; areaHeld = held;
+      if (held) { cancelReturn(); invalidate(); }
+      else if (wasHeld && current && !reading && !selected()) { draw(current.content); anchor(); }
+    });
     const observer = new ResizeObserver(() => anchor()); observer.observe(term);
     return {
       apply(snapshot) {
@@ -118,6 +124,7 @@
         const transition = !current || snapshot.epoch !== current.epoch || snapshot.cols !== current.cols || snapshot.rows !== current.rows || snapshot.alternate !== current.alternate;
         const boundaryChanged = current && snapshot.boundary !== current.boundary;
         const modeChanged = current && snapshot.alternate !== current.alternate;
+        if (transition && window.caoSelection?.active(term)) window.caoSelection.clear();
         if (transition || boundaryChanged) {
           cancelReturn(); towardLive = false;
           invalidate(); offset = 0; exhausted = false;
@@ -130,7 +137,7 @@
         current = snapshot; term.dataset.caoAlternate = String(snapshot.alternate);
         if (reading) return;
         const sel = getSelection();
-        if (!transition && sel?.toString() && term.contains(sel.anchorNode)) return;
+        if (!transition && (window.caoSelection?.active(term) || sel?.toString() && term.contains(sel.anchorNode))) return;
         draw(snapshot.content); anchor();
       },
       live, resetTarget() { cancelReturn(); towardLive = false; touching = false; touchY = null; invalidate(); reading = false; history = ''; historySnapshot = ''; offset = 0; exhausted = false; jump.hidden = true; }, get snapshot() { return current; }, get reading() { return reading; },

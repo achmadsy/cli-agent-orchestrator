@@ -23,7 +23,7 @@
 
   // ── Gesture state ──
   let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
-  let isPinching = false, initialPinchDist = 0, initialFontSize = 12;
+  let isPinching = false, initialPinchDist = 0, initialFontSize = 12, selectionTouch = false;
   let longPressTimer = null;
   const SWIPE_THRESHOLD = 80;
   const LONG_PRESS_MS = 500;
@@ -38,6 +38,8 @@
   // ── Swipe: switch pane (mobile) or send arrow keys ──
 
   container.addEventListener('touchstart', (e) => {
+    selectionTouch = !!window.caoSelection?.owns();
+    if (selectionTouch) { clearTimeout(longPressTimer); longPressTimer = null; return; }
     if (e.touches.length === 2) {
       // Browser zoom remains available in CAO; explicit A-/A+ changes text.
       if (window.__CAO_WORKSPACE__) return;
@@ -84,6 +86,7 @@
   }, { passive: true });
 
   container.addEventListener('touchend', (e) => {
+    if (selectionTouch || window.caoSelection?.owns()) { selectionTouch = false; clearTimeout(longPressTimer); longPressTimer = null; return; }
     if (longPressTimer) {
       clearTimeout(longPressTimer);
       longPressTimer = null;

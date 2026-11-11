@@ -71,6 +71,11 @@ header { position: relative; padding: 4px 16px; min-height: 48px; background: va
 .cao-paste-dialog button { min-height: 44px; margin: 8px 6px 0 0; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); color: var(--text); background: var(--surface2); }
 .cao-image-dialog img { display: block; max-width: 100%; max-height: 35dvh; object-fit: contain; }
 #app .quick-actions > .cao-clipboard-button { flex-shrink: 0; }
+#app .cao-select-area[aria-pressed='true'] { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+.pane-terminal.cao-area-mode { cursor: crosshair; user-select: none; -webkit-user-select: none; }
+.cao-area-overlay { position: absolute; overflow: hidden; pointer-events: none; user-select: none; z-index: 4; }
+.cao-area-overlay[hidden] { display: none; }
+.cao-area-highlight { position: absolute; box-sizing: border-box; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 25%, transparent); }
 /* View is an overlay: transient settings never change the auto-fit height. */
 .cao-view-panel { position: absolute; top: calc(100% + 6px); right: 12px; z-index: 210; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; width: min(380px, calc(100vw - 24px)); max-height: 55dvh; overflow-y: auto; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px #0004; }
 .cao-view-panel[hidden] { display: none; }

@@ -78,6 +78,30 @@ describe('active screen controller', () => {
     s.w.getSelection().removeAllRanges(); s.jump.click(); s.tick(); expect(s.term.scrollTop).toBe(200)
     s.controller.destroy(); s.w.close()
   })
+  it('freezes area selection against repaint/anchoring and invalidates it on a grid transition', () => {
+    const s = setup(); s.controller.apply(s.snapshot()); s.tick()
+    let selected = true
+    const clear = vi.fn(() => { selected = false })
+    s.w.caoSelection = { active: () => selected, owns: () => selected, clear }
+    s.w.dispatchEvent(new s.w.Event('cao:selection'))
+    const old = s.term.textContent, top = s.term.scrollTop
+    s.controller.apply(s.snapshot({ seq: 2, content: 'NEW_OUTPUT' })); s.keyboard(300)
+    expect(s.term.textContent).toBe(old); expect(s.term.scrollTop).toBe(top)
+    s.controller.apply(s.snapshot({ seq: 3, epoch: 2, content: 'NEW_GRID' })); s.tick()
+    expect(clear).toHaveBeenCalledOnce(); expect(s.term.textContent).toBe('NEW_GRID')
+    s.controller.destroy(); s.w.close()
+  })
+  it('restores the newest held live frame when area selection ends, without a new network frame', () => {
+    const s = setup(); s.controller.apply(s.snapshot()); s.tick()
+    let held = true
+    s.w.caoSelection = { owns: () => held, active: () => held }
+    s.w.dispatchEvent(new s.w.Event('cao:selection'))
+    s.controller.apply(s.snapshot({ seq: 2, content: 'LATEST_HELD_FRAME' }))
+    expect(s.term.textContent).not.toBe('LATEST_HELD_FRAME')
+    held = false; s.w.dispatchEvent(new s.w.Event('cao:selection')); s.tick()
+    expect(s.term.textContent).toBe('LATEST_HELD_FRAME')
+    s.controller.destroy(); s.w.close()
+  })
   it('recomputes the live endpoint across buffer, connection, target and keyboard changes', () => {
     const s = setup({ padding: 12 }); s.keyboard(300)
     s.controller.apply(s.snapshot({ cursor_y: 8 })); s.tick(); expect(s.term.scrollTop).toBe(224)

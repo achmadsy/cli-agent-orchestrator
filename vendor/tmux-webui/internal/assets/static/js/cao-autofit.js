@@ -36,6 +36,7 @@
     };
     function fit(manual = false) {
       if (disposed) return;
+      if (window.caoSelection?.owns()) { clearTimeout(timer); status('paused'); return; }
       if (!manual) {
         const reason = eligibility();
         if (reason) { release(); status(reason); return; }
@@ -96,6 +97,11 @@
       status(enabled ? d.state : 'off');
       if (owned && !last && enabled) schedule(); // newly acquired by a dimensionless claim
     });
+    listen(window, 'cao:selection', () => {
+      clearTimeout(timer); timer = null;
+      if (window.caoSelection?.owns()) status('paused');
+      else { stableGeometry = null; schedule(); }
+    });
     listen(window, 'cao:font-size', () => { last = ''; stableGeometry = null; schedule(); });
     listen(window, 'cao:terminal-layout', () => {
       // Composer hide/show is intentional layout, not browser toolbar jitter.
@@ -141,7 +147,7 @@
     listen(host, 'resize', viewportResize);
     listen(host, 'orientationchange', () => { stableWidth = 0; stableHeight = 0; stableGeometry = null; schedule(); });
     heartbeat = setInterval(() => {
-      if (eligibility() || !measurable) return;
+      if (window.caoSelection?.owns() || eligibility() || !measurable) return;
       // Renew/try a claim, but never resend old geometry on a timer. Geometry
       // changes only from a real measurement event or newly granted ownership.
       send({ auto: true });

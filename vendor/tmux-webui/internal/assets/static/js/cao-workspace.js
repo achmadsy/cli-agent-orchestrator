@@ -93,7 +93,7 @@
   window.__caoSendResize = (cols, rows) => {
     const pane = window.tmuxState?.focusedPane;
     if (!window.tmuxWs?.isConnected() || !pane) { window.flashInputError?.('Not connected'); return false; }
-    if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 20 || rows < 6) return false;
+    if (window.caoSelection?.owns() || !Number.isFinite(cols) || !Number.isFinite(rows) || cols < 20 || rows < 6) return false;
     window.tmuxWs.send({ type: 'resize', pane, cols: Math.min(400, Math.floor(cols)), rows: Math.min(200, Math.floor(rows)), takeover: true });
     return true;
   };
@@ -280,7 +280,7 @@
     const key = e.key;
     if (['Control', 'Shift', 'Alt', 'Meta', 'Dead', 'Process', 'CapsLock', 'NumLock', 'ScrollLock', 'Unidentified'].includes(key)) return;
     // Browser copy/paste must run before terminal Ctrl-letter dispatch.
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && (key.toLowerCase() === 'v' || key.toLowerCase() === 'c' && (e.shiftKey || window.getSelection()?.toString()))) return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (key.toLowerCase() === 'v' || key.toLowerCase() === 'c' && (e.shiftKey || window.caoSelection?.active() || window.getSelection()?.toString()))) return;
     if (e.metaKey) return; // OS/browser combinations stay native
     // Never swallow tab/window management, reload, or devtools keys.
     if ((e.ctrlKey || e.metaKey) && ['w', 't', 'n'].includes(key.toLowerCase()) && !e.altKey) return;
@@ -343,7 +343,7 @@
   funnel.addEventListener('focus', () => { if (!canType()) funnel.blur(); });
   window.caoDirectTapToType = pane => {
     if (!canType() || !coarsePointer.matches || composingText || pane !== window.tmuxState.focusedPane) return;
-    if (window.getSelection()?.toString()) return;
+    if (window.caoSelection?.owns() || window.getSelection()?.toString()) return;
     // Dismissing a phone keyboard can leave its input focused. A synchronous
     // blur/refocus in this genuine user gesture requests the keyboard again.
     if (document.activeElement === funnel && !(window.__caoViewport?.keyboardHeight > 0)) funnel.blur();
@@ -386,7 +386,7 @@
     if (directKeys) {
       input.blur(); directToggle.blur();
       // Same user gesture: focusing a real input opens the on-screen keyboard.
-      if (coarsePointer.matches && canType()) funnel.focus({ preventScroll: true });
+      if (coarsePointer.matches && canType() && !window.caoSelection?.owns()) funnel.focus({ preventScroll: true });
     } else { clearDirectComposition(); }
     window.dispatchEvent(new Event('cao:terminal-layout'));
   });

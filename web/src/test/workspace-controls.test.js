@@ -331,6 +331,16 @@ describe('actual vendored workspace controls', () => {
     expect(send.mock.calls.filter(([m]) => m.type === 'key').length).toBe(6)
     w.close()
   })
+  it('Direct leaves area-copy shortcuts local and never focuses the typing funnel during selection', () => {
+    const { doc, w, send } = setup(true)
+    doc.querySelector('.cao-direct-toggle').click()
+    const funnel = doc.getElementById('cao-direct-funnel'); funnel.blur()
+    w.caoSelection = { active: () => true, owns: () => true }
+    const event = new w.KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true })
+    doc.body.dispatchEvent(event); expect(event.defaultPrevented).toBe(false)
+    w.caoDirectTapToType('%1'); expect(doc.activeElement).not.toBe(funnel)
+    expect(send).not.toHaveBeenCalled(); w.close()
+  })
   it('direct mode preserves keyboard activation and editable targets', () => {
     const { doc, w, send } = setup()
     doc.querySelector('.cao-direct-toggle').click()

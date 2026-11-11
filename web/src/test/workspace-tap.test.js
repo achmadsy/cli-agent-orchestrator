@@ -36,6 +36,11 @@ describe('real terminal tap qualification', () => {
     expect(s.send.mock.calls.map(([m]) => m.mphase)).toEqual(['press','release'])
     s.w.close()
   })
+  it('area mode never injects a TUI click or summons Direct typing', () => {
+    const s = setup(true); s.w.caoSelection = { owns: () => true }
+    s.pointer('pointerdown'); s.pointer('pointerup'); s.pointer('click')
+    expect(s.send).not.toHaveBeenCalled(); expect(s.type).not.toHaveBeenCalled(); s.w.close()
+  })
   it.each(['drag', 'cancel', 'long', 'right', 'multi', 'selection'])('does not focus typing on %s', kind => {
     const s = setup()
     s.pointer('pointerdown', kind === 'right' ? { button: 2 } : {})
