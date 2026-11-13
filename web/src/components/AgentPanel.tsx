@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { api, AgentProfileInfo, ProviderInfo, ProviderProfile, ProviderRole, RoleProviderPolicy, RoleProviderProfilePolicy, RuntimeFailure } from '../api'
 import { Bot, Play, Trash2, ChevronRight, Terminal as TermIcon, Monitor, Package, FolderOpen, Tag, Search, Mail, Plus, LogOut, Send, FileText, X, AlertTriangle, Repeat } from 'lucide-react'
 import { TerminalView } from './TerminalView'
+import { DirectoryPickerDialog } from './DirectoryPickerDialog'
 import { ConfirmModal } from './ConfirmModal'
 import { InboxPanel } from './InboxPanel'
 import { CustomSelect, SelectOption } from './CustomSelect'
@@ -62,6 +63,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   const [sessionSearch, setSessionSearch] = useState('')
   const [inboxTerminalId, setInboxTerminalId] = useState<string | null>(null)
   const [workingDirectory, setWorkingDirectory] = useState('')
+  const [showDirectoryPicker, setShowDirectoryPicker] = useState(false)
   const [sessionName, setSessionName] = useState('')
   const [terminalWorkDirs, setTerminalWorkDirs] = useState<Record<string, string | null>>({})
   const [showAddAgent, setShowAddAgent] = useState(false)
@@ -796,6 +798,12 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
         onCancel={() => setPendingExit(null)}
       />
 
+      {showSpawnModal && showDirectoryPicker && <DirectoryPickerDialog
+        initialPath={workingDirectory}
+        onSelect={setWorkingDirectory}
+        onClose={() => setShowDirectoryPicker(false)}
+      />}
+
       {/* Spawn Agent Modal */}
       {showSpawnModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -879,17 +887,21 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
               </div>
 
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Working Directory <span className="text-gray-600">(optional)</span></label>
-                <div className="relative">
-                  <FolderOpen size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                  <input
-                    type="text"
-                    value={workingDirectory}
-                    onChange={e => setWorkingDirectory(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleCreate()}
-                    placeholder="/path/to/project (defaults to home)"
-                    className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm font-mono rounded-lg pl-9 pr-3 py-2.5 focus:border-emerald-500 focus:outline-none"
-                  />
+                <label htmlFor="spawn-working-directory" className="block text-xs text-gray-500 mb-1">Working Directory <span className="text-gray-600">(optional)</span></label>
+                <div className="flex flex-wrap gap-2">
+                  <div className="relative min-w-0 flex-1 basis-48">
+                    <FolderOpen size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                    <input
+                      id="spawn-working-directory"
+                      type="text"
+                      value={workingDirectory}
+                      onChange={e => setWorkingDirectory(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && !showDirectoryPicker && handleCreate()}
+                      placeholder="/path/to/project (defaults to home)"
+                      className="min-h-11 w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm font-mono rounded-lg pl-9 pr-3 py-2.5 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                  <button type="button" onClick={() => setShowDirectoryPicker(true)} className="min-h-11 rounded-lg border border-gray-700 px-3 text-sm text-gray-300 hover:bg-gray-700">Browse folders</button>
                 </div>
               </div>
 

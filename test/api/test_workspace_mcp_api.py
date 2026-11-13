@@ -149,6 +149,21 @@ def test_delete_workspace_mcp(client, mock_service):
     assert resp404.status_code == 404
 
 
+def test_browse_requires_auth_before_service(client, mock_service, monkeypatch):
+    monkeypatch.delenv('AUTH0_DOMAIN', raising=False)
+    monkeypatch.delenv('CAO_AUTH_JWKS_URI', raising=False)
+    monkeypatch.setenv('CAO_AUTH_LOCAL_TOKEN', 'synthetic-test-auth-token')
+    response = client.get('/workspace-mcp/browse-directories')
+    assert response.status_code == 401
+    mock_service.browse_directories.assert_not_called()
+
+
+def test_browse_range_validation(client, mock_service):
+    for query in ('limit=501', 'offset=-1', 'query=' + 'a' * 256):
+        assert client.get('/workspace-mcp/browse-directories?' + query).status_code == 422
+    mock_service.browse_directories.assert_not_called()
+
+
 def test_browse_directories(client, mock_service):
     mock_service.browse_directories.return_value = {
         "current_path": "/home/ubuntu/workspace",

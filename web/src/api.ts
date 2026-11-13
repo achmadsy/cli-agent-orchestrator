@@ -732,6 +732,11 @@ export interface BrowseDirectoriesResponse {
   current_path: string
   parent_path?: string | null
   directories: BrowseDirectoryItem[]
+  ancestors?: BrowseDirectoryItem[]
+  home_path?: string | null
+  source_node?: string | null
+  next_offset?: number | null
+  total?: number | null
 }
 
 export const api = {
@@ -1128,8 +1133,13 @@ export const api = {
     fetchJSON<WorkspaceMcpInstance>(`/workspace-mcp/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
-  browseDirectories: (path?: string) =>
-    fetchJSON<BrowseDirectoriesResponse>(
-      `/workspace-mcp/browse-directories${path ? `?path=${encodeURIComponent(path)}` : ''}`,
-    ),
+  browseDirectories: (path?: string, options?: { offset?: number; query?: string }) => {
+    const params = new URLSearchParams()
+    if (path) params.set('path', path)
+    if (options?.offset) params.set('offset', String(options.offset))
+    if (options?.query) params.set('query', options.query)
+    return fetchJSON<BrowseDirectoriesResponse>(
+      `/workspace-mcp/browse-directories${params.size ? `?${params}` : ''}`,
+    )
+  },
 }

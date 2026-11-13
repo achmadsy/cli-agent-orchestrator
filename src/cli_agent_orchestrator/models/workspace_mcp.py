@@ -55,3 +55,8 @@ class BrowseDirectoriesResponse(BaseModel):
     directories: List[BrowseDirectoryItem] = Field(
         default_factory=list, description="Subdirectories in path"
     )
+    ancestors: List[BrowseDirectoryItem] = Field(default_factory=list)
+    home_path: Optional[str] = None
+    source_node: Optional[str] = None
+    next_offset: Optional[int] = None
+    total: Optional[int] = None

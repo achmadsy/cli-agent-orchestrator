@@ -26,7 +26,7 @@ def test_map_arch():
 
 def test_payload_contains_no_token_in_file_names(monkeypatch, tmp_path):
     from test.test_node_release import sample_bundle
-    path, manifest = sample_bundle(tmp_path)
+    path, manifest = sample_bundle(tmp_path, with_adapter=False)
     cbm = tmp_path / "codebase-memory-mcp-linux-amd64-portable.tar.gz"
     cbm.write_bytes(b"cbm-archive")
     monkeypatch.setattr(installer.node_release, "configured_manifest", lambda: path)
@@ -43,6 +43,7 @@ def test_payload_contains_no_token_in_file_names(monkeypatch, tmp_path):
             "node_release.py", "node_install.py", "ui.json", "cao-terminal-linux-amd64",
             "cli_agent_orchestrator-2.5.3-py3-none-any.whl",
             "codebase-memory-mcp-linux-amd64-portable.tar.gz",
+            "cao-harness-integration.py", "cli_integration.py",
         }
         assert len(names) == len(set(names))
         assert all(member.isreg() and member.mode in (0o600, 0o700) for member in archive.getmembers())
@@ -56,6 +57,15 @@ def test_payload_contains_no_token_in_file_names(monkeypatch, tmp_path):
     assert "CAO_MEMORY_API_URL=http://100.78.240.36:9889" in env
     assert "CAO_CODEBASE_ENABLED=true" in env
     assert "CAO_CODEBASE_API_URL=http://100.78.240.36:9889" in env
+
+
+def test_updated_installer_rejects_release_without_adapter(monkeypatch, tmp_path):
+    from test.test_node_release import sample_bundle
+    path, _ = sample_bundle(tmp_path, with_shared=False)
+    monkeypatch.setattr(installer.node_release, "configured_manifest", lambda: path)
+    monkeypatch.setattr(installer, "ensure_cbm_archive", lambda arch: pytest.fail("must fail before CBM download"))
+    with pytest.raises(ValueError, match="lacks required CAO shared"):
+        installer._payload("worker", "worker", "link", "100.64.0.42", "x" * 48)
 
 
 def test_install_script_contains_cbm_pins_and_integrity_guards():
@@ -137,7 +147,7 @@ def test_generated_shell_syntax_and_private_remote_staging():
     assert "--no-python-downloads" in (installer.Path(installer.__file__).parent / "node_install.py").read_text()
 
 
-@pytest.mark.parametrize("output,code", [(b"", 0), (b"CAO fleet install complete\n", 0), (b"", 1)])
+@pytest.mark.parametrize("output,code", [(b"", 0), (b"CAO fleet install complete\n", 0), (b"Authenticated CAO and terminal health passed\nCAO fleet install complete\n", 0), (b"", 1)])
 def test_no_registration_without_both_health_markers(monkeypatch, output, code):
     monkeypatch.setattr(installer, "_ingress_check", lambda *a, **k: None)
     monkeypatch.setattr(installer, "probe_remote_arch", lambda *a: "amd64")
@@ -161,7 +171,7 @@ def test_registration_after_health(monkeypatch):
             marker = "CAO_FLEET_POLICY_OK_V1" if command[3] == "--check-policy" else "CAO_FLEET_INGRESS_VERIFIED_V1"
             return MagicMock(returncode=0, stdout=marker + "\n", stderr="")
         calls.append(command[0])
-        return MagicMock(returncode=0, stdout=b"Authenticated CAO and terminal health passed\nCAO fleet install complete\n", stderr=b"")
+        return MagicMock(returncode=0, stdout=b"CAO_SHARED_CLI_READY_V1\nAuthenticated CAO and terminal health passed\nCAO fleet install complete\n", stderr=b"")
     monkeypatch.setattr(installer.subprocess, "run", run)
     monkeypatch.setattr(installer.config, "add_machine", lambda m: calls.append("register") or m)
     job = installer.Job(id="1", machine="worker", peer="worker", user="link")
@@ -193,7 +203,7 @@ def test_ingress_failure_compensates_registration(monkeypatch, cleanup_fails):
         calls.append(command[0])
         if cleanup_fails and calls.count("sudo") == 2:
             raise RuntimeError("cleanup failed")
-        return MagicMock(returncode=0, stdout=b"Authenticated CAO and terminal health passed\nCAO fleet install complete\n", stderr=b"")
+        return MagicMock(returncode=0, stdout=b"CAO_SHARED_CLI_READY_V1\nAuthenticated CAO and terminal health passed\nCAO fleet install complete\n", stderr=b"")
     monkeypatch.setattr(installer.subprocess, "run", run)
     monkeypatch.setattr(installer.config, "add_machine", lambda m: calls.append("register") or m)
     monkeypatch.setattr(installer.config, "remove_machine", lambda name: calls.append("remove"))

@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,6 +26,8 @@ def main():
     parser.add_argument("--id", required=True)
     parser.add_argument("--sidecar-amd64", type=Path)
     parser.add_argument("--sidecar-arm64", type=Path)
+    parser.add_argument("--validator", type=Path, help="Reviewed staged validator; live Fleet files stay unchanged")
+    parser.add_argument("--reuse-built-web", action="store_true", help="Package already verified frontend assets")
     args = parser.parse_args()
     source = args.source.absolute()
     output = args.out.absolute()
@@ -35,14 +38,16 @@ def main():
     # Do not accidentally package the unrelated optional Rust TUI as py3-none-any.
     if list((source / "src/cli_agent_orchestrator").glob("cao-tui*")):
         raise ValueError("portable node source must not contain staged cao-tui executables")
-    subprocess.run(["npm", "run", "build"], cwd=source / "web", check=True, timeout=240)
+    if not args.reuse_built_web:
+        subprocess.run(["npm", "run", "build"], cwd=source / "web", check=True, timeout=600)
     output.mkdir(mode=0o700, parents=True)
-    subprocess.run(["uv", "build", "--wheel", "--out-dir", str(output)], cwd=source, check=True, timeout=180)
+    subprocess.run(["uv", "build", "--wheel", "--out-dir", str(output)], cwd=source,
+                   env={**os.environ, "CAO_TUI_PLATFORM_WHEEL": "0"}, check=True, timeout=600)
     wheels = list(output.glob("*.whl"))
     if len(wheels) != 1:
         raise ValueError("expected one built wheel")
     wheel = wheels[0]
-    validator = source / "examples/fleet/panel/app/node_release.py"
+    validator = args.validator or source / "examples/fleet/panel/app/node_release.py"
     spec = importlib.util.spec_from_file_location("node_release", validator)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -73,12 +78,21 @@ def main():
             dest.chmod(0o755)
             sidecars[arch] = artifact(dest)
     assets = {str(p.relative_to(source)): sha(p.read_bytes()) for p in sorted((source / "vendor/tmux-webui/internal/assets/static").rglob("*")) if p.is_file() and not p.is_symlink()}
-    identity = {"runtime": runtime, "sidecar_assets": assets, "config": artifact(config)["sha256"]}
+    helper_source = source / "src/cli_agent_orchestrator/services/harness_mcp_integration.py"
+    if helper_source.is_symlink() or not helper_source.is_file():
+        raise ValueError("reviewed CAO CLI integration helper required")
+    helper = output / module.CLI_ARTIFACT
+    helper.write_bytes(helper_source.read_bytes())
+    helper.chmod(0o600)
+    integrations = {module.CLI_INTEGRATION: artifact(helper)}
+    identity = {"runtime": runtime, "sidecar_assets": assets, "config": artifact(config)["sha256"],
+                "integrations": {module.CLI_INTEGRATION: integrations[module.CLI_INTEGRATION]["sha256"]}}
     manifest = {
         "schema": 1, "id": args.id,
         "source_sha256": sha(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()),
         "protocol": module.PROTOCOL, "python": ["3.12", "3.13", "3.14"],
         "wheel": artifact(wheel), "config": artifact(config), "sidecars": sidecars,
+        "integrations": integrations,
         "integrity": "operator-built local release with SHA-256; not a digital signature",
     }
     (output / "source.json").write_text(json.dumps(identity, indent=2) + "\n")

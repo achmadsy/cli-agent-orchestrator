@@ -130,6 +130,7 @@ otel = [
 "cao" = "cli_agent_orchestrator.cli.main:cli"
 "cao-server" = "cli_agent_orchestrator.api.main:main"
 "cao-mcp-server" = "cli_agent_orchestrator.mcp_server.server:main"
+"cao-shared-mcp" = "cli_agent_orchestrator.mcp_server.shared:main"
 "cao-ops-mcp-server" = "cli_agent_orchestrator.ops_mcp_server.server:main"
 
 [project.entry-points."cao.plugins"]

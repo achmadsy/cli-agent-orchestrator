@@ -24,6 +24,7 @@ from cli_agent_orchestrator.constants import (
     WORKFLOW_POLL_INTERVAL_SECONDS,
     WORKFLOW_RUN_REQUEST_TIMEOUT,
 )
+from cli_agent_orchestrator.mcp_server import shared_client
 from cli_agent_orchestrator.mcp_server import utils as mcp_utils
 from cli_agent_orchestrator.mcp_server.models import HandoffResult
 from cli_agent_orchestrator.mcp_server.utils import _auth_headers, _auth_headers_for
@@ -32,8 +33,9 @@ from cli_agent_orchestrator.models.workflow_runtime import ReturnAck, parse_deci
 from cli_agent_orchestrator.services.elastic_worker_gateway import (
     elastic_worker_gateway_headers,
 )
-from cli_agent_orchestrator.services.memory_service import (
+from cli_agent_orchestrator.models.memory_contracts import (
     MEMORY_DISABLED_MESSAGE,
+    MEMORY_MANAGER_PROFILE,
     MemoryDisabledError,
     MemoryPartialWriteError,
 )
@@ -1443,7 +1445,9 @@ def find_profiles(
 
 
 def _get_terminal_context_from_env() -> Optional[Dict[str, Any]]:
-    """Build terminal context dict from the calling terminal's CAO_TERMINAL_ID."""
+    """Build genuine terminal context, or manual cwd in shared-client mode."""
+    if shared_client.current() is not None:
+        return shared_client.terminal_context()
     try:
         terminal_id = _current_terminal_id()
     except ValueError as e:
@@ -1824,11 +1828,16 @@ async def memory_store(
     that should be available across agent sessions.
     """
     from cli_agent_orchestrator.services.memory_gateway import remote_memory_url, store_memory
-    from cli_agent_orchestrator.services.memory_service import MemoryService
+    if shared_client.current() is None:
+        from cli_agent_orchestrator.services.memory_service import MemoryService
 
     try:
         terminal_context = _get_terminal_context_from_env()
-        if remote_memory_url():
+        if shared_client.current() is not None:
+            shared_client.validate_scope(scope, terminal_context or {})
+            shared_client.require_project_contract(terminal_context or {}, scope)
+            shared_client.require_memory()
+        if shared_client.current() is not None or remote_memory_url():
             memory = await store_memory(
                 content=content,
                 scope=scope,
@@ -1921,10 +1930,11 @@ async def memory_recall(
     Use this to check if relevant knowledge already exists before asking the user.
     """
     from cli_agent_orchestrator.services.memory_gateway import recall_memory, remote_memory_url
-    from cli_agent_orchestrator.services.memory_service import MemoryService
+    if shared_client.current() is None:
+        from cli_agent_orchestrator.services.memory_service import MemoryService
     from cli_agent_orchestrator.services.settings_service import is_memory_enabled
 
-    if not is_memory_enabled():
+    if shared_client.current() is None and not is_memory_enabled():
         return {
             "success": False,
             "disabled": True,
@@ -1934,6 +1944,10 @@ async def memory_recall(
 
     try:
         terminal_context = _get_terminal_context_from_env()
+        if shared_client.current() is not None:
+            shared_client.validate_scope(scope, terminal_context or {})
+            shared_client.require_project_contract(terminal_context or {}, scope)
+            shared_client.require_memory()
         kwargs = {
             "query": query,
             "scope": scope,
@@ -1948,14 +1962,12 @@ async def memory_recall(
         }
         memories = (
             await recall_memory(**kwargs)
-            if remote_memory_url()
+            if shared_client.current() is not None or remote_memory_url()
             else await MemoryService().recall(**kwargs)
         )
         # Curated recall is inserted verbatim into another terminal's context.
         # Keep its vault/native scope set aligned with the deterministic builder:
         # agent-scoped memories are explicit-recall-only in this release.
-        from cli_agent_orchestrator.services.vault.reader import MEMORY_MANAGER_PROFILE
-
         if (terminal_context or {}).get("agent_profile") == MEMORY_MANAGER_PROFILE:
             injectable_scopes = {"session", "project", "global"}
             memories = [memory for memory in memories if memory.scope in injectable_scopes]
@@ -2010,17 +2022,22 @@ async def memory_forget(
     deleting the underlying vault note.
     """
     from cli_agent_orchestrator.services.memory_gateway import forget_memory, remote_memory_url
-    from cli_agent_orchestrator.services.memory_service import MemoryService
+    if shared_client.current() is None:
+        from cli_agent_orchestrator.services.memory_service import MemoryService
 
     try:
         terminal_context = _get_terminal_context_from_env()
+        if shared_client.current() is not None:
+            shared_client.validate_scope(scope, terminal_context or {})
+            shared_client.require_project_contract(terminal_context or {}, scope)
+            shared_client.require_memory()
         deleted = (
             await forget_memory(
                 key=key,
                 scope=scope,
                 terminal_context=terminal_context,
             )
-            if remote_memory_url()
+            if shared_client.current() is not None or remote_memory_url()
             else await MemoryService().forget(
                 key=key,
                 scope=scope,
@@ -2051,6 +2068,11 @@ async def _codebase_tool(tool: str, project: Optional[str], arguments: Dict[str,
             "arguments": arguments,
             "working_directory": terminal_context.get("cwd"),
         }
+        connection = shared_client.current()
+        if connection is not None:
+            return await asyncio.to_thread(
+                connection.request, "POST", "/internal/code-graph/query", body=body, timeout=40
+            )
         return mcp_utils.post_body_json("/internal/code-graph/query", body, timeout=40)
     except requests.HTTPError as exc:
         return {"success": False, "error": _extract_error_detail(exc.response, str(exc))}
@@ -2064,6 +2086,11 @@ async def _codebase_tool(tool: str, project: Optional[str], arguments: Dict[str,
 async def codebase_projects() -> Dict[str, Any]:
     """List all indexed repositories in the combined fleet Codebase Memory view."""
     try:
+        connection = shared_client.current()
+        if connection is not None:
+            return await asyncio.to_thread(
+                connection.request, "GET", "/internal/code-graph/projects", timeout=40
+            )
         return mcp_utils.get_json("/internal/code-graph/projects", timeout=40)
     except Exception as exc:
         return {"success": False, "error": str(exc)}
@@ -2362,7 +2389,8 @@ async def store_lesson(
     Requires memory.learning_enabled=true; returns a disabled payload
     otherwise.
     """
-    from cli_agent_orchestrator.services.memory_service import MemoryService
+    if shared_client.current() is None:
+        from cli_agent_orchestrator.services.memory_service import MemoryService
     from cli_agent_orchestrator.services.settings_service import is_learning_enabled
 
     try:
@@ -3234,7 +3262,8 @@ async def workflow_events(
 # CAO_MCP_APPS_ENABLED is set, so the default posture is unchanged.
 from cli_agent_orchestrator.plugins.registry import register_mcp_server_surfaces  # noqa: E402
 
-register_mcp_server_surfaces(mcp)
+if shared_client.current() is None or shared_client.full_surface():
+    register_mcp_server_surfaces(mcp)
 
 
 def main():

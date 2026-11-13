@@ -10,6 +10,10 @@ from pathlib import Path
 
 PROTOCOL = "cao-terminal/195ad23136c500b10fc88ba50397a25fa7b8c4d9-grid-v2"
 MAX_ARTIFACT = 128 * 1024 * 1024
+OPENCODE_INTEGRATION = "opencode_cbm_v2"
+OPENCODE_ARTIFACT = "opencode-cbm-v2.mjs"  # Historical manifests only.
+CLI_INTEGRATION = "cao_shared_cli_v1"
+CLI_ARTIFACT = "cao-harness-integration.py"
 REQUIRED_WHEEL = {
     "cli_agent_orchestrator/api/terminal_workspace.py",
     "cli_agent_orchestrator/services/terminal_workspace_service.py",
@@ -98,7 +102,20 @@ def load_release(manifest_path, arch=None):
         raise ValueError("invalid sidecar architectures")
     if arch is not None and arch not in binaries:
         raise ValueError("verified terminal artifact unavailable for target architecture")
-    specs = [manifest.get("wheel"), manifest.get("config"), *binaries.values()]
+    integrations = manifest.get("integrations", {})
+    if not isinstance(integrations, dict) or not set(integrations).issubset({OPENCODE_INTEGRATION, CLI_INTEGRATION}):
+        raise ValueError("unsupported node integration artifact")
+    if OPENCODE_INTEGRATION in integrations:
+        adapter = integrations[OPENCODE_INTEGRATION]
+        if (not isinstance(adapter, dict) or adapter.get("file") != OPENCODE_ARTIFACT
+                or type(adapter.get("size")) is not int or not 0 < adapter["size"] <= 128 * 1024):
+            raise ValueError("invalid OpenCode v2 adapter artifact")
+    if CLI_INTEGRATION in integrations:
+        helper = integrations[CLI_INTEGRATION]
+        if (not isinstance(helper, dict) or helper.get("file") != CLI_ARTIFACT
+                or type(helper.get("size")) is not int or not 0 < helper["size"] <= 256 * 1024):
+            raise ValueError("invalid CAO shared CLI integration artifact")
+    specs = [manifest.get("wheel"), manifest.get("config"), *binaries.values(), *integrations.values()]
     names = [spec.get("file") for spec in specs if isinstance(spec, dict)]
     if len(names) != len(specs) or not all(isinstance(name, str) for name in names) or len(names) != len(set(names)):
         raise ValueError("duplicate/invalid release artifact")

@@ -3,6 +3,21 @@
 CAO's memory system gives agents persistent, cross-session storage. Agents store facts, decisions, and preferences during a session; CAO injects relevant memories back as context when the agent starts its next session.
 
 
+## Shared hosted CLI access
+
+For one hosted memory service across CLI harnesses/Fleet, use the
+[shared CAO client](shared-cli-mcp.md), not upstream `agentmemory` or a raw CBM MCP.
+The stdio process is a connector, not another storage backend. Its knowledge-only
+surface uses authenticated CAO HTTP exclusively and fails closed rather than
+falling back to `MemoryService` on the client. Manual sessions use their real cwd;
+session/agent scopes require genuine CAO metadata. Worker project identity is
+resolved before transport, so the coordinator does not inspect a nonexistent
+worker path as though it were local.
+
+Legacy local CAO operation remains available outside this explicit shared mode.
+Switching client registrations neither migrates nor deletes historical memory,
+provider-native histories, CBM indexes, or standalone backend data.
+
 ## Capabilities
 
 - **Five scopes** (`global`, `project`, `session`, `agent`, `federated`) and four type labels.

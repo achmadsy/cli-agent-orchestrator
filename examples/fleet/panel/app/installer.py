@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, node_release
+from . import config, node_release, cli_integration
 
 _REMOTE_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _REMOTE_SCRIPT = 'set -euo pipefail; umask 077; d=$(mktemp -d /tmp/cao-fleet-install.XXXXXXXX); trap \'rm -rf -- "$d"\' EXIT; tar --no-same-owner --no-same-permissions -xf - -C "$d"; bash "$d/install.sh"'
@@ -315,12 +315,17 @@ def _payload(machine, peer, user, host, token, arch="amd64"):
     if not isinstance(token, str) or len(token) < 32 or not re.fullmatch(r"[A-Za-z0-9_.~-]+", token):
         raise ValueError("node authentication token is unavailable or not install-safe")
     manifest, blobs = node_release.load_release(node_release.configured_manifest(), map_arch(arch))
+    if node_release.CLI_INTEGRATION not in manifest.get("integrations", {}):
+        raise ValueError("node release lacks required CAO shared CLI integration")
+    # Target operator supplies its private CAO connection in advance. The
+    # supervisor's bearer is never copied into this installation payload.
     hostname = config.public_hostname(machine)
     remote_home = f"/home/{user}"
     node_env = "\n".join(
         [
             f"CAO_AUTH_LOCAL_TOKEN={token}",
             f"CAO_HOME_DIR={remote_home}/.local/share/cao",
+            f"CAO_SHARED_CONNECTION_FILE={remote_home}/.config/cao/mcp-client.json",
             f"CAO_BIND_HOST={host}",
             f"CAO_API_HOST={host}",
             "CAO_API_PORT=9889",
@@ -349,6 +354,7 @@ def _payload(machine, peer, user, host, token, arch="amd64"):
         "cao-server.env": node_env, "manifest.json": (json.dumps(manifest) + "\n").encode(),
         "node_release.py": (app / "node_release.py").read_bytes(),
         "node_install.py": (app / "node_install.py").read_bytes(),
+        "cli_integration.py": (app / "cli_integration.py").read_bytes(),
         cbm_archive.name: cbm_data,
     }
     if set(entries) & set(blobs):
@@ -402,13 +408,17 @@ def _run(job, host, token):
                 "workspace-mcp already installed",
                 "workspace-mcp installed successfully",
                 "CAO fleet install complete",
+                cli_integration.PROOF,
             ):
                 job.steps.append(line_str)
         if result.returncode:
             raise RuntimeError(f"Tailscale SSH install exited {result.returncode}")
-        if "CAO fleet install complete" not in output.splitlines() or "Authenticated CAO and terminal health passed" not in output.splitlines():
-            raise RuntimeError("remote install completion/health proof missing")
+        if ("CAO fleet install complete" not in output.splitlines()
+                or "Authenticated CAO and terminal health passed" not in output.splitlines()
+                or cli_integration.PROOF not in output.splitlines()):
+            raise RuntimeError("remote install completion/health/CAO integration proof missing")
         job.steps.append("Remote authenticated CAO and terminal health checks passed")
+        job.steps.append("Verified shared CAO memory/codebase route and CLI integration")
         machine = config.add_machine(
             {
                 "name": job.machine,

@@ -54,8 +54,11 @@ logger = logging.getLogger(__name__)
 VALID_SEARCH_MODES = ("metadata", "bm25", "hybrid")
 
 
-MEMORY_DISABLED_MESSAGE = (
-    "memory subsystem is disabled. Set memory.enabled=true in settings.json " "to re-enable."
+from cli_agent_orchestrator.models.memory_contracts import (
+    MEMORY_DISABLED_MESSAGE, ForgetResult, MemoryDisabledError, MemoryPartialWriteError,
+)
+from cli_agent_orchestrator.utils.project_identity import (
+    git_remote_identity as _git_remote_identity, normalize_git_remote as _normalize_git_remote,
 )
 
 _VaultProjectionResult = TypeVar("_VaultProjectionResult")
@@ -94,58 +97,6 @@ def _redact_injected_vault_content(memory: Memory) -> tuple[str, tuple[str, ...]
         return memory.content, ()
     content, fired = redact_secrets(memory.content)
     return content, tuple(fired)
-
-
-class MemoryDisabledError(RuntimeError):
-    """Raised when a write entry point is called while memory is disabled.
-
-    Read paths (recall, get_memory_context_for_terminal) instead return an
-    empty result, since silent empty reads are a safer no-op than raising.
-    """
-
-
-class MemoryPartialWriteError(RuntimeError):
-    """Raised when durable wiki projections outlive a failed metadata write."""
-
-    error_kind = "memory_metadata_partial_write"
-    repair_command = "cao memory repair --apply"
-
-    def __init__(
-        self,
-        *,
-        key: str,
-        scope: str,
-        scope_id: Optional[str],
-        file_path: str,
-    ) -> None:
-        self.key = key
-        self.scope = scope
-        self.scope_id = scope_id
-        self.file_path = file_path
-        self.completed_phases = ["wiki", "index"]
-        super().__init__(
-            "Memory content and index were saved, but SQLite metadata could not be updated. "
-            f"Run `{self.repair_command}`."
-        )
-
-
-@dataclass(frozen=True)
-class ForgetResult:
-    """Content-free outcome of removing native or vault-backed memory state.
-
-    Truthiness means CAO completed the forgetting operation, not that every
-    file was removed. Callers needing file semantics must inspect ``action``
-    and ``path``/``paths``.
-    """
-
-    action: Literal["deleted", "deindexed", "deleted_and_deindexed", "absent"]
-    source_kind: Literal["native", "vault", "both"] | None
-    path: str | None
-    paths: tuple[str, ...] = ()
-
-    def __bool__(self) -> bool:
-        """Preserve the historical bool contract for existing consumers."""
-        return self.action != "absent"
 
 
 def _is_memory_enabled() -> bool:
@@ -227,53 +178,6 @@ def _read_project_id_override() -> Optional[str]:
     if not raw:
         return None
     return _validate_project_id_override(raw)
-
-
-def _normalize_git_remote(url: str) -> str:
-    """Normalize a git remote URL into a stable slug id.
-
-    Rules: lowercase, strip protocol, strip auth, SCP→host/path, strip
-    trailing ``.git``, collapse non-alnum runs to ``-``. Empty input → ``"unknown"``.
-    """
-    if not url:
-        return "unknown"
-    u = url.strip().lower()
-    for proto in ("git+ssh://", "ssh://", "git://", "https://", "http://"):
-        if u.startswith(proto):
-            u = u[len(proto) :]
-            break
-    if "@" in u:
-        u = u.split("@", 1)[1]
-    if ":" in u:
-        head, _, tail = u.partition(":")
-        if "/" not in head:
-            u = f"{head}/{tail}"
-    if u.endswith(".git"):
-        u = u[:-4]
-    u = re.sub(r"[^a-z0-9]+", "-", u).strip("-")
-    return u or "unknown"
-
-
-def _git_remote_identity(cwd: Path) -> Optional[str]:
-    """Return ``remote.origin.url`` for ``cwd``, or ``None`` when absent.
-
-    ``timeout=2`` keeps laggy NFS from blocking the resolver.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(cwd), "config", "--get", "remote.origin.url"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
-        logger.debug(f"git remote lookup failed in {cwd}: {e}")
-        return None
-    if result.returncode != 0:
-        return None
-    url = result.stdout.strip()
-    return url or None
 
 
 def _record_alias_safe(project_id: str, alias: str, kind: str) -> None:
@@ -550,6 +454,8 @@ class MemoryService:
         ctx = terminal_context or {}
 
         if scope == MemoryScope.PROJECT.value:
+            if ctx.get("project_id") is not None:
+                return _validate_project_id_override(ctx["project_id"])
             cwd = ctx.get("cwd") or ctx.get("working_directory")
             cwd_path = Path(cwd) if cwd else None
             try:

@@ -29,6 +29,14 @@ def _headers() -> Dict[str, str]:
 def _request(
     base_url: str, path: str, body: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
+    connection_file = os.environ.get('CAO_SHARED_CONNECTION_FILE')
+    if connection_file:
+        from pathlib import Path
+        from cli_agent_orchestrator.mcp_server.shared_client import Connection
+        connection = Connection.load(Path(connection_file))
+        if base_url.rstrip('/') != connection.central_url:
+            raise RuntimeError('Codebase endpoint does not match approved CAO connection')
+        return connection.request('POST' if body is not None else 'GET', path, body=body)
     kwargs: Dict[str, Any] = {
         "headers": _headers() or None,
         "timeout": float(os.getenv("CAO_CODEBASE_HTTP_TIMEOUT", "35")),

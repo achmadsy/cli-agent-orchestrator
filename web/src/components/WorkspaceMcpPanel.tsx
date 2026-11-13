@@ -186,6 +186,13 @@ function DirectoryBrowser({ onSelect }: { onSelect: (path: string) => void }) {
             📁 {d.name}
           </button>
         ))}
+        {browse?.next_offset != null && <button type="button" className="min-h-11 px-2 text-xs text-blue-300" onClick={async () => {
+          const current = browse
+          try {
+            const next = await api.browseDirectories(current.current_path, { offset: current.next_offset! })
+            setBrowse(previous => previous === current ? { ...next, directories: [...current.directories, ...next.directories] } : previous)
+          } catch { setError('Could not load more folders') }
+        }}>Load more folders</button>}
       </div>
     </div>
   )

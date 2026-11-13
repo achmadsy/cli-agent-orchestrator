@@ -3299,11 +3299,16 @@ async def list_workspace_mcp_instances(
 @app.get("/workspace-mcp/browse-directories", response_model=BrowseDirectoriesResponse)
 async def workspace_mcp_browse_directories(
     path: Optional[str] = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    query: str = Query(default="", max_length=255),
     _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> BrowseDirectoriesResponse:
     """List immediate subdirectories of `path` for the folder picker."""
     try:
-        result = await asyncio.to_thread(_workspace_mcp_service().browse_directories, path)
+        result = await asyncio.to_thread(
+            _workspace_mcp_service().browse_directories, path, offset=offset, limit=limit, query=query
+        )
     except (ValueError, PermissionError, FileNotFoundError) as exc:
         raise _workspace_mcp_http_error(exc) from exc
     return BrowseDirectoriesResponse(**result)
@@ -8671,6 +8676,8 @@ def _memory_partial_write_response(error: Any) -> JSONResponse:
 
 
 class InternalMemoryContext(BaseModel):
+    # Resolved on a worker before transport: its cwd may not exist on this node.
+    project_id: Optional[str] = Field(default=None, pattern=r"^[a-zA-Z0-9._\-]{1,128}$")
     terminal_id: Optional[str] = None
     session_name: Optional[str] = None
     provider: Optional[str] = None

@@ -87,6 +87,20 @@ def resolve_cao_mcp_command(
     if command != CAO_MCP_SERVER_COMMAND:
         return command, list(args)
 
+    # Operator-installed shared client: use its full surface for CAO profiles,
+    # while user-global registrations invoke the knowledge-only default.
+    shared_config = Path.home() / '.config/cao/mcp-client.json'
+    shared_launcher = Path.home() / '.local/bin/cao-shared-mcp'
+    if shared_config.is_file() and shared_launcher.is_file():
+        from cli_agent_orchestrator.mcp_server.shared_client import Connection
+        Connection.load(shared_config)  # refuse unsafe/invalid operator config
+        from cli_agent_orchestrator.services.harness_mcp_integration import read_owned
+        import os
+        read_owned(shared_launcher)
+        if not os.access(shared_launcher, os.X_OK):
+            raise ValueError('CAO shared launcher is not executable')
+        return str(shared_launcher), ['--full', *args]
+
     sibling = _sibling_script()
     on_path = shutil.which(CAO_MCP_SERVER_COMMAND)
     order = (

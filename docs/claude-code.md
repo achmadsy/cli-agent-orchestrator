@@ -193,6 +193,20 @@ uv run pytest -m e2e test/e2e/test_supervisor_orchestration.py -v -k ClaudeCode 
    - Attach to tmux session and check terminal output
    - Verify Claude Code starts correctly in a regular terminal first
 
+### Shared CAO memory in manual and resumed CLI sessions
+
+Register `cao-mcp-server` at user scope using the private operator-installed
+`cao-shared-mcp` launcher. It provides CAO `memory_*`/`codebase_*` tools without
+requiring a CAO spawn and without registering standalone Agent Memory/raw CBM.
+Credentials live once in `~/.config/cao/mcp-client.json` (0600), not in Claude
+settings, hooks, project MCP files, reports or command arguments.
+
+CAO-spawned profiles use the same identity with `--full`, preserving orchestration
+and the genuine terminal context. A resumed Claude process can retain its old
+connections even after migration: distinguish config migrated, loader verified,
+and current session reloaded. Never terminate a running session to force it.
+See [shared CLI setup](shared-cli-mcp.md).
+
 ### Agent-plugin MCP working directory
 
 Its MCP config format has no working-directory key (checked against the vendor's own MCP documentation, 2026-09-16), so CAO carries an agent plugin's declared `cwd` by launching the server through `/bin/sh -c 'cd -- "$1" && shift && exec "$@"'`. `exec` replaces the shell, the environment passes through, and argument boundaries survive because each argument stays a separate argv element. On a host with no `/bin/sh` such a server is skipped with `mcp.cwd_unsupported` rather than started in the wrong directory.

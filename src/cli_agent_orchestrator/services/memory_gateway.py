@@ -13,14 +13,20 @@ from cli_agent_orchestrator.security.auth import get_local_bearer
 from cli_agent_orchestrator.services.elastic_worker_gateway import (
     elastic_worker_gateway_headers,
 )
-from cli_agent_orchestrator.services.memory_service import (
-    ForgetResult,
-    MemoryPartialWriteError,
-    MemoryService,
-)
+from cli_agent_orchestrator.models.memory_contracts import ForgetResult, MemoryPartialWriteError
+
+
+def MemoryService(*args, **kwargs):
+    """Lazy local service: shared HTTP clients must never import storage clients."""
+    from cli_agent_orchestrator.services.memory_service import MemoryService as LocalMemoryService
+    return LocalMemoryService(*args, **kwargs)
 
 
 def remote_memory_url() -> Optional[str]:
+    from cli_agent_orchestrator.mcp_server.shared_client import current
+    connection = current()
+    if connection is not None:
+        return connection.central_url
     value = os.environ.get("CAO_MEMORY_API_URL", "").strip()
     return value.rstrip("/") if value else None
 
@@ -38,6 +44,14 @@ def _timeout() -> float:
 
 
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    from cli_agent_orchestrator.mcp_server.shared_client import current
+    connection = current()
+    if connection is None and os.environ.get('CAO_SHARED_CONNECTION_FILE'):
+        from pathlib import Path
+        from cli_agent_orchestrator.mcp_server.shared_client import Connection
+        connection = Connection.load(Path(os.environ['CAO_SHARED_CONNECTION_FILE']))
+    if connection is not None:
+        return connection.request("POST", path, body=body, timeout=_timeout())
     base_url = remote_memory_url()
     if not base_url:
         raise RuntimeError("CAO_MEMORY_API_URL is not configured")

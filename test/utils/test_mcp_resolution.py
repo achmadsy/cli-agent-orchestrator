@@ -2,6 +2,31 @@
 
 from unittest.mock import patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_operator_client_home(tmp_path, monkeypatch):
+    from pathlib import Path
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+
+
+def test_shared_client_full_surface_resolution(tmp_path):
+    import json
+    config = tmp_path / '.config/cao/mcp-client.json'
+    config.parent.mkdir(parents=True, mode=0o700)
+    config.write_text(json.dumps({'version': 1, 'central_url': 'http://127.0.0.1:9889',
+                                 'local_url': 'http://127.0.0.1:9889',
+                                 'central_token': 'synthetic-central-token',
+                                 'local_token': 'synthetic-local-token'}))
+    config.chmod(0o600)
+    launcher = tmp_path / '.local/bin/cao-shared-mcp'
+    launcher.parent.mkdir(parents=True, mode=0o700)
+    launcher.write_text('#!/bin/sh\nexit 0\n')
+    launcher.chmod(0o700)
+    command, args = resolve_cao_mcp_command('cao-mcp-server', [])
+    assert command == str(launcher) and args == ['--full']
+
 from cli_agent_orchestrator.utils.mcp_resolution import (
     CAO_MCP_SERVER_MODULE,
     resolve_cao_mcp_command,

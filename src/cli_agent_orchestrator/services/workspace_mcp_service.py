@@ -417,23 +417,66 @@ class WorkspaceMcpService:
             self._save(units)
         return self.get_instance(instance.id)
 
-    def browse_directories(self, path: Optional[str] = None) -> dict:
-        """List immediate subdirectories for the Web folder picker."""
+    def browse_directories(
+        self, path: Optional[str] = None, *, offset: int = 0, limit: int = 200, query: str = ""
+    ) -> dict:
+        """Bounded, read-only listing; never starts a workspace/tunnel or subprocess.
+
+        Refuse an over-large directory explicitly rather than silently omitting
+        entries. Paging and name filtering operate over this one directory only.
+        """
+        if offset < 0 or not 1 <= limit <= 500 or len(query) > 255:
+            raise ValueError("Invalid directory listing range")
         base = _canonicalize(path or os.path.expanduser("~"))
+
+        def navigable(candidate: Path) -> Optional[Path]:
+            try:
+                resolved = _canonicalize(str(candidate))
+                if not os.access(resolved, os.R_OK | os.X_OK):
+                    return None
+                return resolved
+            except (OSError, ValueError, RuntimeError):
+                return None
+
+        if not os.access(base, os.R_OK | os.X_OK):
+            raise PermissionError("This folder cannot be listed")
+        dirs = []
         try:
-            entries = sorted(base.iterdir(), key=lambda p: p.name.lower())
-        except PermissionError as exc:
-            raise PermissionError(f"unable to list {base}: {exc}") from exc
-        dirs = [
-            {"name": entry.name, "path": str(entry)}
-            for entry in entries
-            if entry.is_dir() and not entry.name.startswith(".")
-        ]
-        parent = base.parent if base.parent != base else None
+            with os.scandir(base) as entries:
+                for count, entry in enumerate(entries, 1):
+                    if count > 10000:
+                        raise ValueError("This folder has too many entries to browse. Enter a more specific path.")
+                    if entry.name.startswith(".") or query.casefold() not in entry.name.casefold():
+                        continue
+                    try:
+                        if not entry.is_dir():
+                            continue
+                        target = navigable(Path(entry.path))
+                        if target is None or any(part.startswith(".") for part in target.parts):
+                            continue
+                        dirs.append({"name": entry.name, "path": str(target)})
+                    except OSError:
+                        continue  # An entry removed while listing is not a destination.
+        except PermissionError:
+            raise PermissionError("This folder cannot be listed") from None
+        dirs.sort(key=lambda entry: (entry["name"].casefold(), entry["name"]))
+        parent = navigable(base.parent) if base.parent != base else None
+        ancestors = []
+        for candidate in reversed((base, *base.parents)):
+            valid = navigable(candidate)
+            if valid is not None:
+                ancestors.append({"name": valid.name or str(valid), "path": str(valid)})
+        home = navigable(Path.home())
+        end = offset + limit
         return {
             "current_path": str(base),
             "parent_path": str(parent) if parent else None,
-            "directories": dirs,
+            "directories": dirs[offset:end],
+            "ancestors": ancestors,
+            "home_path": str(home) if home else None,
+            "source_node": os.environ.get("CAO_FLEET_NODE_ID") or socket.gethostname(),
+            "next_offset": end if end < len(dirs) else None,
+            "total": len(dirs),
         }
 
 

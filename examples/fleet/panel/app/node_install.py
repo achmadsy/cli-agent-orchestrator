@@ -18,6 +18,13 @@ ROOT = Path(__file__).absolute().parent
 _spec = importlib.util.spec_from_file_location("node_release", ROOT / "node_release.py")
 release = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(release)
+_cli_spec = importlib.util.spec_from_file_location("cli_integration", ROOT / "cli_integration.py")
+integration = importlib.util.module_from_spec(_cli_spec)
+_cli_spec.loader.exec_module(integration)
+
+
+def integration_plan(manifest, blobs):
+    return integration.prepare(manifest, blobs)
 
 
 def run(*args, timeout=120):
@@ -73,6 +80,11 @@ def preflight():
         raise RuntimeError("remote home differs from selected account")
     if os.environ.get("TMUX") or os.environ.get("TMUX_TMPDIR") or os.environ.get("UV_TOOL_DIR") or os.environ.get("UV_TOOL_BIN_DIR"):
         raise RuntimeError("fresh install requires default tmux and uv tool locations")
+    module, _ = integration_plan(manifest, blobs)
+    node = read_env(ROOT / 'cao-server.env')
+    integration.preflight_connection(module, home=home,
+        local_url='http://' + values['CAO_BIND_HOST'] + ':9889',
+        local_token=node.get('CAO_AUTH_LOCAL_TOKEN'))
     return manifest, blobs
 
 
@@ -89,6 +101,7 @@ def private_dir(path):
 def create(path, data, mode):
     private_dir(path.parent)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    os.fchmod(fd, mode)
     with os.fdopen(fd, "wb") as out:
         out.write(data)
         out.flush()
@@ -152,11 +165,14 @@ def install(python):
     socket = resolve_socket()
     internal = secrets.token_urlsafe(48)
     config = home / ".config/cao"
+    integration_module, cli_plan = integration_plan(manifest, blobs)
     marker = config / "node-install-incomplete"
     create(marker, (manifest["id"] + "\n").encode(), 0o600)
     created = []
     tool_started = False
     services_started = False
+    integration_receipt = None
+    integration_receipts = []
     units = ["cao-server.service", "cao-terminal.service"]
     def write(path, data, mode=0o600):
         create(path, data, mode)
@@ -166,7 +182,22 @@ def install(python):
         run("uv", "tool", "install", "--python", python, "--no-python-downloads", "--no-build", "--with", "pillow==12.3.0", str(ROOT / manifest["wheel"]["file"]), timeout=300)
         toolpython = home / ".local/share/uv/tools/cli-agent-orchestrator/bin/python"
         run(str(toolpython), "-I", "-c", "from PIL import Image; import PIL,pydantic_core,libtmux; assert PIL.__version__=='12.3.0'; import cli_agent_orchestrator.api.terminal_workspace")
+        # Metadata-only proof using an operator-preprovisioned target connection.
+        # No supervisor credential is copied to this worker.
+        proof = run(str(toolpython), "-I", "-m", "cli_agent_orchestrator.mcp_server.shared", "--check", "--worker-proof", timeout=60)
+        proof_data = json.loads(proof)
+        if proof_data.get('proof') != integration.PROOF or len(proof_data.get('tools', [])) != 14:
+            raise RuntimeError('Shared CAO routing/tool proof failed')
+        integration_receipt = integration.apply(integration_module, cli_plan)
+        integration_receipts.append(integration_receipt)
+        write(config / "cli-integration-receipt.json", (json.dumps(integration_receipt, indent=2) + "\n").encode())
         run(str(home / ".local/bin/cao"), "install", "code_supervisor", timeout=60)
+        profile_plan = {'version': 1, 'home': str(home), 'changes': [], 'quarantines': [],
+                        'examined': [], 'limitations': []}
+        integration_module.prepare_cao_profiles(profile_plan, home / '.local/bin/cao-shared-mcp')
+        if profile_plan['changes']:
+            profile_receipt = integration.apply(integration_module, profile_plan)
+            integration_receipts.append(profile_receipt)
         write(config / "cao-server.env", (ROOT / "cao-server.env").read_bytes())
         write(config / "terminal-workspace.env", ("CAO_TERMINAL_WORKSPACE=1\nCAO_TERMINAL_URL=http://127.0.0.1:9528\nCAO_TERMINAL_INTERNAL_TOKEN=" + internal + "\n").encode())
         write(config / "cao-terminal-ui.json", blobs[manifest["config"]["file"]])
@@ -183,7 +214,12 @@ def install(python):
         services_started = True
         run("systemctl", "--user", "enable", "--now", *units)
         health("http://" + env["CAO_BIND_HOST"] + ":9889", node["CAO_AUTH_LOCAL_TOKEN"], internal, manifest["protocol"])
+        for item in integration_receipt['changes']:
+            current, _, _ = integration_module.read_owned(Path(item['path']))
+            if integration_module.digest(current) != item['new_sha256']:
+                raise RuntimeError('CLI configuration changed before completion')
         marker.unlink()
+        print(integration.PROOF)
         print("Authenticated CAO and terminal health passed")
         print("CAO fleet install complete")
     except BaseException:
@@ -196,6 +232,8 @@ def install(python):
         if tool_started:
             subprocess.run(["uv", "tool", "uninstall", "cli-agent-orchestrator"], capture_output=True, timeout=60)
         subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=30)
+        for receipt in reversed(integration_receipts):
+            integration.rollback(integration_module, receipt)
         raise
 
 
