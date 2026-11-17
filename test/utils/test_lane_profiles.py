@@ -59,6 +59,41 @@ def test_lanes_never_downgrade():
     assert "Never move to a lighter lane" in _section(_raw("fix_supervisor"), "Lanes")
 
 
+EDITING_LANES = sorted(LANES - {"probe_supervisor"})
+
+
+def test_lanes_force_architect_for_risky_changes():
+    rule = _section(_raw("fix_supervisor"), "Lanes")
+    assert "move to Architect" in rule
+    for trigger in ("authentication", "public API", "data schema", "destructive"):
+        assert trigger in rule
+
+
+def test_verification_section_is_shared_by_editing_lanes():
+    sections = {name: _section(_raw(name), "Verification") for name in EDITING_LANES}
+    first = sections[EDITING_LANES[0]]
+    for name, section in sections.items():
+        assert section == first, f"{name} Verification section drifted"
+    assert "root cause" in first
+    assert "fails before the fix" in first
+    assert "3 failed fix attempts" in first
+
+
+def test_probe_has_no_verification_section():
+    assert "## Verification" not in _raw("probe_supervisor")
+
+
+@pytest.mark.parametrize("name", EDITING_LANES)
+def test_developer_handoff_carries_verification(name):
+    assert "Include the Verification requirements" in _section(_raw(name), "Workflow")
+
+
+def test_architect_planner_compares_approaches():
+    workflow = _section(_raw("architect_supervisor"), "Workflow")
+    assert "compare 2-3 distinct approaches" in workflow
+    assert "approaches considered" in workflow
+
+
 def test_code_supervisor_is_unchanged():
     text = _raw("code_supervisor")
     assert "## Lanes" not in text

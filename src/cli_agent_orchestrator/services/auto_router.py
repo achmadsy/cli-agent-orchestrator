@@ -20,7 +20,10 @@ from typing import Any, Dict, Mapping, Optional
 
 import requests
 
-from cli_agent_orchestrator.services.settings_service import get_auto_routing_settings
+from cli_agent_orchestrator.services.settings_service import (
+    AUTO_ROUTING_DEFAULTS,
+    get_auto_routing_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +39,20 @@ LANE_CRITERIA: Dict[str, str] = {
     ),
     "fix_supervisor": (
         "A bug fix, failing test, error, typo, or other small well-scoped code change "
-        "in one or a few files."
+        "in one or a few files that does not touch authentication, security, a public "
+        "API, a data schema, or a destructive operation."
     ),
     "feature_supervisor": (
         "A new feature or a standard change that spans several files and needs "
-        "implementation plus review."
+        "implementation plus review, and does not touch authentication, security, a "
+        "public API, a data schema, or a destructive operation."
     ),
     "architect_supervisor": (
         "A large, cross-cutting, or architectural change, refactor, or migration "
-        "that needs a plan approved before implementation."
+        "that needs a plan approved before implementation. Also any change to "
+        "authentication or authorization, security boundaries or secrets, a public "
+        "API, a data schema, or a destructive or irreversible operation, even a "
+        "small one."
     ),
 }
 LANES = frozenset(LANE_CRITERIA)
@@ -107,10 +115,30 @@ def _as_probability(value: Any) -> Optional[float]:
     return number
 
 
+def _runner_up(probabilities: Any, choice: str) -> Optional[float]:
+    """Highest valid probability among the other known lanes, or None if none reported."""
+    if not isinstance(probabilities, Mapping):
+        return None
+    others = [
+        number
+        for lane, number in ((key, _as_probability(value)) for key, value in probabilities.items())
+        if lane in LANES and lane != choice and number is not None
+    ]
+    return max(others) if others else None
+
+
 def parse_lane_answer(
-    payload: Any, router_model: Optional[str], min_confidence: float
+    payload: Any,
+    router_model: Optional[str],
+    min_confidence: float,
+    min_margin: float = 0.0,
 ) -> LaneDecision:
-    """Turn an untrusted System One response into a LaneDecision. Exposed for tests."""
+    """Turn an untrusted System One response into a LaneDecision. Exposed for tests.
+
+    ``min_margin`` applies only when the answer reports probabilities for other
+    lanes: a pick that does not lead the runner-up by at least that much is
+    treated as ambiguous and falls back.
+    """
     if not isinstance(payload, Mapping):
         return _fallback("malformed_response", router_model)
     answers = payload.get("answers")
@@ -132,6 +160,9 @@ def parse_lane_answer(
         return _fallback("missing_confidence", router_model)
     if confidence < min_confidence:
         return _fallback("low_confidence", router_model, confidence)
+    runner_up = _runner_up(route.get("probabilities"), choice)
+    if runner_up is not None and confidence - runner_up < min_margin:
+        return _fallback("ambiguous", router_model, confidence)
 
     return LaneDecision(lane=choice, confidence=confidence, router_model=router_model)
 
@@ -173,7 +204,12 @@ def classify_lane(prompt: str, settings: Optional[Mapping[str, Any]] = None) -> 
     except ValueError:
         return _fallback("invalid_json", router_model)
 
-    decision = parse_lane_answer(payload, router_model, cfg["min_confidence"])
+    decision = parse_lane_answer(
+        payload,
+        router_model,
+        cfg["min_confidence"],
+        cfg.get("min_margin", AUTO_ROUTING_DEFAULTS["min_margin"]),
+    )
     if decision.fallback:
         logger.info(
             "auto routing: falling back to %s (%s)", FALLBACK_LANE, decision.fallback_reason

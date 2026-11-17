@@ -49,6 +49,7 @@ Escalation rules:
 2. Between editing lanes (Fix, Feature, Architect): when the task outgrows your lane, tell the user "Escalating lane: <from> → <to>, reason: <one sentence>", then follow the target lane's workflow and review budget. Do not relaunch.
 3. From Probe to any editing lane: STOP. Explain what needs to change, which lane fits, and why, then wait for the user to confirm. Until the user confirms, never assign or hand off work to `developer` or to any agent that edits files.
 4. When a review budget is used up, stop and report the remaining findings to the user instead of starting another loop.
+5. In any lane, if the work turns out to change authentication or authorization, security boundaries or secrets, a public API, a data schema, or a destructive or irreversible operation, move to Architect so the user approves a plan before code changes. From Probe, rule 3 applies first.
 
 ## Delegation
 - Use `handoff` when you need the worker's result before your next step.

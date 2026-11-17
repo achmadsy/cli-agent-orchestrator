@@ -17,7 +17,7 @@ Auto routing is off by default. A node without the `auto_routing` block in
 | `probe_supervisor` | Questions, explanations, investigation, code reading | No edits. May use `planner` for read-only analysis. |
 | `fix_supervisor` | Bug fixes, failing tests, typos, small scoped changes | `developer`, then `reviewer`. At most 1 fix pass and 1 final review. |
 | `feature_supervisor` | New features and standard multi-file changes | `developer`, then `reviewer`. At most 2 fix passes. |
-| `architect_supervisor` | Large, cross-cutting, or architectural changes | `planner`, then user approval of the plan, then `developer` and `reviewer`. At most 2 fix passes. |
+| `architect_supervisor` | Large, cross-cutting, or architectural changes, plus any change to auth, security, a public API, a data schema, or a destructive operation | `planner`, then user approval of the plan, then `developer` and `reviewer`. At most 2 fix passes. |
 
 The four profiles are bundled in `agent_store/` and can also be picked by hand.
 `code_supervisor` is unchanged and is not an Auto lane.
@@ -33,6 +33,32 @@ supervisor stops, explains what needs to change and which lane fits, and waits
 for the user to confirm. Until then it does not assign or hand off work to
 `developer`.
 
+Any lane moves to `architect_supervisor` when the work turns out to touch
+authentication or authorization, security boundaries or secrets, a public API,
+a data schema, or a destructive or irreversible operation. The classifier's
+criteria name the same triggers, so these requests usually start in Architect.
+
+### Verification rules
+
+The fix, feature, and architect lanes pass these rules to the developer with
+every task, and ask the reviewer to check them:
+
+- A bug fix reports its root cause with file:line evidence and adds a test or
+  reproduction that fails before the fix and passes after it.
+- After 3 failed fix attempts for the same bug, the developer stops and the
+  supervisor moves to Architect.
+- Logic changes need automated tests. Security, authentication, or data
+  handling changes need a test that fails before the change.
+- The reviewer reports a bug fix without root-cause evidence or a reproduction
+  test as a finding.
+
+In the Architect lane, the planner compares 2-3 approaches with trade-offs, and
+the supervisor shows them to the user with the plan.
+
+These rules and the review budgets are instructions in the profile prompts.
+CAO does not enforce them in code. The supervisor's read-only tool set is
+enforced: supervisors get only `cao-mcp-server`, `fs_read`, and `fs_list`.
+
 ## Configuration
 
 Settings are per node, in `~/.aws/cli-agent-orchestrator/settings.json` (or
@@ -46,6 +72,7 @@ under `CAO_HOME_DIR`). There is no settings UI for this block.
     "router_model": "oc/jev-1.13-free",
     "timeout_ms": 8000,
     "min_confidence": 0.5,
+    "min_margin": 0.15,
     "account_strategy": "default",
     "workers": {
       "planner": { "provider": "claude_code" },
@@ -63,6 +90,7 @@ under `CAO_HOME_DIR`). There is no settings UI for this block.
 | `router_model` | `oc/jev-1.13-free` | The 9router model used for classification. At most 256 characters. |
 | `timeout_ms` | `8000` | Integer from 500 to 60000. |
 | `min_confidence` | `0.5` | Number from 0 to 1. Answers below it fall back. |
+| `min_margin` | `0.15` | Number from 0 to 1. When Jev reports probabilities for the other lanes, the chosen lane must lead the runner-up by at least this much. `0` turns the check off. |
 | `account_strategy` | `"default"` | `"default"` or `"quota_desc"`. See [Account selection](#account-selection). |
 | `workers` | `{}` | Map of agent profile name to `{provider?, model?}`. Invalid entries are dropped one by one. |
 
@@ -139,6 +167,7 @@ the session starts as `feature_supervisor` and the response carries a
 | `unknown_lane` | Jev chose something other than the four lanes. |
 | `missing_confidence` | The confidence was missing, not a number, or outside 0 to 1. |
 | `low_confidence` | The confidence was below `min_confidence`. The value is kept. |
+| `ambiguous` | The chosen lane led the runner-up by less than `min_margin`. The value is kept. |
 
 The web UI shows the outcome in a snackbar, for example
 `Jev picked fix_supervisor (82%)` or

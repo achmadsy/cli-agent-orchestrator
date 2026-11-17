@@ -114,6 +114,7 @@ AUTO_ROUTING_DEFAULTS: Dict[str, Any] = {
     "router_model": "oc/jev-1.13-free",
     "timeout_ms": 8000,
     "min_confidence": 0.5,
+    "min_margin": 0.15,
     "account_strategy": "default",
     "workers": {},
 }
@@ -171,6 +172,14 @@ def get_auto_routing_settings() -> Dict[str, Any]:
         and 0.0 <= float(min_confidence) <= 1.0
     ):
         result["min_confidence"] = float(min_confidence)
+
+    min_margin = saved.get("min_margin")
+    if (
+        isinstance(min_margin, (int, float))
+        and not isinstance(min_margin, bool)
+        and 0.0 <= float(min_margin) <= 1.0
+    ):
+        result["min_margin"] = float(min_margin)
 
     strategy = saved.get("account_strategy")
     if strategy in _ACCOUNT_STRATEGIES:

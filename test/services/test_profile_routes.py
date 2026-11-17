@@ -140,6 +140,16 @@ class TestAutoRoutingSettings:
         assert cfg["account_strategy"] == "default"
         assert cfg["workers"] == {}
 
+    def test_min_margin_default_and_override(self, settings_file):
+        assert get_auto_routing_settings()["min_margin"] == pytest.approx(0.15)
+        settings_file.write_text(json.dumps({"auto_routing": {"min_margin": 0}}))
+        assert get_auto_routing_settings()["min_margin"] == 0.0
+
+    @pytest.mark.parametrize("value", [-0.1, 1.5, True, "0.2", None])
+    def test_invalid_min_margin_uses_default(self, settings_file, value):
+        settings_file.write_text(json.dumps({"auto_routing": {"min_margin": value}}))
+        assert get_auto_routing_settings()["min_margin"] == AUTO_ROUTING_DEFAULTS["min_margin"]
+
     def test_non_object_block_uses_defaults(self, settings_file):
         settings_file.write_text(json.dumps({"auto_routing": ["on"]}))
         assert get_auto_routing_settings() == AUTO_ROUTING_DEFAULTS
