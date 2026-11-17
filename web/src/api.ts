@@ -117,6 +117,33 @@ export interface RuntimeFailure {
   observed_generation?: number | null
 }
 
+/** GET /auto-routing/status — whether this node offers "Auto (Jev)". */
+export interface AutoRoutingStatus {
+  enabled: boolean
+  router_model: string
+}
+
+/** Lane decision returned by POST /auto-routing/sessions. */
+export interface AutoLaneDecision {
+  lane: string
+  confidence: number | null
+  fallback_reason: string | null
+  router_model: string | null
+}
+
+export interface AutoSessionRequest {
+  initial_message: string
+  provider?: string
+  provider_profile?: string
+  session_name?: string
+  working_directory?: string
+}
+
+export interface AutoSessionResult {
+  terminal: Terminal
+  decision: AutoLaneDecision
+}
+
 export interface Terminal {
   id: string
   name: string
@@ -861,6 +888,18 @@ export const api = {
             }
           : {},
       ),
+      timeoutMs: 90000,
+    },
+  ),
+  getAutoRoutingStatus: () => fetchJSON<AutoRoutingStatus>('/auto-routing/status'),
+  // The prompt travels in the JSON body (never the query string) and is
+  // delivered by the same create call, so it cannot be lost between steps.
+  createAutoSession: (request: AutoSessionRequest) => fetchJSON<AutoSessionResult>(
+    '/auto-routing/sessions',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
       timeoutMs: 90000,
     },
   ),

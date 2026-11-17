@@ -39,6 +39,48 @@ class RoleProviderProfilePolicy(BaseModel):
         }
 
 
+PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_MAX_MODEL_LEN = 256
+
+
+class ProfileRoute(BaseModel):
+    """Provider/model override for one worker agent profile, keyed by profile name.
+
+    Unlike ``RoleProviderPolicy`` this routes by profile NAME, so profiles that
+    share a role (``planner`` and ``reviewer`` are both ``role: reviewer``) can
+    still be sent to different CLIs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in PROVIDERS:
+            raise ValueError(
+                f"unknown provider '{value}' (accepted: {', '.join(sorted(PROVIDERS))})"
+            )
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if len(stripped) > _MAX_MODEL_LEN or any(ch.isspace() for ch in stripped):
+            raise ValueError("model must be a single token of at most 256 characters")
+        return stripped
+
+    def compact(self) -> Dict[str, str]:
+        return {key: value for key, value in self.model_dump().items() if isinstance(value, str)}
+
+
 class RoleProviderPolicy(BaseModel):
     """Optional provider overrides for CAO's three recognized orchestration roles."""
 

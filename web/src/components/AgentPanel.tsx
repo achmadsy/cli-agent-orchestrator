@@ -14,6 +14,11 @@ import type { TerminalLink } from '../terminalLink'
 
 export const FALLBACK_PROVIDERS = ['kiro_cli', 'claude_code', 'q_cli', 'codex', 'gemini_cli', 'hermes', 'kimi_cli', 'copilot_cli', 'opencode_cli', 'cursor_cli', 'grok_cli']
 
+// Virtual picker value for "Auto (Jev)". The colon cannot appear in a real
+// profile name, and this value is never sent to the server as agent_profile:
+// the server picks the real lane profile.
+export const AUTO_PROFILE = 'auto:jev'
+
 const SOURCE_LABELS: Record<string, string> = {
   'built-in': 'Built-in',
   'local': 'Local',
@@ -26,7 +31,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   terminalLink?: TerminalLink | null
   onTerminalLinkConsumed?: () => void
 } = {}) {
-  const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, deleteSession, terminalStatuses, setTerminalStatus } = useStore()
+  const { sessions, fetchSessions, activeSession, activeSessionDetail, selectSession, createSession, createAutoSession, deleteSession, terminalStatuses, setTerminalStatus } = useStore()
   const [monitoring, setMonitoring] = useState<Record<string, { reason: string; observed_status?: string } | null>>({})
   const [provider, setProvider] = useState('kiro_cli')
   const [profile, setProfile] = useState('')
@@ -99,6 +104,15 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   const [switchProfileId, setSwitchProfileId] = useState('')
   const [switchNote, setSwitchNote] = useState('')
   const [switching, setSwitching] = useState(false)
+  const [autoRoutingEnabled, setAutoRoutingEnabled] = useState(false)
+  const [firstPrompt, setFirstPrompt] = useState('')
+  const isAuto = profile === AUTO_PROFILE
+
+  useEffect(() => {
+    api.getAutoRoutingStatus()
+      .then(s => setAutoRoutingEnabled(Boolean(s?.enabled)))
+      .catch(() => setAutoRoutingEnabled(false))
+  }, [])
 
   const handleDeleteTerminal = async () => {
     if (!pendingClose) return
@@ -155,7 +169,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   }, [])
 
   useEffect(() => {
-    if (!profile) {
+    if (!profile || profile === AUTO_PROFILE) {
       setSelectedProfileRole(undefined)
       return
     }
@@ -219,7 +233,40 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
     }
   }, [activeSessionDetail?.terminals.map(t => t.id).join(',')])
 
+  const resetSpawnForm = () => {
+    setProfile('')
+    setWorkingDirectory('')
+    setSessionName('')
+    setDelegatedProfiles({})
+    setFirstPrompt('')
+  }
+
+  const handleCreateAuto = async () => {
+    if (creatingRef.current || !firstPrompt.trim()) return
+    creatingRef.current = true
+    setCreating(true)
+    try {
+      const result = await createAutoSession({
+        initial_message: firstPrompt,
+        provider,
+        ...(providerProfile ? { provider_profile: providerProfile } : {}),
+        ...(sessionName.trim() ? { session_name: sessionName.trim() } : {}),
+        ...(workingDirectory.trim() ? { working_directory: workingDirectory.trim() } : {}),
+      })
+      // On failure the store already showed the error; keep the modal and the
+      // typed prompt so the user can retry or switch to a manual profile.
+      if (result) {
+        setShowSpawnModal(false)
+        resetSpawnForm()
+      }
+    } finally {
+      setCreating(false)
+      creatingRef.current = false
+    }
+  }
+
   const handleCreate = async () => {
+    if (isAuto) return handleCreateAuto()
     if (creatingRef.current || !profile.trim()) return
     creatingRef.current = true
     setCreating(true)
@@ -255,10 +302,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
         roleProviderProfiles,
       )
       setShowSpawnModal(false)
-      setProfile('')
-      setWorkingDirectory('')
-      setSessionName('')
-      setDelegatedProfiles({})
+      resetSpawnForm()
     } finally {
       setCreating(false)
       creatingRef.current = false
@@ -853,12 +897,20 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                     value={profile}
                     onChange={setProfile}
                     placeholder="Select a profile..."
-                    options={profiles.map(p => ({
-                      value: p.name,
-                      label: p.name,
-                      sublabel: p.description || undefined,
-                      group: SOURCE_LABELS[p.source] || p.source,
-                    }))}
+                    options={[
+                      ...(autoRoutingEnabled ? [{
+                        value: AUTO_PROFILE,
+                        label: 'Auto (Jev)',
+                        sublabel: 'Jev reads the first prompt and picks the probe, fix, feature, or architect supervisor',
+                        group: 'Auto',
+                      }] : []),
+                      ...profiles.map(p => ({
+                        value: p.name,
+                        label: p.name,
+                        sublabel: p.description || undefined,
+                        group: SOURCE_LABELS[p.source] || p.source,
+                      })),
+                    ]}
                   />
                 ) : (
                   <input
@@ -870,6 +922,21 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                   />
                 )}
               </div>
+
+              {isAuto && (
+                <div>
+                  <label htmlFor="spawn-first-prompt" className="block text-xs text-gray-500 mb-1">First prompt</label>
+                  <textarea
+                    id="spawn-first-prompt"
+                    value={firstPrompt}
+                    onChange={e => setFirstPrompt(e.target.value)}
+                    rows={4}
+                    placeholder="Describe the task. Jev uses it to choose the supervisor lane."
+                    className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5 focus:border-emerald-500 focus:outline-none resize-y"
+                  />
+                  <p className="mt-1 text-[11px] text-gray-600">Sent to Jev through 9router for classification, then delivered to the chosen supervisor as its first message.</p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Session Name <span className="text-gray-600">(optional)</span></label>
@@ -905,7 +972,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                 </div>
               </div>
 
-              {(selectedProfileRole === 'supervisor' || profile === 'code_supervisor') && (
+              {!isAuto && (selectedProfileRole === 'supervisor' || profile === 'code_supervisor') && (
                 <details className="rounded-lg border border-gray-700/50 bg-gray-900/50 p-3">
                   <summary className="cursor-pointer text-xs font-medium text-gray-300">Delegated agent CLIs</summary>
                   <p className="mt-2 text-xs text-gray-500">Automatically route Developer and Reviewer agents without relying on supervisor prompts.</p>
@@ -1022,11 +1089,11 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
               </button>
               <button
                 onClick={handleCreate}
-                disabled={!profile.trim() || creating}
+                disabled={(isAuto ? !firstPrompt.trim() : !profile.trim()) || creating}
                 className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
               >
                 <Play size={14} />
-                {creating ? 'Spawning...' : 'Spawn Agent'}
+                {creating ? (isAuto ? 'Routing...' : 'Spawning...') : 'Spawn Agent'}
               </button>
             </div>
           </div>

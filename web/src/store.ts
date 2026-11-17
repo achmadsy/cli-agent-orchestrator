@@ -13,6 +13,8 @@ import {
   RoleProviderPolicy,
   RoleProviderProfilePolicy,
   WorkflowRunSubmitResponse,
+  AutoSessionRequest,
+  AutoSessionResult,
 } from './api'
 
 // Only trigger React re-renders when data actually changed
@@ -44,6 +46,10 @@ interface Store {
     providerProfile?: string,
     roleProviderProfiles?: RoleProviderProfilePolicy,
   ) => Promise<void>
+  /** Auto (Jev) launch. Resolves to the result on success and to null on
+      failure (after showing an error snackbar), so the caller can keep its
+      form open and the typed prompt intact when the launch fails. */
+  createAutoSession: (request: AutoSessionRequest) => Promise<AutoSessionResult | null>
   deleteSession: (name: string) => Promise<void>
   showSnackbar: (snackbar: Snackbar) => void
   hideSnackbar: () => void
@@ -177,6 +183,32 @@ export const useStore = create<Store>((set, get) => ({
     } catch (e: any) {
       get().showSnackbar({ type: 'error', message: e.message || 'Failed to create session' })
     }
+  },
+
+  createAutoSession: async (request) => {
+    let result: AutoSessionResult
+    try {
+      result = await api.createAutoSession(request)
+    } catch (e: any) {
+      get().showSnackbar({
+        type: 'error',
+        message: e.detail || e.message || 'Failed to create Auto session',
+      })
+      return null
+    }
+    const { lane, confidence, fallback_reason } = result.decision
+    get().showSnackbar(
+      fallback_reason
+        ? { type: 'info', message: `Jev unavailable (${fallback_reason}); using ${lane}` }
+        : {
+            type: 'success',
+            message: `Jev picked ${lane}${confidence != null ? ` (${Math.round(confidence * 100)}%)` : ''}`,
+          },
+    )
+    // The session exists even if the list refresh fails; never report that
+    // as a launch failure.
+    await get().fetchSessions().catch(() => {})
+    return result
   },
 
   deleteSession: async (name) => {

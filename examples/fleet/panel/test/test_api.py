@@ -460,3 +460,113 @@ def test_basic_and_wrong_bearer_are_rejected(monkeypatch):
         ).status_code
         == 401
     )
+
+
+# --- Auto (Jev) launch -----------------------------------------------------
+
+
+def test_auto_routing_status_proxy_normalizes(monkeypatch):
+    async def fake(c, base):
+        return {"enabled": "yes", "router_model": "m", "ninerouter_url": "http://secret"}
+
+    monkeypatch.setattr(client, "auto_routing_status", fake)
+    tc = TestClient(main.app)
+    r = tc.get("/api/machines/node-a/auto-routing/status")
+    assert r.status_code == 200
+    # Only a literal true enables Auto, and nothing else from the node leaks.
+    assert r.json() == {"enabled": False, "router_model": "m"}
+
+
+def test_auto_routing_status_proxy_maps_old_node_to_502(monkeypatch):
+    async def fake(c, base):
+        raise _err("status", 404)
+
+    monkeypatch.setattr(client, "auto_routing_status", fake)
+    tc = TestClient(main.app)
+    assert tc.get("/api/machines/node-a/auto-routing/status").status_code == 502
+
+
+def test_auto_launch_uses_single_create_call_and_returns_decision(monkeypatch):
+    seen = {}
+
+    async def fake_auto(c, base, prompt, provider, session_name, wd=None):
+        seen.update(prompt=prompt, provider=provider, session_name=session_name, wd=wd)
+        return {
+            "terminal": {"id": "term-7", "session_name": f"cao-{session_name}"},
+            "decision": {"lane": "fix_supervisor", "confidence": 0.8, "fallback_reason": None, "router_model": "m"},
+        }
+
+    def _boom(*a, **k):
+        raise AssertionError("Auto launch must not use the create-then-send path")
+
+    timeouts = []
+    real_client = client.async_client
+
+    def track_client(timeout, token=None):
+        timeouts.append(timeout)
+        return real_client(timeout, token)
+
+    monkeypatch.setattr(client, "launch_auto", fake_auto)
+    monkeypatch.setattr(client, "launch", _boom)
+    monkeypatch.setattr(client, "send_message", _boom)
+    monkeypatch.setattr(client, "async_client", track_client)
+    tc = TestClient(main.app)
+    r = tc.post(
+        "/api/machines/node-a/launch",
+        json={"auto": True, "task": "fix the typo", "provider": "claude_code", "working_directory": "/w",
+              "agent_profile": "auto:jev"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["terminal_id"] == "term-7"
+    assert data["task_sent"] is True
+    assert data["session_name"] == f"cao-{seen['session_name']}"
+    assert data["decision"] == {"lane": "fix_supervisor", "confidence": 0.8, "fallback_reason": None}
+    assert seen["prompt"] == "fix the typo"
+    assert seen["provider"] == "claude_code" and seen["wd"] == "/w"
+    assert timeouts == [client.AUTO_LAUNCH_TIMEOUT]
+
+
+def test_auto_launch_requires_task(monkeypatch):
+    def _boom(*a, **k):
+        raise AssertionError("must not reach the node without a task")
+
+    monkeypatch.setattr(client, "launch_auto", _boom)
+    tc = TestClient(main.app)
+    for body in ({"auto": True}, {"auto": True, "task": "   "}, {"auto": True, "task": 5}):
+        assert tc.post("/api/machines/node-a/launch", json=body).status_code == 400
+
+
+def test_auto_launch_rejects_unsafe_session_name():
+    tc = TestClient(main.app)
+    r = tc.post("/api/machines/node-a/launch", json={"auto": True, "task": "x", "session_name": "a/b"})
+    assert r.status_code == 400
+
+
+def test_auto_launch_maps_node_errors_to_502(monkeypatch):
+    async def fake_auto(c, base, *a, **k):
+        raise _err("status", 409)
+
+    monkeypatch.setattr(client, "launch_auto", fake_auto)
+    tc = TestClient(main.app)
+    r = tc.post("/api/machines/node-a/launch", json={"auto": True, "task": "x"})
+    assert r.status_code == 502
+    assert "upstream said no" in r.json()["detail"]
+
+
+def test_truthy_non_boolean_auto_keeps_manual_launch(monkeypatch):
+    launched = {}
+
+    async def fake_launch(c, base, profile, provider, session_name, wd=None):
+        launched["profile"] = profile
+        return {"id": "term-3"}
+
+    def _boom(*a, **k):
+        raise AssertionError("only a literal true selects Auto")
+
+    monkeypatch.setattr(client, "launch", fake_launch)
+    monkeypatch.setattr(client, "launch_auto", _boom)
+    tc = TestClient(main.app)
+    r = tc.post("/api/machines/node-a/launch", json={"auto": "true", "agent_profile": "reviewer"})
+    assert r.status_code == 200
+    assert launched["profile"] == "reviewer"

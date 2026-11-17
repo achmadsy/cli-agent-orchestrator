@@ -74,6 +74,7 @@ from cli_agent_orchestrator.constants import (
     MODEL_ID_MAX_LEN,
     MODEL_ID_RE,
     OTEL_SERVICE_NAME,
+    PROVIDERS,
     SERVER_HOST,
     SERVER_PORT,
     SERVER_VERSION,
@@ -3089,6 +3090,25 @@ async def provider_profile_quota_overview_endpoint(
     return results
 
 
+# Declared before /agents/provider-profiles/{profile_id} so "select" is not
+# captured as a profile id (same reason as quota/overview above).
+@app.get("/agents/provider-profiles/select")
+async def provider_profile_select_endpoint(
+    provider: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Optional[str]]:
+    """Return the authenticated account of ``provider`` with the most quota left.
+
+    ``profile_id: null`` means "no opinion" (no accounts, no quota data, or the
+    lookup timed out); callers then use the provider default account.
+    """
+    from cli_agent_orchestrator.services.account_selector import select_provider_profile
+
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown provider")
+    return {"profile_id": await select_provider_profile(provider)}
+
+
 @app.get("/agents/provider-profiles/{profile_id}", response_model=ProviderProfile)
 async def get_provider_profile_endpoint(
     profile_id: str,
@@ -3938,6 +3958,121 @@ async def create_session(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create session: {str(e)}",
         )
+
+
+class AutoSessionBody(BaseModel):
+    """Body for POST /auto-routing/sessions.
+
+    ``initial_message`` is required: it is both the text Jev classifies and the
+    first message delivered to the chosen lane supervisor (in the same create
+    call, so it cannot be lost between "create" and "send").
+    """
+
+    model_config = {"extra": "forbid"}
+
+    initial_message: str = Field(min_length=1)
+    provider: Optional[str] = None
+    provider_profile: Optional[str] = None
+    session_name: Optional[str] = None
+    working_directory: Optional[str] = None
+
+    @field_validator("initial_message")
+    @classmethod
+    def validate_initial_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("initial_message must not be blank")
+        return value
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in PROVIDERS:
+            raise ValueError(f"unknown provider '{value}'")
+        return value
+
+
+@app.get("/auto-routing/status")
+async def auto_routing_status(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    """Tell UIs whether to offer "Auto (Jev)". Carries no URL or secret."""
+    from cli_agent_orchestrator.services.settings_service import get_auto_routing_settings
+
+    cfg = get_auto_routing_settings()
+    return {"enabled": bool(cfg["enabled"]), "router_model": cfg["router_model"]}
+
+
+@app.post("/auto-routing/sessions", status_code=status.HTTP_201_CREATED)
+async def create_auto_session(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    body: AutoSessionBody,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    """Classify the first prompt with Jev, then create a lane supervisor session.
+
+    The chosen lane is one of the four bundled lane supervisor profiles; a Jev
+    failure or low confidence falls back to ``feature_supervisor`` and is
+    reported in ``decision.fallback_reason``. Worker routing (``profile_routes``)
+    and the account strategy are snapshotted into the supervisor's metadata.
+    The prompt itself is never stored in metadata.
+    """
+    from cli_agent_orchestrator.services.account_selector import select_provider_profile
+    from cli_agent_orchestrator.services.auto_router import classify_lane
+    from cli_agent_orchestrator.services.settings_service import get_auto_routing_settings
+
+    cfg = get_auto_routing_settings()
+    if not cfg["enabled"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="auto routing is disabled on this node (settings.json auto_routing.enabled)",
+        )
+
+    decision = await asyncio.to_thread(classify_lane, body.initial_message, cfg)
+    supervisor_provider = body.provider or resolve_provider(
+        decision.lane, fallback_provider=DEFAULT_PROVIDER
+    )
+    provider_profile = body.provider_profile
+    if provider_profile is None and cfg["account_strategy"] == "quota_desc":
+        provider_profile = await select_provider_profile(supervisor_provider)
+
+    metadata: Dict[str, Any] = {
+        "auto_decision": decision.as_metadata(),
+        "account_strategy": cfg["account_strategy"],
+    }
+    if cfg["workers"]:
+        metadata["profile_routes"] = cfg["workers"]
+
+    try:
+        session_body = CreateSessionBody(initial_message=body.initial_message, metadata=metadata)
+    except ValueError as exc:  # pydantic ValidationError, e.g. metadata over its byte cap
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"auto routing session metadata rejected: {exc}",
+        )
+
+    terminal = await create_session(
+        request=request,
+        background_tasks=background_tasks,
+        agent_profile=decision.lane,
+        provider=supervisor_provider,
+        provider_profile=provider_profile,
+        session_name=body.session_name,
+        working_directory=body.working_directory,
+        allowed_tools=None,
+        memory_manager=None,
+        engine=None,
+        model=None,
+        use_worktree=False,
+        idempotency_key=None,
+        resume_session_id=None,
+        body=session_body,
+        _scopes=_scopes,
+    )
+    return {
+        "terminal": terminal.model_dump(mode="json"),
+        "decision": decision.as_metadata(),
+    }
 
 
 @app.get("/sessions")

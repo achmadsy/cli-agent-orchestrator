@@ -108,6 +108,78 @@ def get_ephemeral_settings() -> Dict[str, Any]:
     return result
 
 
+AUTO_ROUTING_DEFAULTS: Dict[str, Any] = {
+    "enabled": False,
+    "ninerouter_url": "http://127.0.0.1:20128",
+    "router_model": "oc/jev-1.13-free",
+    "timeout_ms": 8000,
+    "min_confidence": 0.5,
+    "account_strategy": "default",
+    "workers": {},
+}
+_ACCOUNT_STRATEGIES = frozenset({"default", "quota_desc"})
+
+
+def get_auto_routing_settings() -> Dict[str, Any]:
+    """Return the ``auto_routing`` block with every invalid value replaced by its default.
+
+    Precedence: ``CAO_AUTO_ROUTING_ENABLED`` / ``CAO_NINEROUTER_URL`` env vars >
+    settings.json > built-in defaults. ``enabled`` defaults to False, so a node
+    without this block behaves exactly as before. The 9router bearer token is
+    deliberately NOT read here: it lives only in ``CAO_NINEROUTER_API_KEY``.
+    """
+    from cli_agent_orchestrator.services.provider_policy import parse_profile_routes_mapping
+
+    saved = _load().get("auto_routing", {})
+    if not isinstance(saved, dict):
+        logger.warning("Invalid settings.auto_routing (expected object); using defaults")
+        saved = {}
+    result = dict(AUTO_ROUTING_DEFAULTS)
+
+    enabled = saved.get("enabled")
+    if isinstance(enabled, bool):
+        result["enabled"] = enabled
+    env_enabled = os.environ.get("CAO_AUTO_ROUTING_ENABLED")
+    if (
+        env_enabled is not None
+        and env_enabled.strip().lower() in _BOOL_TRUE_VALUES | _BOOL_FALSE_VALUES
+    ):
+        result["enabled"] = env_enabled.strip().lower() in _BOOL_TRUE_VALUES
+
+    url = os.environ.get("CAO_NINEROUTER_URL") or saved.get("ninerouter_url")
+    if isinstance(url, str) and url.strip().startswith(("http://", "https://")):
+        result["ninerouter_url"] = url.strip().rstrip("/")
+    elif url is not None:
+        logger.warning("Ignoring invalid auto_routing.ninerouter_url (expected http(s) URL)")
+
+    router_model = saved.get("router_model")
+    if isinstance(router_model, str) and router_model.strip() and len(router_model) <= 256:
+        result["router_model"] = router_model.strip()
+
+    timeout_ms = saved.get("timeout_ms")
+    if (
+        isinstance(timeout_ms, int)
+        and not isinstance(timeout_ms, bool)
+        and 500 <= timeout_ms <= 60000
+    ):
+        result["timeout_ms"] = timeout_ms
+
+    min_confidence = saved.get("min_confidence")
+    if (
+        isinstance(min_confidence, (int, float))
+        and not isinstance(min_confidence, bool)
+        and 0.0 <= float(min_confidence) <= 1.0
+    ):
+        result["min_confidence"] = float(min_confidence)
+
+    strategy = saved.get("account_strategy")
+    if strategy in _ACCOUNT_STRATEGIES:
+        result["account_strategy"] = strategy
+
+    result["workers"] = parse_profile_routes_mapping(saved.get("workers"))
+    return result
+
+
 def child_may_delegate() -> bool:
     """Operator-only ephemeral.child_may_delegate; no environment overrides."""
     block = _load_or_raise().get("ephemeral", {})

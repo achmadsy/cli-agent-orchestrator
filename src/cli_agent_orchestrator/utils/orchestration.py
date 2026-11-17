@@ -41,13 +41,16 @@ from cli_agent_orchestrator.constants import (
 from cli_agent_orchestrator.mcp_server.models import HandoffResult
 from cli_agent_orchestrator.models.inbox import OrchestrationType
 from cli_agent_orchestrator.models.provider import ProviderType
+from cli_agent_orchestrator.models.provider_policy import PROFILE_ID_RE
 from cli_agent_orchestrator.security.auth import get_local_bearer
 from cli_agent_orchestrator.services.elastic_worker_gateway import (
     elastic_worker_gateway_headers,
 )
 from cli_agent_orchestrator.services.provider_policy import (
+    parse_profile_routes_mapping,
     parse_role_policy_mapping,
     parse_role_profile_policy_mapping,
+    resolve_profile_route,
     resolve_role_provider,
     resolve_role_provider_profile,
 )
@@ -553,7 +556,12 @@ def _create_terminal(
         )
         metadata = terminal_metadata.get("metadata") or {}
         role_policy = parse_role_policy_mapping(metadata.get("role_providers"))
-        provider = explicit_provider or resolve_role_provider(
+        # Precedence: explicit call value, per-profile route (Auto sessions),
+        # matching role policy, child profile provider, supervisor provider.
+        route_provider, model = _supervisor_profile_route(
+            agent_profile, terminal_metadata, explicit_provider, model
+        )
+        provider = route_provider or resolve_role_provider(
             agent_profile, profile_provider, role_policy
         )
         role_profile_policy = parse_role_profile_policy_mapping(
@@ -562,6 +570,8 @@ def _create_terminal(
         resolved_provider_profile = resolve_role_provider_profile(
             agent_profile, explicit_provider_profile, role_profile_policy
         )
+        if resolved_provider_profile is None:
+            resolved_provider_profile = _auto_select_account(provider, metadata)
         session_name = terminal_metadata["session_name"]
         parent_allowed_tools = terminal_metadata.get("allowed_tools")
 
@@ -784,14 +794,71 @@ def _send_direct_input_handoff(terminal_id: str, provider: str, message: str) ->
     _send_direct_input(terminal_id, handoff_message, OrchestrationType.HANDOFF)
 
 
+def _supervisor_profile_route(
+    agent_profile: str,
+    terminal_metadata: Mapping[str, Any],
+    explicit_provider: Optional[str],
+    explicit_model: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Apply the supervisor's ``metadata.profile_routes`` (set by Auto sessions).
+
+    Returns ``(provider, model)``; explicit per-call values win. Sessions
+    without ``profile_routes`` get ``(explicit_provider, explicit_model)``
+    back, i.e. no behavior change.
+    """
+    metadata = terminal_metadata.get("metadata") or {}
+    routes = parse_profile_routes_mapping(metadata.get("profile_routes"))
+    return resolve_profile_route(agent_profile, explicit_provider, explicit_model, routes)
+
+
+def _auto_select_account(provider: str, metadata: Mapping[str, Any]) -> Optional[str]:
+    """Ask the local server for the account with the most quota left.
+
+    Only runs for sessions created with ``account_strategy: quota_desc``. Any
+    failure, or no eligible account, returns None so terminal creation falls
+    back to the provider default account or the ambient CLI config.
+    """
+    if not isinstance(metadata, Mapping) or metadata.get("account_strategy") != "quota_desc":
+        return None
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/agents/provider-profiles/select",
+            params={"provider": provider},
+            headers=_auth_headers() or None,
+            timeout=_mcp_timeout(),
+        )
+        if response.status_code != 200:
+            return None
+        profile_id = response.json().get("profile_id")
+    except (requests.RequestException, ValueError, AttributeError):
+        return None
+    if isinstance(profile_id, str) and PROFILE_ID_RE.fullmatch(profile_id):
+        return profile_id
+    return None
+
+
 def _terminal_role_provider(
     agent_profile: str, terminal_metadata: Mapping[str, Any]
 ) -> Optional[str]:
-    """Return matching provider from terminal policy, without profile fallback."""
+    """Return matching provider from terminal policy, without profile fallback.
+
+    A per-profile route (Auto sessions) wins over the role policy.
+    """
+    route_provider, _model = _supervisor_profile_route(agent_profile, terminal_metadata, None, None)
+    if route_provider:
+        return route_provider
     metadata = terminal_metadata.get("metadata") or {}
     role_policy = parse_role_policy_mapping(metadata.get("role_providers"))
     resolved = resolve_role_provider(agent_profile, "", role_policy)
     return resolved or None
+
+
+def _terminal_route_model(
+    agent_profile: str, terminal_metadata: Mapping[str, Any]
+) -> Optional[str]:
+    """Return the per-profile route model from terminal metadata, if any."""
+    _provider, model = _supervisor_profile_route(agent_profile, terminal_metadata, None, None)
+    return model
 
 
 def _terminal_role_provider_profile(
@@ -815,6 +882,8 @@ class HandoffContext(NamedTuple):
     ``provider_profile`` resolves the same way from the supervisor's
     ``metadata.role_provider_profiles`` when no explicit per-call profile was
     given; ``None`` leaves the account choice to profile defaults.
+    ``model`` carries a per-profile route model from Auto sessions; ``None``
+    leaves the model to the explicit call value or the agent profile.
     """
 
     provider: str
@@ -822,6 +891,7 @@ class HandoffContext(NamedTuple):
     caller_id: Optional[str]
     allowed_tools: Optional[list]
     provider_profile: Optional[str] = None
+    model: Optional[str] = None
 
 
 def _resolve_handoff_provider(
@@ -868,9 +938,12 @@ def _resolve_handoff_provider(
     )
     metadata = terminal_metadata.get("metadata") or {}
     role_policy = parse_role_policy_mapping(metadata.get("role_providers"))
-    provider = explicit_provider or resolve_role_provider(
-        agent_profile, profile_provider, role_policy
+    # Same precedence as _create_terminal: explicit, per-profile route,
+    # role policy, child profile provider, supervisor provider.
+    route_provider, route_model = _supervisor_profile_route(
+        agent_profile, terminal_metadata, explicit_provider, None
     )
+    provider = route_provider or resolve_role_provider(agent_profile, profile_provider, role_policy)
     # Resolve the child's allowed-tools via the same inheritance the old path
     # used; _resolve_child_allowed_tools returns a comma-separated string (or
     # None for unrestricted), which we split into the list the payload expects.
@@ -880,14 +953,18 @@ def _resolve_handoff_provider(
     role_profile_policy = parse_role_profile_policy_mapping(
         metadata.get("role_provider_profiles")
     )
+    provider_profile = resolve_role_provider_profile(
+        agent_profile, explicit_provider_profile, role_profile_policy
+    )
+    if provider_profile is None:
+        provider_profile = _auto_select_account(provider, metadata)
     return HandoffContext(
         provider=provider,
         session_name=terminal_metadata["session_name"],
         caller_id=current_terminal_id,
         allowed_tools=allowed_tools_list,
-        provider_profile=resolve_role_provider_profile(
-            agent_profile, explicit_provider_profile, role_profile_policy
-        ),
+        provider_profile=provider_profile,
+        model=route_model,
     )
 
 
@@ -1365,10 +1442,13 @@ async def _handoff_impl(
                     timeout=_mcp_timeout(),
                 )
                 metadata_response.raise_for_status()
-                selected_provider = _terminal_role_provider(
-                    agent_profile, metadata_response.json()
-                )
+                supervisor_metadata = metadata_response.json()
+                selected_provider = _terminal_role_provider(agent_profile, supervisor_metadata)
+                if not (model and model.strip()):
+                    model = _terminal_route_model(agent_profile, supervisor_metadata)
             base_url = _resolve_target_base_url(target_host)
+            # Account selection stays on the target node: accounts are
+            # node-local, so no quota-based pick is made here.
             ctx = HandoffContext(
                 provider=selected_provider or _resolve_remote_provider(base_url, agent_profile),
                 session_name=None,
@@ -1384,6 +1464,8 @@ async def _handoff_impl(
             # terminal exists, on every path below.
             base_url = API_BASE_URL
             ctx = _resolve_handoff_provider(agent_profile, provider, provider_profile)
+            if not (model and model.strip()):
+                model = ctx.model
         provider = ctx.provider
 
         # Fail fast for codex: its handoff banner requires CAO_TERMINAL_ID. We
@@ -1815,12 +1897,13 @@ def _assign_impl(
                     timeout=_mcp_timeout(),
                 )
                 metadata_response.raise_for_status()
-                selected_provider = _terminal_role_provider(
-                    agent_profile, metadata_response.json()
-                )
+                supervisor_metadata = metadata_response.json()
+                selected_provider = _terminal_role_provider(agent_profile, supervisor_metadata)
+                if not (model and model.strip()):
+                    model = _terminal_route_model(agent_profile, supervisor_metadata)
                 if selected_provider_profile is None:
                     selected_provider_profile = _terminal_role_provider_profile(
-                        agent_profile, metadata_response.json()
+                        agent_profile, supervisor_metadata
                     )
             return _assign_remote(
                 agent_profile=agent_profile,

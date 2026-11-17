@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Tuple
 
 from cli_agent_orchestrator.models.provider_policy import (
+    PROFILE_NAME_RE,
+    ProfileRoute,
     RoleProviderPolicy,
     RoleProviderProfilePolicy,
 )
@@ -65,6 +67,58 @@ def resolve_role_provider_profile(
     if role is None or not role_provider_profiles:
         return None
     return role_provider_profiles.get(role)
+
+
+def parse_profile_routes_mapping(value: object) -> Dict[str, Dict[str, str]]:
+    """Validate untrusted ``metadata.profile_routes``; drop invalid entries.
+
+    Each entry is validated independently so one bad route (unknown provider,
+    malformed name) does not discard the others. Corrupt metadata degrades to
+    "no route", which preserves today's resolution order.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    routes: Dict[str, Dict[str, str]] = {}
+    for name, raw in value.items():
+        if not isinstance(name, str) or not PROFILE_NAME_RE.fullmatch(name):
+            logger.debug("profile route name invalid; skipping: %r", name)
+            continue
+        if not isinstance(raw, Mapping):
+            logger.debug("profile route for %s is not an object; skipping", name)
+            continue
+        try:
+            compact = ProfileRoute(**dict(raw)).compact()
+        except (ValueError, TypeError) as exc:
+            logger.debug("profile route for %s invalid; skipping: %s", name, exc)
+            continue
+        if compact:
+            routes[name] = compact
+    return routes
+
+
+def resolve_profile_route(
+    profile_name: str,
+    explicit_provider: Optional[str],
+    explicit_model: Optional[str],
+    profile_routes: Optional[Mapping[str, Mapping[str, str]]],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return ``(provider, model)`` from a per-profile route.
+
+    Explicit per-call values always win. ``None`` in either slot means "no
+    route opinion"; callers then fall through to role policy and profile
+    defaults exactly as before.
+    """
+    route = (profile_routes or {}).get(profile_name) or {}
+    route_provider = route.get("provider")
+    provider = explicit_provider or route_provider
+    if explicit_model and explicit_model.strip():
+        return provider, explicit_model
+    # A route's model is written for the route's provider. When the caller
+    # explicitly picked a different provider, that model would be meaningless
+    # (or wrong) for it, so drop it rather than launch a mismatched pair.
+    if explicit_provider and route_provider and explicit_provider != route_provider:
+        return provider, None
+    return provider, route.get("model")
 
 
 def parse_role_policy_mapping(value: object) -> Dict[str, str]:

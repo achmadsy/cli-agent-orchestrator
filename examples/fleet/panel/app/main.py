@@ -385,10 +385,58 @@ async def fleet():
     return {"machines": await asyncio.gather(*[probe(m) for m in machines])}
 
 
+async def _launch_auto(name, base, body, session_name):
+    task = body.get("task")
+    if not isinstance(task, str) or not task.strip():
+        raise HTTPException(status_code=400, detail="task required for Auto (Jev) launch")
+    provider = body.get("provider") or None
+    wd = body.get("working_directory")
+    async with client.async_client(client.AUTO_LAUNCH_TIMEOUT, config.NODE_TOKEN) as c:
+        try:
+            result = await client.launch_auto(c, base, task, provider, session_name, wd)
+        except httpx.HTTPStatusError as exc:
+            detail = (exc.response.text or "").strip() or str(exc)
+            raise HTTPException(status_code=502, detail=f"{name} auto launch failed: {detail}")
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"{name} auto launch failed: {type(exc).__name__}: {exc}"
+            )
+    term = result.get("terminal") or {}
+    decision = result.get("decision") or {}
+    return {
+        "machine": name,
+        "session_name": term.get("session_name") or session_name,
+        "terminal_id": term.get("id"),
+        # The node delivers the prompt as part of the create call.
+        "task_sent": True,
+        "decision": {
+            "lane": decision.get("lane"),
+            "confidence": decision.get("confidence"),
+            "fallback_reason": decision.get("fallback_reason"),
+        },
+    }
+
+
+@app.get("/api/machines/{name}/auto-routing/status")
+async def machine_auto_routing_status(name: str):
+    m = _machine_or_404(name)
+    base = config.base_url(m)
+    async with client.async_client(client.TIMEOUT, config.NODE_TOKEN) as c:
+        try:
+            status = await client.auto_routing_status(c, base)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"{name}: {exc}")
+    return {"enabled": status.get("enabled") is True, "router_model": status.get("router_model")}
+
+
 @app.post("/api/machines/{name}/launch")
 async def launch(name: str, body: dict = Body(default_factory=dict)):
     m = _machine_or_404(name)
     base = config.base_url(m)
+    if body.get("auto") is True:
+        session_name = body.get("session_name") or ("fleet-panel-" + os.urandom(3).hex())
+        _safe_segment(session_name, "session_name")
+        return await _launch_auto(name, base, body, session_name)
     agent = body.get("agent_profile") or "developer"
     provider = body.get("provider") or "claude_code"
     wd = body.get("working_directory")

@@ -377,6 +377,8 @@ registerForm.addEventListener("submit", async (event) => {
 const launchDialog = $("#launch-dialog");
 const launchForm = $("#launch-form");
 const launchMsg = $("#launch-msg");
+// Picker value for Auto (Jev). A colon cannot appear in a real profile name.
+const AUTO_PROFILE = "auto:jev";
 
 $("#launch-btn").addEventListener("click", openLaunch);
 
@@ -401,46 +403,81 @@ async function loadNodeOptions(node) {
   const profSel = $("#launch-profile");
   setOptions(provSel, [{ value: "", label: "loading…" }]);
   setOptions(profSel, [{ value: "", label: "loading…" }]);
+  syncAutoTask();
+  // Older nodes have no auto-routing endpoint; treat any failure as disabled.
+  const autoStatus = api(`/api/machines/${node}/auto-routing/status`).catch(() => null);
   try {
-    const [provs, profs] = await Promise.all([
+    const [provs, profs, auto] = await Promise.all([
       api(`/api/machines/${node}/providers`),
       api(`/api/machines/${node}/profiles`),
+      autoStatus,
     ]);
     const installed = provs.filter((p) => p.installed);
     const provList = installed.length ? installed : provs;
     setOptions(provSel, provList.map((p) => ({
       value: p.name, label: `${p.name}${p.installed ? "" : " (not installed)"}`,
     })));
-    setOptions(profSel, profs.map((p) => {
+    const profileOptions = profs.map((p) => {
       const n = typeof p === "string" ? p : p.name;
       return { value: n, label: n };
-    }));
+    });
+    if (auto && auto.enabled === true) {
+      profileOptions.unshift({ value: AUTO_PROFILE, label: "Auto (Jev): pick the supervisor lane from the task" });
+    }
+    setOptions(profSel, profileOptions);
   } catch (e) {
     setOptions(provSel, [{ value: "claude_code", label: "claude_code" }]);
     setOptions(profSel, [{ value: "developer", label: "developer" }]);
   }
+  syncAutoTask();
 }
+
+// Auto (Jev) needs the first task: the node classifies it to pick the lane.
+// The submit handler enforces it; a native `required` would also block the
+// Cancel button, which is a submit button in this dialog form.
+function syncAutoTask() {
+  const isAuto = $("#launch-profile").value === AUTO_PROFILE;
+  const task = $("#launch-task");
+  task.placeholder = isAuto
+    ? "required: Jev reads this to choose the probe, fix, feature, or architect supervisor"
+    : "e.g. run the tests and summarise failures";
+}
+
+$("#launch-profile").addEventListener("change", syncAutoTask);
 
 launchForm.addEventListener("submit", async (e) => {
   if (e.submitter && e.submitter.value === "cancel") return; // let the dialog close
   e.preventDefault();
   const f = e.target;
   const node = f.node.value;
+  const isAuto = f.agent_profile.value === AUTO_PROFILE;
+  const task = f.task.value.trim();
+  if (isAuto && !task) {
+    launchMsg.textContent = "Auto (Jev) needs a first task.";
+    return;
+  }
   const body = {
     working_directory: f.working_directory.value.trim() || undefined,
     provider: f.provider.value,
-    agent_profile: f.agent_profile.value,
-    task: f.task.value.trim() || undefined,
+    task: task || undefined,
   };
+  // The Auto sentinel is never sent as agent_profile; the node picks the lane.
+  if (isAuto) body.auto = true;
+  else body.agent_profile = f.agent_profile.value;
   const ok = f.querySelector('button[value="ok"]');
   ok.disabled = true;
-  launchMsg.textContent = `launching on ${node}… (agent init can take up to ~90s)`;
+  launchMsg.textContent = isAuto
+    ? `routing with Jev and launching on ${node}… (can take up to ~2 min)`
+    : `launching on ${node}… (agent init can take up to ~90s)`;
   try {
     const r = await api(`/api/machines/${node}/launch`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
     });
     launchDialog.close();
-    statusLine.textContent = `launched ${r.session_name} on ${node}`;
+    const lane = r.decision && r.decision.lane;
+    statusLine.textContent = lane
+      ? `launched ${r.session_name} on ${node} as ${lane}${r.decision.fallback_reason ? ` (Jev fallback: ${r.decision.fallback_reason})` : ""}`
+      : `launched ${r.session_name} on ${node}`;
     refresh();
   } catch (err) {
     launchMsg.textContent = "launch failed: " + err.message;

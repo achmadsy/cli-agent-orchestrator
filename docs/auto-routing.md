@@ -1,0 +1,193 @@
+# Auto (Jev) supervisor routing
+
+Auto routing picks a supervisor workflow ("lane") from the first prompt of a
+session. You type the task, Jev classifies it through 9router's System One
+endpoint, and CAO starts the matching supervisor with that prompt as its first
+message. Optional per-profile routes then choose which CLI and model each
+delegated worker uses, and an optional account strategy picks the provider
+account with the most remaining quota.
+
+Auto routing is off by default. A node without the `auto_routing` block in
+`settings.json` behaves exactly as before.
+
+## Lanes
+
+| Lane profile | Use for | Budget |
+|---|---|---|
+| `probe_supervisor` | Questions, explanations, investigation, code reading | No edits. May use `planner` for read-only analysis. |
+| `fix_supervisor` | Bug fixes, failing tests, typos, small scoped changes | `developer`, then `reviewer`. At most 1 fix pass and 1 final review. |
+| `feature_supervisor` | New features and standard multi-file changes | `developer`, then `reviewer`. At most 2 fix passes. |
+| `architect_supervisor` | Large, cross-cutting, or architectural changes | `planner`, then user approval of the plan, then `developer` and `reviewer`. At most 2 fix passes. |
+
+The four profiles are bundled in `agent_store/` and can also be picked by hand.
+`code_supervisor` is unchanged and is not an Auto lane.
+
+### Escalation
+
+A lane supervisor may move itself to a heavier lane when the work turns out to
+be larger than classified (for example fix to feature, or feature to
+architect). It never moves to a lighter lane.
+
+Moving from `probe_supervisor` to any editing lane is the exception. The
+supervisor stops, explains what needs to change and which lane fits, and waits
+for the user to confirm. Until then it does not assign or hand off work to
+`developer`.
+
+## Configuration
+
+Settings are per node, in `~/.aws/cli-agent-orchestrator/settings.json` (or
+under `CAO_HOME_DIR`). There is no settings UI for this block.
+
+```json
+{
+  "auto_routing": {
+    "enabled": true,
+    "ninerouter_url": "http://127.0.0.1:20128",
+    "router_model": "oc/jev-1.13-free",
+    "timeout_ms": 8000,
+    "min_confidence": 0.5,
+    "account_strategy": "default",
+    "workers": {
+      "planner": { "provider": "claude_code" },
+      "developer": { "provider": "codex", "model": "gpt-5.5" },
+      "reviewer": { "provider": "claude_code" }
+    }
+  }
+}
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Must be a JSON boolean. |
+| `ninerouter_url` | `http://127.0.0.1:20128` | Must start with `http://` or `https://`. A trailing `/` is removed. |
+| `router_model` | `oc/jev-1.13-free` | The 9router model used for classification. At most 256 characters. |
+| `timeout_ms` | `8000` | Integer from 500 to 60000. |
+| `min_confidence` | `0.5` | Number from 0 to 1. Answers below it fall back. |
+| `account_strategy` | `"default"` | `"default"` or `"quota_desc"`. See [Account selection](#account-selection). |
+| `workers` | `{}` | Map of agent profile name to `{provider?, model?}`. Invalid entries are dropped one by one. |
+
+Each key is validated on its own. An invalid value is replaced by its default
+and logged, and the rest of the block still applies.
+
+Environment variables:
+
+| Variable | Effect |
+|---|---|
+| `CAO_AUTO_ROUTING_ENABLED` | Overrides `enabled`. Accepts `1/true/yes/on` and `0/false/no/off`. |
+| `CAO_NINEROUTER_URL` | Overrides `ninerouter_url`. |
+| `CAO_NINEROUTER_API_KEY` | Sent as `Authorization: Bearer ...` to 9router when set. It is read only from the environment, never from `settings.json`. |
+
+Restart `cao-server` after changing `settings.json` or the environment.
+
+## Worker routes
+
+`workers` is keyed by agent profile name (`planner`, `developer`, `reviewer`,
+or any other profile), not by role. That matters because `planner` has the
+`reviewer` role but can still be routed separately.
+
+The routes are copied into the Auto session's metadata when the session is
+created. When the supervisor calls `assign` or `handoff`, the provider for the
+worker is resolved in this order:
+
+1. The provider passed explicitly to the tool call.
+2. The `workers` route for the worker's profile name.
+3. The session's `role_providers` policy. Auto sessions do not set one.
+4. The worker profile's own `provider`.
+5. The supervisor's provider.
+
+The route's `model` is used only when the call does not pass its own model. If
+the call passes a different provider than the route, the route's model is
+dropped, so a model is never paired with a CLI it was not written for.
+
+Workers without a route behave as they do in any other supervisor session.
+
+## Account selection
+
+With `"account_strategy": "quota_desc"`, CAO picks a provider account for the
+supervisor and for each worker it starts on the same node:
+
+- Only accounts with `auth_state` `authenticated` are considered.
+- Each account's quota is read, and an account's score is its lowest
+  `remaining` value. The highest score wins. On a tie, a fresh reading beats a
+  cached one.
+- An account whose quota read fails or is not `ok` is skipped.
+- Only providers whose account registry reports quota take part. `codex` and
+  `opencode_cli`, for example, do not, so they always use their default config.
+- The whole selection has a 5 second budget. A timeout, a store error, or no
+  account with a usable quota means the default CLI config is used.
+
+An account chosen explicitly in the spawn form always wins over the strategy.
+Workers handed off to another Fleet node never get an account from this node,
+because accounts are local to each node.
+
+With no accounts configured, `quota_desc` behaves like `default`.
+
+## Fallback
+
+Classification never blocks a launch. When it cannot produce a usable answer,
+the session starts as `feature_supervisor` and the response carries a
+`fallback_reason`:
+
+| Reason | Cause |
+|---|---|
+| `empty_prompt` | The prompt is blank after trimming. |
+| `timeout` | 9router did not answer within `timeout_ms`. |
+| `unreachable` | Connection error to `ninerouter_url`. |
+| `http_<code>` | 9router answered with a non-2xx status. |
+| `invalid_json` | The response body was not JSON. |
+| `malformed_response`, `missing_answer` | The JSON did not contain `answers.lane`. |
+| `unknown_lane` | Jev chose something other than the four lanes. |
+| `missing_confidence` | The confidence was missing, not a number, or outside 0 to 1. |
+| `low_confidence` | The confidence was below `min_confidence`. The value is kept. |
+
+The web UI shows the outcome in a snackbar, for example
+`Jev picked fix_supervisor (82%)` or
+`Jev unavailable (timeout); using feature_supervisor`.
+
+## Privacy
+
+The first 2000 characters of the prompt leave the node. They go to 9router,
+which forwards them to the upstream of `router_model`. With the default
+`oc/jev-1.13-free`, that is the free OpenCode Zen lane. Choose a different
+`router_model` if the prompts must stay with a specific provider.
+
+CAO does not log the prompt or the API key, and the prompt is not stored in
+session metadata. The metadata keeps only the decision (`lane`, `confidence`,
+`fallback_reason`, `router_model`), the account strategy, and the worker
+routes.
+
+## Using it
+
+**Web UI.** In Spawn Agent, the profile list shows **Auto (Jev)** at the top
+when `GET /auto-routing/status` reports `enabled: true`. Picking it shows a
+required **First prompt** field and hides the Delegated agent CLIs section. If
+the launch fails, the dialog stays open with the prompt kept.
+
+**Fleet panel.** The launch dialog adds an Auto (Jev) profile option for nodes
+that report Auto routing as enabled. The first task is then required. Nodes
+that are older or have Auto routing disabled show only the normal profiles.
+
+**API.**
+
+```
+GET  /auto-routing/status
+     -> {"enabled": bool, "router_model": str}
+
+POST /auto-routing/sessions        (JSON body)
+     {"initial_message": str,      required, not blank
+      "provider": str?,            the supervisor's CLI
+      "provider_profile": str?,    an explicit account, skips the strategy
+      "session_name": str?,
+      "working_directory": str?}
+     -> 201 {"terminal": {...}, "decision": {...}}
+     -> 409 when Auto routing is disabled
+     -> 400 for an invalid session name, working directory, or metadata
+     -> 422 for an invalid body, including any agent_profile field
+
+GET  /agents/provider-profiles/select?provider=<name>
+     -> {"profile_id": str | null}
+```
+
+The prompt is delivered by the same create call, so there is no separate send
+step. The endpoint has no idempotency key: retrying could classify the prompt
+into a different lane.

@@ -11,6 +11,9 @@ TIMEOUT = httpx.Timeout(8.0, connect=4.0)
 # CAO's POST /sessions blocks until the agent CLI reaches a ready prompt
 # (it uses a 60s internal init timeout), so allow headroom beyond that.
 LAUNCH_TIMEOUT = httpx.Timeout(90.0, connect=5.0)
+# An Auto (Jev) launch first classifies the prompt (auto_routing.timeout_ms,
+# capped at 60s on the node) and then runs the same blocking create.
+AUTO_LAUNCH_TIMEOUT = httpx.Timeout(150.0, connect=5.0)
 SENDER_ID = "fleet-panel"
 
 
@@ -68,6 +71,26 @@ async def launch(c, base, agent_profile, provider, session_name, working_directo
     if working_directory:
         params["working_directory"] = working_directory
     r = await c.post(f"{base}/sessions", params=params)
+    r.raise_for_status()
+    return r.json()
+
+
+async def auto_routing_status(c, base):
+    return await _get(c, base, "/auto-routing/status")
+
+
+async def launch_auto(c, base, initial_message, provider, session_name, working_directory=None):
+    """Create an Auto (Jev) session; the node picks the supervisor lane.
+
+    The prompt goes in the JSON body (never the query string) and is delivered
+    by the same create call, so there is no separate send step to lose it.
+    """
+    body = {"initial_message": initial_message, "session_name": session_name}
+    if provider:
+        body["provider"] = provider
+    if working_directory:
+        body["working_directory"] = working_directory
+    r = await c.post(f"{base}/auto-routing/sessions", json=body)
     r.raise_for_status()
     return r.json()
 

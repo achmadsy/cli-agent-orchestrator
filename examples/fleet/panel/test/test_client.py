@@ -157,3 +157,53 @@ async def test_working_directory_path():
     async with _mock(handler) as c:
         out = await client.working_directory(c, "http://x", "abcd1234")
     assert out["working_directory"] == "/work"
+
+
+async def test_auto_routing_status_path():
+    def handler(req):
+        assert req.url.path == "/auto-routing/status"
+        return httpx.Response(200, json={"enabled": True, "router_model": "m"})
+
+    async with _mock(handler) as c:
+        out = await client.auto_routing_status(c, "http://x")
+    assert out["enabled"] is True
+
+
+async def test_launch_auto_sends_prompt_in_json_body_not_query():
+    import json
+
+    seen = {}
+
+    def handler(req):
+        seen["method"] = req.method
+        seen["path"] = req.url.path
+        seen["params"] = dict(req.url.params)
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(201, json={"terminal": {"id": "t1"}, "decision": {"lane": "fix_supervisor"}})
+
+    async with _mock(handler) as c:
+        out = await client.launch_auto(c, "http://x", "fix the typo", "claude_code", "sess-1", "/tmp")
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/auto-routing/sessions"
+    assert seen["params"] == {}
+    assert seen["body"] == {
+        "initial_message": "fix the typo",
+        "session_name": "sess-1",
+        "provider": "claude_code",
+        "working_directory": "/tmp",
+    }
+    assert out["decision"]["lane"] == "fix_supervisor"
+
+
+async def test_launch_auto_omits_optional_fields():
+    import json
+
+    seen = {}
+
+    def handler(req):
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(201, json={"terminal": {}, "decision": {}})
+
+    async with _mock(handler) as c:
+        await client.launch_auto(c, "http://x", "hi", None, "sess-1")
+    assert seen["body"] == {"initial_message": "hi", "session_name": "sess-1"}
