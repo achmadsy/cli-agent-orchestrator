@@ -14,6 +14,30 @@ Delivery has two paths:
 
 Both paths converge on `check_and_send_pending_messages()`, which gates delivery based on terminal status.
 
+## Direct Input History
+
+Some input does not go through the queue: CAO types it straight into the terminal. So that the Inbox shows everything sent through CAO, each of these sends is also recorded in the receiver's inbox table as a row with `channel = direct`:
+
+| Source | `sender_id` |
+| --- | --- |
+| `POST /terminals/{id}/input` (web quick-send, `cao session send`, API) | the `sender_id` parameter: `ui`, `cli`, or `api` when omitted |
+| Initial message of a new terminal (assign, `POST /sessions?initial_message=`) | the caller terminal, else `api` |
+| Handoff and workflow steps (`run_agent_step`) | the caller terminal, else `workflow` inside a workflow run, else `api` |
+| Scheduled flows | `flow` |
+| AG-UI approval answers | `agui` |
+
+Direct rows are written with a final status, `delivered` or `failed`, and never `pending`. The pending queries used by delivery, the watchdog, and the reconciliation sweep only read `channel = queued` rows, so a direct row is never typed in a second time. Queued messages keep `channel = queued`; rows created before this column existed are migrated to `queued`.
+
+What is recorded:
+
+- The text the sender sent, before CAO injects any memory block.
+- `failed` when the send raised, for example because the terminal is blocked on a prompt (HTTP 409). A send to an unknown terminal (HTTP 404) has no receiver and is not recorded.
+- For the initial message, one row after the first dispatch. It is flipped to `failed` if the worker never starts or the provider errors. Resubmits and redeliveries are not recorded again.
+
+Recording is best-effort. If the write fails, CAO logs a warning with the terminal id and error type (never the message text), and the send itself is unaffected.
+
+Direct rows are stored in the local CAO database in plain text, the same as queued messages. That includes initial prompts, handoff prompts, and anything a user pastes into quick-send. The cleanup service deletes inbox rows older than `RETENTION_DAYS` (14 days).
+
 ## Standard Delivery
 
 By default, messages are only delivered when the terminal status is **IDLE** or **COMPLETED**. This ensures the provider's TUI is ready to accept input and the message won't be lost or corrupt the terminal state.

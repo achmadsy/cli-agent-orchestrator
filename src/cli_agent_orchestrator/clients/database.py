@@ -21,6 +21,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     literal_column,
+    or_,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, declarative_base, sessionmaker
@@ -28,7 +29,7 @@ from sqlalchemy.types import TypeDecorator
 
 from cli_agent_orchestrator.constants import DATABASE_URL, DB_DIR, DEFAULT_PROVIDER
 from cli_agent_orchestrator.models.flow import Flow
-from cli_agent_orchestrator.models.inbox import InboxMessage, MessageStatus
+from cli_agent_orchestrator.models.inbox import InboxMessage, MessageChannel, MessageStatus
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +291,14 @@ class InboxModel(Base):
     message = Column(String, nullable=False)
     status = Column(String, nullable=False)  # MessageStatus enum value
     created_at = Column(UTCDateTime, default=_utcnow)
+    # MessageChannel value. "direct" rows record input already typed into the
+    # terminal and must never be picked up by the pending-delivery queries.
+    channel = Column(
+        String,
+        nullable=False,
+        default=MessageChannel.QUEUED.value,
+        server_default=MessageChannel.QUEUED.value,
+    )
 
 
 class MemoryMetadataModel(Base):
@@ -774,6 +783,8 @@ def init_db() -> None:
     # Appended LAST (issue #447, ``handoff_results``). Its own new table, no shared
     # columns with anything above, so registry order is immaterial here too.
     _migrate_add_handoff_results()
+    # Appended LAST. Additive column on inbox only; existing rows read as queued.
+    _migrate_inbox_channel()
     # Provider-account metadata owns no credentials and uses a disjoint table.
     # Keep this in the startup registry; the store repeats it only as a guard for
     # isolated/repointed databases that intentionally do not call init_db().
@@ -2081,6 +2092,30 @@ def _migrate_terminals_schema() -> None:
         logger.warning(f"Migration check for terminals schema failed: {e}")
 
 
+def _migrate_inbox_channel() -> None:
+    """Add the ``channel`` column to an existing ``inbox`` table.
+
+    Idempotent: gated on PRAGMA table_info. Existing rows are queued messages,
+    so the column defaults to ``queued``.
+    """
+    import sqlite3
+
+    from cli_agent_orchestrator.constants import DATABASE_FILE
+
+    try:
+        conn = sqlite3.connect(str(DATABASE_FILE))
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(inbox)").fetchall()}
+            if columns and "channel" not in columns:
+                conn.execute("ALTER TABLE inbox ADD COLUMN channel TEXT NOT NULL DEFAULT 'queued'")
+                conn.commit()
+                logger.info("Migration: added channel column to inbox table")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"Migration check for inbox channel failed: {e}")
+
+
 def create_terminal(
     terminal_id: str,
     tmux_session: str,
@@ -2975,6 +3010,7 @@ def list_pending_receiver_ids_by_provider(provider: str) -> List[str]:
             .filter(
                 TerminalModel.provider == provider,
                 InboxModel.status == MessageStatus.PENDING.value,
+                InboxModel.channel == MessageChannel.QUEUED.value,
             )
             .distinct()
             .all()
@@ -3002,6 +3038,7 @@ def list_pending_receiver_ids_older_than(min_age_seconds: int) -> List[str]:
             .join(TerminalModel, TerminalModel.id == InboxModel.receiver_id)
             .filter(
                 InboxModel.status == MessageStatus.PENDING.value,
+                InboxModel.channel == MessageChannel.QUEUED.value,
                 InboxModel.created_at < cutoff,
             )
             .distinct()
@@ -3078,42 +3115,109 @@ def create_inbox_message(sender_id: str, receiver_id: str, message: str) -> Inbo
 
 
 def get_pending_messages(receiver_id: str, limit: int = 1) -> List[InboxMessage]:
-    """Get pending messages ordered by created_at ASC (oldest first)."""
-    return get_inbox_messages(receiver_id, limit=limit, status=MessageStatus.PENDING)
+    """Get pending queued messages ordered by created_at ASC (oldest first).
+
+    Only ``queued`` rows are ever delivered. ``direct`` rows record input that
+    was already typed into the terminal and are written with a final status, so
+    the channel filter is a second guard against delivering them twice.
+    """
+    return get_inbox_messages(
+        receiver_id,
+        limit=limit,
+        status=MessageStatus.PENDING,
+        channel=MessageChannel.QUEUED,
+    )
+
+
+def _to_inbox_message(msg: "InboxModel") -> InboxMessage:
+    return InboxMessage(
+        id=msg.id,
+        sender_id=msg.sender_id,
+        receiver_id=msg.receiver_id,
+        message=msg.message,
+        status=MessageStatus(msg.status),
+        created_at=msg.created_at,
+        channel=MessageChannel(msg.channel or MessageChannel.QUEUED.value),
+    )
 
 
 def get_inbox_messages(
-    receiver_id: str, limit: int = 10, status: Optional[MessageStatus] = None
+    receiver_id: str,
+    limit: int = 10,
+    status: Optional[MessageStatus] = None,
+    *,
+    channel: Optional[MessageChannel] = None,
+    latest: bool = False,
+    include_sent: bool = False,
 ) -> List[InboxMessage]:
-    """Get inbox messages with optional status filter ordered by created_at ASC (oldest first).
+    """Get inbox messages ordered by created_at ASC (oldest first).
 
     Args:
         receiver_id: Terminal ID to get messages for
         limit: Maximum number of messages to return (default: 10)
         status: Optional filter by message status (None = all statuses)
+        channel: Optional filter by delivery channel (None = all channels)
+        latest: Return the ``limit`` NEWEST matching messages instead of the
+            oldest. The result is still ordered oldest first. Delivery code must
+            keep the default, because it drains the oldest message first.
+        include_sent: Also include messages this terminal SENT to others.
 
     Returns:
         List of inbox messages ordered by creation time (oldest first)
     """
     with SessionLocal() as db:
-        query = db.query(InboxModel).filter(InboxModel.receiver_id == receiver_id)
+        if include_sent:
+            query = db.query(InboxModel).filter(
+                or_(InboxModel.receiver_id == receiver_id, InboxModel.sender_id == receiver_id)
+            )
+        else:
+            query = db.query(InboxModel).filter(InboxModel.receiver_id == receiver_id)
 
         if status is not None:
             query = query.filter(InboxModel.status == status.value)
+        if channel is not None:
+            query = query.filter(InboxModel.channel == channel.value)
 
-        messages = query.order_by(InboxModel.created_at.asc()).limit(limit).all()
-
-        return [
-            InboxMessage(
-                id=msg.id,
-                sender_id=msg.sender_id,
-                receiver_id=msg.receiver_id,
-                message=msg.message,
-                status=MessageStatus(msg.status),
-                created_at=msg.created_at,
+        if latest:
+            newest = (
+                query.order_by(InboxModel.created_at.desc(), InboxModel.id.desc())
+                .limit(limit)
+                .all()
             )
-            for msg in messages
-        ]
+            messages = list(reversed(newest))
+        else:
+            messages = query.order_by(InboxModel.created_at.asc()).limit(limit).all()
+
+        return [_to_inbox_message(msg) for msg in messages]
+
+
+def record_direct_message(
+    sender_id: str, receiver_id: str, message: str, status: MessageStatus
+) -> Optional[int]:
+    """Record input CAO typed directly into a terminal, for the Inbox history.
+
+    The row is written with a final status (``delivered`` or ``failed``) and
+    channel ``direct``, so the inbox service never delivers it.
+
+    Returns:
+        The new row id, or None if the receiver terminal does not exist.
+    """
+    if status == MessageStatus.PENDING:
+        raise ValueError("direct messages are recorded with a final status")
+    with SessionLocal() as db:
+        if not db.query(TerminalModel).filter(TerminalModel.id == receiver_id).first():
+            return None
+        row = InboxModel(
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            message=message,
+            status=status.value,
+            channel=MessageChannel.DIRECT.value,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return int(row.id)
 
 
 def record_project_alias(project_id: str, alias: str, kind: str) -> None:

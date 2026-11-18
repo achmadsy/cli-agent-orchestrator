@@ -22,6 +22,19 @@ class MessageStatus(str, Enum):
     FAILED = "failed"
 
 
+class MessageChannel(str, Enum):
+    """How a message reached the receiver.
+
+    ``queued`` messages wait in the inbox and are typed in when the receiver is
+    ready. ``direct`` rows are a record of input CAO already typed straight into
+    the terminal; they are written with a final status and are never delivered
+    by the inbox service.
+    """
+
+    QUEUED = "queued"
+    DIRECT = "direct"
+
+
 class InboxMessage(BaseModel):
     """Inbox message model."""
 
@@ -31,6 +44,7 @@ class InboxMessage(BaseModel):
     message: str = Field(..., description="Message content")
     status: MessageStatus = Field(..., description="Message status")
     created_at: datetime = Field(..., description="Creation timestamp (UTC)")
+    channel: MessageChannel = Field(MessageChannel.QUEUED, description="Delivery channel")
 
     @field_validator("created_at")
     @classmethod

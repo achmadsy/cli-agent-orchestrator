@@ -155,7 +155,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
     try {
       await api.sendInput(terminalId, message)
       setSendInputValues(prev => ({ ...prev, [terminalId]: '' }))
-      showSnackbar({ type: 'success', message: `Message sent to terminal ${terminalId}` })
+      showSnackbar({ type: 'success', message: `Message sent to terminal ${terminalId} (logged in its Inbox)` })
     } catch {
       showSnackbar({ type: 'error', message: `Failed to send message to terminal ${terminalId}` })
     }
@@ -682,7 +682,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                       value={sendInputValues[t.id] || ''}
                       onChange={e => setSendInputValues(prev => ({ ...prev, [t.id]: e.target.value }))}
                       onKeyDown={e => { if (e.key === 'Enter') handleSendInput(t.id) }}
-                      placeholder="Type a message..."
+                      placeholder="Send directly to the terminal..."
                       className="flex-1 bg-gray-900 border border-gray-700 text-gray-200 text-sm font-mono rounded-lg px-3 py-1.5 focus:border-emerald-500 focus:outline-none"
                       autoFocus
                     />

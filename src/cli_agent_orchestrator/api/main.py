@@ -4596,6 +4596,9 @@ async def send_terminal_input(
         # off the event loop so a slow tmux call can't freeze every other
         # request — including /health and concurrent assign/handoff. Same
         # hazard class as issue #382 (only fixed for DELETE /sessions there).
+        # Recorded in the receiver's Inbox history as a ``direct`` row so the
+        # Inbox shows everything typed through CAO, not only queued messages.
+        # An unknown terminal (404) leaves no row: there is no receiver.
         success = await asyncio.to_thread(
             terminal_service.send_input,
             terminal_id,
@@ -4603,6 +4606,7 @@ async def send_terminal_input(
             registry=get_plugin_registry(request),
             sender_id=sender_id,
             orchestration_type=orchestration_type,
+            inbox_log_sender=sender_id or "api",
         )
         return {"success": success}
     except TerminalInputBlockedError as e:
@@ -8183,6 +8187,14 @@ async def get_inbox_messages_endpoint(
     status_param: Optional[str] = Query(
         default=None, alias="status", description="Filter by message status"
     ),
+    latest: bool = Query(
+        default=False,
+        description="Return the most recent `limit` messages (still oldest first)",
+    ),
+    include_sent: bool = Query(
+        default=False,
+        description="Also include messages this terminal sent to others",
+    ),
     _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> List[Dict]:
     """Get inbox messages for a terminal.
@@ -8191,9 +8203,11 @@ async def get_inbox_messages_endpoint(
         terminal_id: Terminal ID to get messages for
         limit: Maximum number of messages to return (default: 10, max: 100)
         status_param: Optional filter by message status ('pending', 'delivered', 'failed')
+        latest: Return the newest ``limit`` rows instead of the oldest
+        include_sent: Include rows where this terminal is the sender
 
     Returns:
-        List of inbox messages with sender_id, message, created_at, status
+        List of inbox messages with sender_id, message, created_at, status, channel
     """
     try:
         # Convert status filter if provided
@@ -8208,7 +8222,13 @@ async def get_inbox_messages_endpoint(
                 )
 
         # Get messages using existing database function
-        messages = get_inbox_messages(terminal_id, limit=limit, status=status_filter)
+        messages = get_inbox_messages(
+            terminal_id,
+            limit=limit,
+            status=status_filter,
+            latest=latest,
+            include_sent=include_sent,
+        )
 
         # Convert to response format
         result = []
@@ -8220,6 +8240,7 @@ async def get_inbox_messages_endpoint(
                     "receiver_id": msg.receiver_id,
                     "message": msg.message,
                     "status": msg.status.value,
+                    "channel": msg.channel.value,
                     "created_at": msg.created_at.isoformat() if msg.created_at else None,
                 }
             )

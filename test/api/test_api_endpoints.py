@@ -1526,6 +1526,7 @@ class TestSendTerminalInput:
             registry=ANY,
             sender_id=None,
             orchestration_type=None,
+            inbox_log_sender="api",
         )
 
     def test_send_input_with_orchestration_context(self, client):
@@ -1549,6 +1550,7 @@ class TestSendTerminalInput:
             registry=ANY,
             sender_id="supervisor-1",
             orchestration_type="assign",
+            inbox_log_sender="supervisor-1",
         )
 
     def test_send_input_terminal_not_found(self, client):

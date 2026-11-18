@@ -277,7 +277,8 @@ def send(session_name, message, terminal_id, is_async, timeout):
 
         response = api_http.post(
             f"{API_BASE_URL}/terminals/{target_id}/input",
-            params={"message": message},
+            # sender_id labels the row the server records in the Inbox history.
+            params={"message": message, "sender_id": "cli"},
         )
         response.raise_for_status()
     except api_http.exceptions.RequestException as e:

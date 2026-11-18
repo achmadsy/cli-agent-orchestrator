@@ -258,7 +258,7 @@ class TestDeliveryOnResume:
         monkeypatch.setattr(
             terminal_service,
             "send_input",
-            lambda tid, text: deliveries.append(("input", tid, text)) or True,
+            lambda tid, text, **_kwargs: deliveries.append(("input", tid, text)) or True,
         )
         monkeypatch.setattr(
             terminal_service,

@@ -137,12 +137,26 @@ describe('API wrapper', () => {
     })
   })
 
-  it('sendInput sends POST with message', async () => {
+  it('sendInput sends POST with message and sender_id=ui', async () => {
     mockResponse({ success: true })
     await api.sendInput('t1', 'hello')
     expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('/terminals/t1/input?message=hello'),
+      expect.stringContaining('/terminals/t1/input?message=hello&sender_id=ui'),
       expect.objectContaining({ method: 'POST' })
+    )
+  })
+
+  it('getInboxMessages forwards latest and include_sent only when asked', async () => {
+    mockResponse([])
+    await api.getInboxMessages('t1', 50)
+    expect(mockFetch.mock.calls[mockFetch.mock.calls.length - 1][0]).toMatch(
+      /\/terminals\/t1\/inbox\/messages\?limit=50$/
+    )
+
+    mockResponse([])
+    await api.getInboxMessages('t1', 50, 'failed', { latest: true, includeSent: true })
+    expect(mockFetch.mock.calls[mockFetch.mock.calls.length - 1][0]).toContain(
+      '/terminals/t1/inbox/messages?limit=50&status=failed&latest=true&include_sent=true'
     )
   })
 

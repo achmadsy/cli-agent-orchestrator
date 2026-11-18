@@ -46,6 +46,22 @@ function MessageStatusBadge({ status }: { status: InboxMessage['status'] }) {
   )
 }
 
+// direct: typed straight into the terminal (quick-send, CLI, handoff, workflow, flow).
+// queued: waited in the inbox until the agent was idle. Rows from an older server have no channel.
+function MessageChannelBadge({ channel }: { channel: InboxMessage['channel'] }) {
+  const direct = channel === 'direct'
+  return (
+    <span
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+        direct ? 'bg-sky-400/10 text-sky-400' : 'bg-gray-700/40 text-gray-400'
+      }`}
+      title={direct ? 'Typed straight into the terminal' : 'Queued until the agent was idle'}
+    >
+      {direct ? 'Direct' : 'Queued'}
+    </span>
+  )
+}
+
 export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
   const [messages, setMessages] = useState<InboxMessage[]>([])
   const [loading, setLoading] = useState(true)
@@ -58,7 +74,10 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
   const fetchMessages = async () => {
     try {
       const status = filter === 'all' ? undefined : filter
-      const data = await api.getInboxMessages(terminalId, 50, status)
+      const data = await api.getInboxMessages(terminalId, 50, status, {
+        latest: true,
+        includeSent: true,
+      })
       setMessages(data)
     } catch {
       // silently fail — will retry
@@ -128,7 +147,7 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
             </div>
             <div>
               <h3 className="text-sm font-semibold text-white">Agent Inbox</h3>
-              <p className="text-[11px] text-gray-500">Messages between agents in this session <span className="font-mono">({terminalId})</span></p>
+              <p className="text-[11px] text-gray-500">Everything sent to or from this agent through CAO <span className="font-mono">({terminalId})</span></p>
             </div>
           </div>
           <button
@@ -169,7 +188,7 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
             <div className="flex flex-col items-center justify-center py-12 text-gray-500">
               <Mail size={32} className="mb-3 opacity-40" />
               <p className="text-sm">No messages yet</p>
-              <p className="text-xs text-gray-600 mt-1">Messages appear here when agents communicate via handoff, assign, or send_message. You can also send a message manually below.</p>
+              <p className="text-xs text-gray-600 mt-1">Messages appear here when you or another agent send this agent something through CAO: quick-send, the CLI, handoff, assign, send_message, workflows and flows. You can also queue a message below.</p>
             </div>
           ) : (
             messages.map(msg => {
@@ -187,9 +206,10 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
                     }`}
                   >
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[10px] font-mono text-gray-500">
-                        {incoming ? msg.sender_id.slice(0, 8) : msg.receiver_id.slice(0, 8)}
+                      <span className="text-[10px] font-mono text-gray-500 break-all">
+                        {incoming ? `from ${msg.sender_id}` : `to ${msg.receiver_id}`}
                       </span>
+                      <MessageChannelBadge channel={msg.channel} />
                       <MessageStatusBadge status={msg.status} />
                     </div>
                     <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{msg.message}</p>
@@ -213,7 +233,7 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
               value={sendText}
               onChange={e => setSendText(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Type a message..."
+              placeholder="Queue a message (delivered when the agent is idle)..."
               className="flex-1 bg-gray-800 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5 focus:border-emerald-500 focus:outline-none placeholder-gray-600"
             />
             <button

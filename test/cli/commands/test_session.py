@@ -511,6 +511,8 @@ class TestSend:
 
         assert result.exit_code == 0
         assert "Message sent" in result.output
+        # sender_id=cli labels the row the server records in the Inbox history.
+        assert mock_post.call_args.kwargs["params"] == {"message": "hello", "sender_id": "cli"}
 
     @patch("cli_agent_orchestrator.cli.commands.session.api_http.post")
     @patch("cli_agent_orchestrator.cli.commands.session.api_http.get")

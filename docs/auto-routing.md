@@ -183,7 +183,9 @@ which forwards them to the upstream of `router_model`. With the default
 CAO does not log the prompt or the API key, and the prompt is not stored in
 session metadata. The metadata keeps only the decision (`lane`, `confidence`,
 `fallback_reason`, `router_model`), the account strategy, and the worker
-routes.
+routes. The prompt is still delivered to the agent, so it is stored in the
+agent's [Inbox history](inbox-delivery.md#direct-input-history) in the local
+CAO database, like any other input sent through CAO, and deleted after 14 days.
 
 ## Using it
 

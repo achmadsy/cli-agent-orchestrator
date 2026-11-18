@@ -783,18 +783,29 @@ async def run_agent_step(
         terminal_id,
         prompt,
     )
+    # The prompt is recorded in the worker's Inbox history as a ``direct`` row: from the
+    # supervisor that handed it off, else the workflow engine, else a plain API caller.
+    # Redeliveries during the completion wait below are not recorded again.
+    inbox_sender = caller_id or (
+        "workflow" if (env_vars or {}).get("CAO_WORKFLOW_RUN_ID") else "api"
+    )
     if frozen_memory is None:
-        # The call is left BYTE-IDENTICAL on the no-frozen-block path, rather than passing an extra
-        # `None`. Existing tests assert this exact two-argument shape, and keeping them passing
-        # unchanged is the strongest available evidence for C-1: a non-workflow step reaches
-        # ``send_input`` exactly as it did before this unit.
-        await asyncio.to_thread(terminal_service.send_input, terminal_id, prompt)
+        # No ``frozen_memory`` argument on the no-frozen-block path, rather than passing an
+        # extra `None`, so a non-workflow step still reaches ``send_input``'s live-memory path
+        # exactly as it did before #583 (C-1).
+        await asyncio.to_thread(
+            terminal_service.send_input,
+            terminal_id,
+            prompt,
+            inbox_log_sender=inbox_sender,
+        )
     else:
         await asyncio.to_thread(
             terminal_service.send_input,
             terminal_id,
             prompt,
             frozen_memory=frozen_memory,
+            inbox_log_sender=inbox_sender,
         )
 
     # Wait for completion — IN-PROCESS poll of status_monitor (NOT the

@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cli_agent_orchestrator.api.main import app
-from cli_agent_orchestrator.models.inbox import InboxMessage, MessageStatus
+from cli_agent_orchestrator.models.inbox import InboxMessage, MessageChannel, MessageStatus
 
 
 @pytest.fixture
@@ -92,7 +92,9 @@ class TestGetInboxMessagesEndpoint:
             assert response.status_code == 200
             data = response.json()
             assert len(data) == 2
-            mock_get.assert_called_once_with("abcdef12", limit=2, status=None)
+            mock_get.assert_called_once_with(
+                "abcdef12", limit=2, status=None, latest=False, include_sent=False
+            )
 
     def test_get_messages_with_status_and_limit(self, client, sample_inbox_messages):
         """Test getting messages with both status and limit parameters."""
@@ -104,7 +106,56 @@ class TestGetInboxMessagesEndpoint:
             assert response.status_code == 200
             data = response.json()
             assert len(data) == 1
-            mock_get.assert_called_once_with("abcdef12", limit=5, status=MessageStatus.PENDING)
+            mock_get.assert_called_once_with(
+                "abcdef12",
+                limit=5,
+                status=MessageStatus.PENDING,
+                latest=False,
+                include_sent=False,
+            )
+
+    def test_latest_and_include_sent_are_forwarded(self, client, sample_inbox_messages):
+        """latest/include_sent reach the database query unchanged."""
+        with patch("cli_agent_orchestrator.api.main.get_inbox_messages") as mock_get:
+            mock_get.return_value = sample_inbox_messages
+
+            response = client.get(
+                "/terminals/abcdef12/inbox/messages?limit=50&latest=true&include_sent=true"
+            )
+
+            assert response.status_code == 200
+            mock_get.assert_called_once_with(
+                "abcdef12", limit=50, status=None, latest=True, include_sent=True
+            )
+
+    def test_response_includes_channel(self, client):
+        """Each row reports how it reached the receiver: queued or direct."""
+        rows = [
+            InboxMessage(
+                id=1,
+                sender_id="sup12345",
+                receiver_id="abcdef12",
+                message="queued one",
+                status=MessageStatus.PENDING,
+                created_at=datetime(2025, 12, 6, 12, 0, 0),
+            ),
+            InboxMessage(
+                id=2,
+                sender_id="ui",
+                receiver_id="abcdef12",
+                message="typed one",
+                status=MessageStatus.DELIVERED,
+                channel=MessageChannel.DIRECT,
+                created_at=datetime(2025, 12, 6, 12, 1, 0),
+            ),
+        ]
+        with patch("cli_agent_orchestrator.api.main.get_inbox_messages") as mock_get:
+            mock_get.return_value = rows
+
+            response = client.get("/terminals/abcdef12/inbox/messages")
+
+            assert response.status_code == 200
+            assert [m["channel"] for m in response.json()] == ["queued", "direct"]
 
     def test_invalid_status_parameter(self, client):
         """Test error handling for invalid status parameter."""

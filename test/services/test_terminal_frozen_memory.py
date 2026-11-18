@@ -150,7 +150,13 @@ def test_the_live_path_is_unaffected_when_memory_is_disabled(spy, memory_disable
 def test_both_signatures_take_the_block_last_and_defaulted():
     """``agent_step.run_agent_step`` calls send_input positionally with two arguments."""
     for func in (inject_memory_context, terminal_service.send_input):
-        params = list(inspect.signature(func).parameters.values())
+        # Keyword-only options (send_input's ``inbox_log_sender``) may follow; the block
+        # must be the last parameter a positional caller can reach.
+        params = [
+            p
+            for p in inspect.signature(func).parameters.values()
+            if p.kind is not inspect.Parameter.KEYWORD_ONLY
+        ]
         assert params[-1].name == "frozen_memory", f"{func.__name__}: block must come last"
         assert params[-1].default is None, f"{func.__name__}: block must default to None"
 

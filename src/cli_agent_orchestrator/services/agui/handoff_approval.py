@@ -230,7 +230,7 @@ class TerminalServiceAnswerDelivery:
             terminal_service.send_special_key(terminal_id, "C-u")
         except Exception:
             logger.debug("line-clear before paste failed for terminal %s", terminal_id)
-        terminal_service.send_input(terminal_id, text)
+        terminal_service.send_input(terminal_id, text, inbox_log_sender="agui")
 
     def send_special_key(self, terminal_id: str, key: str) -> bool:
         from cli_agent_orchestrator.services import terminal_service

@@ -479,15 +479,20 @@ class TestTerminalServiceAnswerDelivery:
             "send_special_key",
             lambda tid, key: events.append(("key", tid, key)) or True,
         )
-        monkeypatch.setattr(
-            terminal_service,
-            "send_input",
-            lambda tid, text: events.append(("input", tid, text)) or True,
-        )
+        senders: List[object] = []
+
+        def _send_input(tid, text, **kwargs):
+            senders.append(kwargs.get("inbox_log_sender"))
+            events.append(("input", tid, text))
+            return True
+
+        monkeypatch.setattr(terminal_service, "send_input", _send_input)
 
         TerminalServiceAnswerDelivery().send_input("t-9", "hello")
         # A line-clear (C-u) precedes the paste so a retry replaces, not appends.
         assert events == [("key", "t-9", "C-u"), ("input", "t-9", "hello")]
+        # The typed answer is recorded in the Inbox history; the C-u clear is not.
+        assert senders == ["agui"]
 
     def test_send_input_delivers_even_if_clear_fails(self, monkeypatch):
         from cli_agent_orchestrator.services import terminal_service
@@ -502,7 +507,9 @@ class TestTerminalServiceAnswerDelivery:
 
         monkeypatch.setattr(terminal_service, "send_special_key", _clear_fails)
         monkeypatch.setattr(
-            terminal_service, "send_input", lambda tid, text: inputs.append((tid, text)) or True
+            terminal_service,
+            "send_input",
+            lambda tid, text, **_kwargs: inputs.append((tid, text)) or True,
         )
 
         # Best-effort clear: a failed clear must not block the actual delivery.

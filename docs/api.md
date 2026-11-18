@@ -234,8 +234,17 @@ strings. See [Control Planes](control-planes.md) for operator-facing choices.
 
 ### Inbox
 
-- `/terminals/{terminal_id}/inbox/messages` sends and reads terminal inbox
-  messages.
+- `POST /terminals/{terminal_id}/inbox/messages` queues a message. It is
+  delivered when the terminal is idle.
+- `GET /terminals/{terminal_id}/inbox/messages` reads the terminal's Inbox
+  history. Query parameters: `limit` (default 10, max 100), `status`
+  (`pending`, `delivered`, `failed`), `latest=true` to return the newest
+  `limit` rows (still oldest first), and `include_sent=true` to add rows this
+  terminal sent. Each row has a `channel`: `queued` for inbox messages, or
+  `direct` for input CAO typed straight into the terminal (see
+  [Direct input history](inbox-delivery.md#direct-input-history)).
+- `POST /terminals/{terminal_id}/input` is not queued, but it is recorded as a
+  `direct` row from `sender_id` (default `api`).
 
 Agents normally use the in-session
 [supervisor protocols](../skills/cao-supervisor-protocols/SKILL.md) rather

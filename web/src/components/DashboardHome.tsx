@@ -225,7 +225,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
     try {
       await api.sendInput(terminalId, message)
       setSendInputValues(prev => ({ ...prev, [terminalId]: '' }))
-      showSnackbar({ type: 'success', message: 'Message sent' })
+      showSnackbar({ type: 'success', message: 'Message sent (logged in the Inbox)' })
     } catch {
       showSnackbar({ type: 'error', message: 'Failed to send message' })
     }
@@ -462,7 +462,7 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                                   <button onClick={() => setSendInputOpen(prev => ({ ...prev, [t.id]: true }))} className="text-[10px] text-gray-600 hover:text-gray-300 transition-colors">Message agent...</button>
                                 ) : (
                                   <div className="flex items-center gap-1.5">
-                                    <input type="text" value={sendInputValues[t.id] || ''} onChange={e => setSendInputValues(prev => ({ ...prev, [t.id]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') handleSendInput(t.id) }} placeholder="Type a message..." className="flex-1 bg-gray-900 border border-gray-700 text-gray-200 text-[11px] font-mono rounded px-2 py-1 focus:border-emerald-500 focus:outline-none" autoFocus />
+                                    <input type="text" value={sendInputValues[t.id] || ''} onChange={e => setSendInputValues(prev => ({ ...prev, [t.id]: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') handleSendInput(t.id) }} placeholder="Send directly to the terminal..." className="flex-1 bg-gray-900 border border-gray-700 text-gray-200 text-[11px] font-mono rounded px-2 py-1 focus:border-emerald-500 focus:outline-none" autoFocus />
                                     <button onClick={() => handleSendInput(t.id)} disabled={sendingInput === t.id || !(sendInputValues[t.id] || '').trim()} className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-[10px] font-medium rounded transition-colors"><Send size={10} /></button>
                                   </div>
                                 )}

@@ -272,6 +272,9 @@ export interface InboxMessage {
   receiver_id: string
   message: string
   status: 'pending' | 'delivered' | 'failed'
+  // queued: waited in the inbox for an idle agent. direct: typed straight into the terminal.
+  // Optional so responses from an older server still parse.
+  channel?: 'queued' | 'direct'
   created_at: string | null
 }
 
@@ -939,8 +942,9 @@ export const api = {
     ),
   getTerminalOutput: (id: string, mode: 'full' | 'last' = 'full') =>
     fetchJSON<{ output: string; mode: string }>(`/terminals/${id}/output?mode=${mode}`),
+  // sender_id=ui labels the row the server records in the receiver's Inbox history.
   sendInput: (id: string, message: string) =>
-    fetchJSON<{ success: boolean }>(`/terminals/${id}/input?message=${encodeURIComponent(message)}`, { method: 'POST' }),
+    fetchJSON<{ success: boolean }>(`/terminals/${id}/input?message=${encodeURIComponent(message)}&sender_id=ui`, { method: 'POST' }),
   exitTerminal: (id: string) =>
     fetchJSON<{ success: boolean }>(`/terminals/${id}/exit`, { method: 'POST' }),
   deleteTerminal: async (id: string) => {
@@ -959,8 +963,14 @@ export const api = {
     fetchJSON<Terminal>(`/sessions/${sessionName}/terminals?provider=${encodeURIComponent(provider)}&agent_profile=${encodeURIComponent(agentProfile)}${providerProfile ? `&provider_profile=${encodeURIComponent(providerProfile)}` : ''}${workingDirectory ? `&working_directory=${encodeURIComponent(workingDirectory)}` : ''}`, { method: 'POST', timeoutMs: 90000 }),
 
   // Inbox
-  getInboxMessages: (terminalId: string, limit?: number, status?: string) =>
-    fetchJSON<InboxMessage[]>(`/terminals/${terminalId}/inbox/messages?limit=${limit || 50}${status ? `&status=${status}` : ''}`),
+  // latest: newest `limit` rows (still oldest first). includeSent: also rows this terminal sent.
+  getInboxMessages: (
+    terminalId: string,
+    limit?: number,
+    status?: string,
+    opts: { latest?: boolean; includeSent?: boolean } = {},
+  ) =>
+    fetchJSON<InboxMessage[]>(`/terminals/${terminalId}/inbox/messages?limit=${limit || 50}${status ? `&status=${status}` : ''}${opts.latest ? '&latest=true' : ''}${opts.includeSent ? '&include_sent=true' : ''}`),
   sendInboxMessage: (receiverId: string, senderId: string, message: string) =>
     fetchJSON<{ success: boolean }>(`/terminals/${receiverId}/inbox/messages?sender_id=${senderId}&message=${encodeURIComponent(message)}`, { method: 'POST' }),
 

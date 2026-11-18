@@ -389,7 +389,7 @@ async def execute_flow(name: str) -> bool:
         # so a slow tmux call can't freeze every other request (same hazard
         # class as issue #382, already fixed for POST /terminals/{id}/input
         # in api/main.py's send_terminal_input; this call site was missed).
-        await asyncio.to_thread(send_input, terminal.id, rendered_prompt)
+        await asyncio.to_thread(send_input, terminal.id, rendered_prompt, inbox_log_sender="flow")
 
         logger.info(f"Flow {name}: launched session {session_name}")
         return True

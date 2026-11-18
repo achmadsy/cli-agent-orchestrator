@@ -91,7 +91,9 @@ class TestHappyPath:
                 )
             )
 
-        m_send.assert_called_once_with("abc12345", "x", frozen_memory="")
+        m_send.assert_called_once_with(
+            "abc12345", "x", frozen_memory="", inbox_log_sender="workflow"
+        )
 
     def test_frozen_memory_resolution_is_offloaded_from_the_event_loop(self):
         """A polling frozen-memory resolver must leave the server loop schedulable."""
@@ -147,7 +149,9 @@ class TestHappyPath:
                 release_resolution.set()
                 await step
 
-            m_send.assert_called_once_with("abc12345", "x", frozen_memory=block)
+            m_send.assert_called_once_with(
+                "abc12345", "x", frozen_memory=block, inbox_log_sender="workflow"
+            )
             return event_loop_thread_id
 
         event_loop_thread_id = asyncio.run(_run())
@@ -173,7 +177,7 @@ class TestHappyPath:
         assert result.status == TerminalStatus.COMPLETED
         # Canonical sequence: created, prompt sent, output extracted in LAST mode.
         m_create.assert_awaited_once()
-        m_send.assert_called_once_with("abc12345", "do the task")
+        m_send.assert_called_once_with("abc12345", "do the task", inbox_log_sender="api")
         m_out.assert_called_once_with("abc12345", OutputMode.LAST)
         # Created-here + teardown default -> graceful exit THEN delete.
         m_exit.assert_called_once_with("abc12345")
@@ -218,7 +222,7 @@ class TestHappyPath:
         m_delete.assert_not_called()
         # A reused terminal is owned by the caller — no graceful exit either.
         m_exit.assert_not_called()
-        m_send.assert_called_once_with("reuse99", "x")
+        m_send.assert_called_once_with("reuse99", "x", inbox_log_sender="api")
 
     @pytest.mark.parametrize("engine", [KiroEngine.V2, "v2"])
     def test_reuse_matching_explicit_v2(self, engine):
@@ -248,7 +252,7 @@ class TestHappyPath:
 
         assert result.terminal_id == "reuse99"
         m_create.assert_not_awaited()
-        m_send.assert_called_once_with("reuse99", "x")
+        m_send.assert_called_once_with("reuse99", "x", inbox_log_sender="api")
 
     def test_reuse_conflicting_kas_uses_phase0_guard_before_send(self):
         create, send, delete, get_output, exit_cli, get_wd, wait, status = _patch_terminal_layer()
@@ -858,7 +862,7 @@ class TestPromptDeliveryVerification:
         m_redeliver.assert_called_once_with("abc12345", "x", 1, full_resend_requires_probe=True)
         # The original send still happened exactly once; only the dropped
         # copy is re-delivered.
-        m_send.assert_called_once_with("abc12345", "x")
+        m_send.assert_called_once_with("abc12345", "x", inbox_log_sender="api")
 
     def test_redelivery_failure_does_not_break_the_raises_contract(self):
         """The redelivery performs tmux I/O and can raise (blocked input,

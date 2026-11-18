@@ -57,7 +57,9 @@ from cli_agent_orchestrator.clients.database import (  # Compatibility/test seam
     list_pending_initial_delivery_terminal_ids,
     list_siblings_by_group_prefix,
     list_terminals_by_session,
+    record_direct_message,
     update_last_active,
+    update_message_status,
     update_terminal_deferred_init_external_owner,
     update_terminal_deferred_init_failure,
     update_terminal_deferred_init_runtime_reclaimed,
@@ -77,7 +79,7 @@ from cli_agent_orchestrator.constants import (
     TERMINAL_LOG_DIR,
 )
 from cli_agent_orchestrator.models.agent_profile import AgentProfile
-from cli_agent_orchestrator.models.inbox import OrchestrationType
+from cli_agent_orchestrator.models.inbox import MessageStatus, OrchestrationType
 from cli_agent_orchestrator.models.kiro_engine import KiroEngine, resolve_kiro_engine
 from cli_agent_orchestrator.models.provider import ProviderType
 from cli_agent_orchestrator.models.terminal import (
@@ -3342,6 +3344,25 @@ def _schedule_deferred_init(
 
     async def _run() -> None:
         caller_id: Optional[str] = initial_caller_id
+        # Inbox history of the initial message: one ``direct`` row, written
+        # ``delivered`` after the first dispatch and flipped to ``failed`` if
+        # the worker never starts or errors. Resubmits are not recorded.
+        inbox_row_id: Optional[int] = None
+
+        async def _record_initial_message_failed() -> None:
+            if not initial_message:
+                return
+            if inbox_row_id is not None:
+                await asyncio.to_thread(mark_direct_input_failed, inbox_row_id, terminal_id)
+            else:
+                await asyncio.to_thread(
+                    record_direct_input,
+                    terminal_id,
+                    caller_id or "api",
+                    initial_message,
+                    MessageStatus.FAILED,
+                )
+
         try:
             await provider_instance.initialize()
             shell_command = provider_instance.shell_baseline
@@ -3395,6 +3416,13 @@ def _schedule_deferred_init(
                     registry=registry,
                     sender_id=caller_id,
                     orchestration_type=effective_orchestration_type,
+                )
+                inbox_row_id = await asyncio.to_thread(
+                    record_direct_input,
+                    terminal_id,
+                    caller_id or "api",
+                    initial_message,
+                    MessageStatus.DELIVERED,
                 )
                 # The pending mark is deliberately NOT released here.
                 #
@@ -3492,6 +3520,7 @@ def _schedule_deferred_init(
                             "Deferred init for %s: provider entered ERROR after task delivery.",
                             terminal_id,
                         )
+                        await _record_initial_message_failed()
                         await _surface_deferred_init_failure(
                             terminal_id,
                             kind="provider_error_after_delivery",
@@ -3511,6 +3540,7 @@ def _schedule_deferred_init(
                         "resubmits; task not delivered.",
                         terminal_id,
                     )
+                    await _record_initial_message_failed()
                     await _surface_deferred_init_failure(
                         terminal_id,
                         kind="task_not_started",
@@ -3543,6 +3573,7 @@ def _schedule_deferred_init(
                 e,
             )
             await _clear_deferred_init_external_owner(terminal_id)
+            await _record_initial_message_failed()
             # Not a deferred_init_failure (the worker is alive and answerable), but
             # the initial message was NOT delivered and a client waiting on the
             # outcome must learn that rather than watch WAITING_USER_ANSWER until
@@ -3579,6 +3610,7 @@ def _schedule_deferred_init(
                 e,
                 exc_info=True,
             )
+            await _record_initial_message_failed()
             await _surface_deferred_init_failure(
                 terminal_id,
                 kind="provider_init_error",
@@ -3839,6 +3871,42 @@ def get_working_directory(terminal_id: str) -> Optional[str]:
         raise
 
 
+def record_direct_input(
+    terminal_id: str, sender_id: str, message: str, status: MessageStatus
+) -> Optional[int]:
+    """Best-effort Inbox record of input typed straight into ``terminal_id``.
+
+    Never raises: the Inbox history must not change whether a send succeeds.
+    The message text is never logged, only the terminal and the error type.
+
+    Returns:
+        The inbox row id, or None when nothing was recorded.
+    """
+    try:
+        return record_direct_message(sender_id, terminal_id, message, status)
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must not fail the send
+        logger.warning(
+            "Could not record direct input for terminal %s in the inbox: %s",
+            terminal_id,
+            type(exc).__name__,
+        )
+        return None
+
+
+def mark_direct_input_failed(row_id: Optional[int], terminal_id: str) -> None:
+    """Best-effort: flip a recorded direct-input row to ``failed``."""
+    if row_id is None:
+        return
+    try:
+        update_message_status(row_id, MessageStatus.FAILED)
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must not fail the caller
+        logger.warning(
+            "Could not mark inbox row for terminal %s as failed: %s",
+            terminal_id,
+            type(exc).__name__,
+        )
+
+
 def send_input(
     terminal_id: str,
     message: str,
@@ -3847,6 +3915,8 @@ def send_input(
     orchestration_type: OrchestrationType | None = None,
     redelivery: bool = False,
     frozen_memory: str | None = None,
+    *,
+    inbox_log_sender: str | None = None,
 ) -> bool:
     """Send input to terminal via tmux paste buffer.
 
@@ -3858,16 +3928,29 @@ def send_input(
     must later prove the terminal produced output FOR THIS SEND (the deferred
     initial-message path) calls ``dispatch_input`` directly and keeps the
     boundary it returns.
+
+    ``inbox_log_sender`` opts this send into the Inbox history: the original
+    ``message`` (before any memory block is injected) is recorded as a
+    ``direct`` row from that sender, ``delivered`` on success or ``failed`` when
+    the dispatch raises. The exception is re-raised unchanged. Internal sends
+    (inbox delivery, redelivery, exit commands, memory curator) leave it None.
     """
-    dispatch_input(
-        terminal_id,
-        message,
-        registry=registry,
-        sender_id=sender_id,
-        orchestration_type=orchestration_type,
-        redelivery=redelivery,
-        frozen_memory=frozen_memory,
-    )
+    try:
+        dispatch_input(
+            terminal_id,
+            message,
+            registry=registry,
+            sender_id=sender_id,
+            orchestration_type=orchestration_type,
+            redelivery=redelivery,
+            frozen_memory=frozen_memory,
+        )
+    except Exception:
+        if inbox_log_sender is not None:
+            record_direct_input(terminal_id, inbox_log_sender, message, MessageStatus.FAILED)
+        raise
+    if inbox_log_sender is not None:
+        record_direct_input(terminal_id, inbox_log_sender, message, MessageStatus.DELIVERED)
     return True
 
 
