@@ -217,6 +217,7 @@ def indexer(monkeypatch):
 
     monkeypatch.setattr(code_graph_service, "list_local_roots", fake_roots)
     monkeypatch.setattr(code_graph_indexer, "_publish", no_publish)
+    monkeypatch.setattr(code_graph_indexer, "RETRY_PAUSE_SECONDS", 0)
     yield roots
     code_graph_indexer._reset_for_tests()
 
@@ -292,7 +293,43 @@ async def test_failed_job_waits_before_retrying(tmp_path, monkeypatch, indexer):
     monkeypatch.setenv("CAO_CODEBASE_INDEX_RETRY_SECONDS", "0")
     assert (await code_graph_indexer.ensure_indexed("my-repo", root))["status"] == "started"
     await code_graph_indexer._jobs[root]
+    # Each job tries twice before giving up.
+    assert calls == [root] * 4
+
+
+@pytest.mark.asyncio
+async def test_job_retries_a_failed_run_once(tmp_path, monkeypatch, indexer):
+    root = _git_repo(tmp_path / "My-Repo")
+    results = iter([False, True])
+    published = []
+
+    async def flaky_run(path):
+        return next(results)
+
+    async def publish():
+        published.append(True)
+
+    monkeypatch.setattr(code_graph_indexer, "_run_index", flaky_run)
+    monkeypatch.setattr(code_graph_indexer, "_publish", publish)
+
+    await code_graph_indexer.ensure_indexed("my-repo", root)
+    await code_graph_indexer._jobs[root]
+
+    assert published == [True]
+
+
+@pytest.mark.asyncio
+async def test_job_that_fails_twice_logs_a_warning(tmp_path, monkeypatch, indexer, caplog):
+    root = _git_repo(tmp_path / "My-Repo")
+    release, calls = _blocking_index(monkeypatch, result=False)
+    release.set()
+
+    with caplog.at_level("WARNING", logger=code_graph_indexer.__name__):
+        await code_graph_indexer.ensure_indexed("my-repo", root)
+        await code_graph_indexer._jobs[root]
+
     assert calls == [root, root]
+    assert f"Codebase Memory indexing failed for {root}" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -379,6 +416,50 @@ async def test_index_job_calls_index_repository(tmp_path, monkeypatch):
 
     monkeypatch.setenv("FAIL", "1")
     assert await code_graph_indexer._run_index("/home/me/repo") is False
+
+
+@pytest.mark.asyncio
+async def test_index_failure_logs_the_indexer_error_line(tmp_path, monkeypatch, caplog):
+    fake = tmp_path / "fake-cbm"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "cat > /dev/null\n"
+        "echo 'level=info msg=mem.init budget_mb=1' >&2\n"
+        "echo 'level=warn msg=daemon.private_dir_group_writable_ancestor mode=0775' >&2\n"
+        "echo 'codebase-memory-mcp: CBM could not start because of a cache conflict' >&2\n"
+        "echo 'level=warn msg=daemon.private_dir_group_writable_ancestor mode=0775' >&2\n"
+        "echo 'hint: this command started a temporary CBM daemon.' >&2\n"
+        "exit 1\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("CAO_CODEBASE_BINARY", str(fake))
+
+    with caplog.at_level("WARNING", logger=code_graph_indexer.__name__):
+        assert await code_graph_indexer._run_index("/home/me/repo") is False
+
+    assert "exit code 1" in caplog.text
+    assert "CBM could not start because of a cache conflict" in caplog.text
+    assert "hint:" not in caplog.text and "mem.init" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_index_failure_logs_the_indexer_reply(tmp_path, monkeypatch, caplog):
+    # What Codebase Memory 0.10.8 prints when files change during a full index.
+    reply = {
+        "content": [{"type": "text", "text": '{"status":"error"}'}],
+        "structuredContent": {"status": "error", "hint": "Pipeline failed. Check repo_path."},
+        "isError": True,
+    }
+    (tmp_path / "reply.json").write_text(json.dumps(reply))
+    fake = tmp_path / "fake-cbm"
+    fake.write_text(f"#!/bin/sh\ncat > /dev/null\ncat '{tmp_path / 'reply.json'}'\nexit 1\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("CAO_CODEBASE_BINARY", str(fake))
+
+    with caplog.at_level("WARNING", logger=code_graph_indexer.__name__):
+        assert await code_graph_indexer._run_index("/home/me/repo") is False
+
+    assert "exit code 1): Pipeline failed. Check repo_path." in caplog.text
 
 
 # ── coordinator ────────────────────────────────────────────────────────
@@ -496,6 +577,22 @@ async def test_status_without_project_queries_each_node_once(monkeypatch, coordi
     await code_graph_coordinator.federated_query(CodeGraphQuery(tool="index_status"))
 
     assert len(coordinator["local_query"]) == 1
+
+
+@pytest.mark.parametrize("status", [404, 405])
+def test_remote_index_treats_a_missing_route_as_unsupported(monkeypatch, status):
+    class Response:
+        status_code = status
+
+        def raise_for_status(self):
+            raise AssertionError("a missing route must not raise")
+
+    monkeypatch.setattr(code_graph_coordinator.requests, "post", lambda *a, **k: Response())
+    request = code_graph_coordinator.CodeGraphIndexRequest(project="x", working_directory="/x")
+
+    assert code_graph_coordinator._remote_index("http://old:9889", request) == {
+        "status": "unsupported"
+    }
 
 
 @pytest.mark.asyncio

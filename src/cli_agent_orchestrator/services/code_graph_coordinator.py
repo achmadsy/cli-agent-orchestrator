@@ -68,8 +68,10 @@ def _remote_index(base_url: str, request: CodeGraphIndexRequest) -> Dict[str, An
         headers=headers or None,
         timeout=20,
     )
-    if response.status_code == 404:
-        # A node running an older CAO has no index route.
+    if response.status_code in (404, 405):
+        # A node running an older CAO has no index route. It answers 405
+        # rather than 404: an unknown POST path gets 405 on CAO because a
+        # GET route matches every path.
         return {"status": "unsupported"}
     response.raise_for_status()
     payload: Dict[str, Any] = response.json()

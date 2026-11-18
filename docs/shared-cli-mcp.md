@@ -85,7 +85,10 @@ response's `indexing` list says what each node did (`started`, `running`,
 `retry_later`, `name_mismatch`, ...). Query again once the job finishes.
 
 Each node runs one indexing job at a time, keeps at most four waiting, and waits
-before indexing the same repository again. Settings:
+before indexing the same repository again. A full index fails if files in the
+repository change while it runs, so a failed run is retried once after 30
+seconds. If the retry also fails, the server logs a warning with the indexer's
+error. Settings:
 
 | Variable | Default | Effect |
 |---|---|---|

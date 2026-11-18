@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 
 MAX_PENDING_JOBS = 4
 INDEX_MODES = frozenset({"full", "moderate", "fast"})
+# A failed index_repository call is retried once after this pause. Codebase
+# Memory 0.10.8 fails a full index ("Pipeline failed") when files in the
+# repository change while it runs, which is common while an agent is editing.
+RETRY_PAUSE_SECONDS = 30.0
+_REASON_LIMIT = 400
 
 _jobs: Dict[str, "asyncio.Task[None]"] = {}
 _finished_at: Dict[str, float] = {}
@@ -143,12 +148,14 @@ async def _index(root: str) -> None:
         async with _slot():
             started = time.monotonic()
             ok = await _run_index(root)
-            logger.info(
-                "Codebase Memory indexing %s for %s after %.1fs",
-                "finished" if ok else "failed",
-                root,
-                time.monotonic() - started,
-            )
+            if not ok:
+                await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                ok = await _run_index(root)
+            elapsed = time.monotonic() - started
+            if ok:
+                logger.info("Codebase Memory indexing finished for %s after %.1fs", root, elapsed)
+            else:
+                logger.warning("Codebase Memory indexing failed for %s after %.1fs", root, elapsed)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -176,20 +183,62 @@ async def _run_index(root: str) -> bool:
         env={**os.environ, "NO_COLOR": "1"},
     )
     try:
-        stdout, _stderr = await asyncio.wait_for(
+        stdout, stderr = await asyncio.wait_for(
             process.communicate(payload), timeout=_timeout_seconds()
         )
     except (asyncio.TimeoutError, asyncio.CancelledError):
         process.kill()
         await process.wait()
         raise
-    if process.returncode != 0:
-        return False
+    envelope = _envelope(stdout)
+    if process.returncode == 0 and envelope is not None and not envelope.get("isError"):
+        return True
+    logger.warning(
+        "Codebase Memory index_repository for %s failed (exit code %s): %s",
+        root,
+        process.returncode,
+        _error_text(envelope) or _stderr_tail(stderr),
+    )
+    return False
+
+
+def _envelope(stdout: bytes) -> Optional[Dict[str, Any]]:
     try:
         envelope = json.loads(stdout)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    return isinstance(envelope, dict) and not envelope.get("isError")
+        return None
+    return envelope if isinstance(envelope, dict) else None
+
+
+def _stderr_tail(stderr: bytes) -> str:
+    """The stderr line most likely to say why the indexer failed.
+
+    The indexer repeats ``level=warn`` lines that are noise; a fatal error is
+    printed as a plain line, so the last plain line wins.
+    """
+    lines = [line.strip() for line in stderr.decode("utf-8", "replace").splitlines()]
+    lines = [line for line in lines if line and not line.startswith(("hint:", "level=info"))]
+    plain = [line for line in lines if not line.startswith("level=")]
+    chosen = plain[-1] if plain else (lines[-1] if lines else "(no stderr)")
+    return chosen[:_REASON_LIMIT]
+
+
+def _error_text(envelope: Optional[Dict[str, Any]]) -> str:
+    """The indexer's own explanation from a failed reply, if it gave one."""
+    if not envelope or not envelope.get("isError"):
+        return ""
+    details = envelope.get("structuredContent")
+    if isinstance(details, dict):
+        for key in ("error", "hint", "message"):
+            value = details.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:_REASON_LIMIT]
+    texts = [
+        str(item.get("text", ""))
+        for item in envelope.get("content") or []
+        if isinstance(item, dict) and item.get("type") == "text"
+    ]
+    return " ".join(texts).strip()[:_REASON_LIMIT]
 
 
 async def _publish() -> None:
