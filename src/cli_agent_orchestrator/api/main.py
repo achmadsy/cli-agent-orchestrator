@@ -4720,6 +4720,7 @@ async def get_terminal_output(
 async def get_terminal_screen(
     terminal_id: TerminalId,
     ansi: bool = True,
+    scrollback: bool = False,
     _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> Dict:
     """Get the currently rendered viewport (capture-pane -S 0).
@@ -4728,11 +4729,15 @@ async def get_terminal_screen(
     rolling FIFO buffer, whose raw stream contains the agent TUI's
     protocol-init burst — private modes, kitty keyboard, charset), this is
     the rendered screen: SGR escapes retained when ``ansi=true``, plain text
-    when ``ansi=false``. Read-gated at the same tier as ``/output``.
+    when ``ansi=false``. ``scrollback=true`` returns the rendered scrollback
+    plus the viewport (capture-pane -S -), which the web UI's Full Output
+    view uses. Read-gated at the same tier as ``/output``.
     """
     try:
         # Blocking tmux capture-pane — off the loop.
-        return await asyncio.to_thread(terminal_service.get_screen, terminal_id, ansi)
+        return await asyncio.to_thread(
+            terminal_service.get_screen, terminal_id, ansi, scrollback
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
@@ -8770,6 +8775,29 @@ async def internal_code_graph_heartbeat(
     return {"accepted": True, "node_id": heartbeat.node_id}
 
 
+@app.post("/internal/code-graph/local/index")
+async def internal_code_graph_local_index(
+    body: Dict[str, Any],
+    request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    """Index the caller's repository on this node, if it is here and the name matches.
+
+    Returns at once; indexing runs in the background. Called by the
+    coordinator when a graph query matches no indexed project.
+    """
+    _require_code_graph_enabled()
+    _require_private_code_graph_peer(request)
+    from cli_agent_orchestrator.models.code_graph import CodeGraphIndexRequest
+    from cli_agent_orchestrator.services.code_graph_indexer import ensure_indexed
+
+    try:
+        index_request = CodeGraphIndexRequest.model_validate(body)
+    except ValueError as exc:  # pydantic ValidationError
+        raise HTTPException(status_code=422, detail=str(exc)[:500]) from exc
+    return await ensure_indexed(index_request.project, index_request.working_directory)
+
+
 @app.post("/internal/code-graph/query")
 async def internal_code_graph_query(
     body: Dict[str, Any],
@@ -8781,7 +8809,9 @@ async def internal_code_graph_query(
     from cli_agent_orchestrator.models.code_graph import CodeGraphQuery
     from cli_agent_orchestrator.services.code_graph_gateway import query_code_graph
 
-    return await query_code_graph(CodeGraphQuery.model_validate(body))
+    # Starting an index writes to the node, so a read-only caller only queries.
+    allow_index = SCOPE_WRITE in _scopes or SCOPE_ADMIN in _scopes
+    return await query_code_graph(CodeGraphQuery.model_validate(body), allow_index=allow_index)
 
 
 @app.get("/internal/code-graph/projects")

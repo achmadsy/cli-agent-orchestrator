@@ -7,7 +7,7 @@ import json
 import os
 import shutil
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from cli_agent_orchestrator.models.code_graph import (
     READ_TOOLS,
@@ -106,13 +106,38 @@ async def binary_version() -> Optional[str]:
     return SUPPORTED_VERSION if SUPPORTED_VERSION in text else text.strip()[:64] or None
 
 
+MAX_LOCAL_PROJECTS = 1000
+_LIST_PAGE_SIZE = 100
+
+
+async def list_local_roots() -> List[Tuple[str, str]]:
+    """(name, root_path) for every local index, following list_projects pages.
+
+    ``list_projects`` returns 50 projects unless asked otherwise, so one call
+    silently dropped the rest on a node with more indexes.
+    """
+    roots: List[Tuple[str, str]] = []
+    offset = 0
+    while len(roots) < MAX_LOCAL_PROJECTS:
+        result = await _invoke("list_projects", {"offset": offset, "limit": _LIST_PAGE_SIZE})
+        page = result.get("projects", [])
+        if not isinstance(page, list) or not page:
+            break
+        for item in page:
+            if not isinstance(item, dict):
+                continue
+            name, root = item.get("name"), item.get("root_path")
+            if isinstance(name, str) and isinstance(root, str):
+                roots.append((name, root))
+        if not result.get("has_more"):
+            break
+        offset += len(page)
+    return roots[:MAX_LOCAL_PROJECTS]
+
+
 async def discover_local_projects() -> List[CodeGraphProject]:
-    result = await _invoke("list_projects", {})
     projects: List[CodeGraphProject] = []
-    for item in result.get("projects", [])[:1000]:
-        name, root = item.get("name"), item.get("root_path")
-        if not isinstance(name, str) or not isinstance(root, str):
-            continue
+    for name, root in await list_local_roots():
         project = await asyncio.to_thread(inspect_project, node_id(), name, root)
         project.indexed_at = datetime.now(timezone.utc)
         projects.append(project)

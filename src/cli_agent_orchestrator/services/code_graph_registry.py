@@ -9,6 +9,10 @@ from sqlalchemy import Boolean, Column, String, Text
 
 from cli_agent_orchestrator.clients.database import Base, SessionLocal, UTCDateTime, _utcnow
 from cli_agent_orchestrator.models.code_graph import CodeGraphHeartbeat
+from cli_agent_orchestrator.services.code_graph_identity import (
+    normalize_project_name,
+    project_name_candidates,
+)
 
 
 class CodeGraphNodeModel(Base):
@@ -127,3 +131,53 @@ def list_bindings(
                 }
             )
         return rows
+
+
+def find_bindings(
+    project: str, working_directory: Optional[str] = None, *, max_age_seconds: int = 180
+) -> List[Dict[str, Any]]:
+    """Bindings for ``project``, matched by ID first, then by name.
+
+    An exact logical or native project ID wins. Otherwise the name is compared,
+    case-insensitively, with each project's folder name, path-derived name and
+    Git remotes (host/owner/repo, owner/repo or repo). When a name matches more
+    than one repository and ``working_directory`` lies inside one of them, only
+    that repository's bindings are returned; otherwise all matches are.
+    """
+    exact = list_bindings(project, max_age_seconds=max_age_seconds)
+    if exact:
+        return exact
+    key = normalize_project_name(project)
+    if not key:
+        return []
+    matches = [
+        row
+        for row in list_bindings(max_age_seconds=max_age_seconds)
+        if key == row["native_project"].lower()
+        or key in project_name_candidates(row["root_path"], row["remote_aliases"])
+    ]
+    if working_directory and len({row["logical_project"] for row in matches}) > 1:
+        directory = working_directory.rstrip("/")
+        own = {
+            row["logical_project"]
+            for row in matches
+            if directory == row["root_path"].rstrip("/")
+            or directory.startswith(row["root_path"].rstrip("/") + "/")
+        }
+        if own:
+            matches = [row for row in matches if row["logical_project"] in own]
+    return matches
+
+
+def list_nodes(*, max_age_seconds: int = 180) -> List[Dict[str, Any]]:
+    """Every registered node, including nodes with no indexed projects."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+    with SessionLocal() as db:
+        return [
+            {
+                "node_id": node.node_id,
+                "base_url": node.base_url,
+                "online": bool(node.enabled and node.last_seen_at >= cutoff),
+            }
+            for node in db.query(CodeGraphNodeModel).all()
+        ]

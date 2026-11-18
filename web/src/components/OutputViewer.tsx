@@ -2,8 +2,16 @@ import { useState, useEffect, useRef } from 'react'
 import { api } from '../api'
 import { X, RefreshCw, Copy, Check, FileText, Loader2 } from 'lucide-react'
 
-function stripAnsi(text: string): string {
-  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '')
+// Removes terminal control sequences: CSI (including private modes such as
+// `?2004h` and kitty keyboard `>5u` / `<u`), OSC titles and hyperlinks,
+// charset selection (`(B`) and other single-character escapes.
+export function stripAnsi(text: string): string {
+  return text
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[()*+][0-9A-Za-z]/g, '')
+    .replace(/\x1b[=>78DEHMc]/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
 }
 
 interface OutputViewerProps {
@@ -21,8 +29,15 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
   const fetchOutput = async (m: 'last' | 'full') => {
     setLoading(true)
     try {
-      const data = await api.getTerminalOutput(terminalId, m)
-      setOutput(data.output || '')
+      if (m === 'full') {
+        // The raw output stream is full of TUI control sequences and cursor
+        // redraws, so Full Output shows the rendered scrollback instead.
+        const data = await api.getTerminalScrollback(terminalId)
+        setOutput(data.screen || '')
+      } else {
+        const data = await api.getTerminalOutput(terminalId, m)
+        setOutput(data.output || '')
+      }
     } catch {
       setOutput('')
     }

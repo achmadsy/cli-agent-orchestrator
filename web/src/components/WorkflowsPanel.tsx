@@ -6,6 +6,8 @@ import { RunDetail } from './workflow/RunDetail'
 import { WorkflowEditorModal } from './workflow/WorkflowEditorModal'
 import { PreRunModal } from './workflow/PreRunModal'
 import { ErrorBoundary } from './ErrorBoundary'
+import { HelpHint } from './HelpHint'
+import { WorkflowsHelp } from './FeatureHelp'
 import type { WorkflowTier } from '../api'
 
 interface EditorState {
@@ -60,7 +62,15 @@ export function WorkflowsPanel() {
     <div className="space-y-5">
       <section className="rounded-xl border border-gray-800 bg-gray-900/40 p-4">
         <div className="flex items-center justify-between gap-3 mb-3">
-          <div><h2 className="text-sm font-semibold text-gray-200">Workflow Library</h2><p className="text-xs text-gray-500">Create, edit, validate, and launch workflows on this node.</p></div>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-sm font-semibold text-gray-200">Workflow Library</h2>
+              <HelpHint label="What are workflows?">
+                <WorkflowsHelp />
+              </HelpHint>
+            </div>
+            <p className="text-xs text-gray-500">Create, edit, validate, and launch workflows on this node.</p>
+          </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setEditor({ mode: 'create', tier: 'yaml' })} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-500"><FilePlus2 size={14} />New Workflow</button>
             <button onClick={() => setEditor({ mode: 'create', tier: 'python' })} className="flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs font-medium text-gray-200 hover:border-emerald-700"><FileCode2 size={14} />Add Script</button>

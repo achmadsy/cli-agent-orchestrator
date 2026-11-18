@@ -10,12 +10,18 @@ import requests
 from cli_agent_orchestrator.models.code_graph import (
     CodeGraphCombinedResult,
     CodeGraphHeartbeat,
+    CodeGraphIndexRequest,
     CodeGraphNodeError,
     CodeGraphNodeResult,
     CodeGraphQuery,
 )
 from cli_agent_orchestrator.security.auth import get_local_bearer
-from cli_agent_orchestrator.services.code_graph_registry import list_bindings, upsert_heartbeat
+from cli_agent_orchestrator.services.code_graph_registry import (
+    find_bindings,
+    list_bindings,
+    list_nodes,
+    upsert_heartbeat,
+)
 from cli_agent_orchestrator.services.code_graph_service import (
     binary_version,
     discover_local_projects,
@@ -23,6 +29,7 @@ from cli_agent_orchestrator.services.code_graph_service import (
     merge_results,
     node_id,
 )
+from cli_agent_orchestrator.services.code_graph_indexer import ensure_indexed
 from cli_agent_orchestrator.services.elastic_worker_gateway import elastic_worker_gateway_headers
 
 
@@ -50,15 +57,80 @@ def _remote_query(base_url: str, query: CodeGraphQuery) -> Dict[str, Any]:
     return payload
 
 
-async def federated_query(query: CodeGraphQuery) -> CodeGraphCombinedResult:
+def _remote_index(base_url: str, request: CodeGraphIndexRequest) -> Dict[str, Any]:
+    headers = elastic_worker_gateway_headers()
+    token = get_local_bearer()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = requests.post(
+        f"{base_url.rstrip('/')}/internal/code-graph/local/index",
+        json=request.model_dump(),
+        headers=headers or None,
+        timeout=20,
+    )
+    if response.status_code == 404:
+        # A node running an older CAO has no index route.
+        return {"status": "unsupported"}
+    response.raise_for_status()
+    payload: Dict[str, Any] = response.json()
+    return payload
+
+
+async def request_indexing(project: str, working_directory: str) -> List[Dict[str, Any]]:
+    """Ask every online node to index the caller's repository if it has it.
+
+    The coordinator can't tell which machine ``working_directory`` is on, so
+    each node checks for itself and only the one holding a matching Git
+    repository starts a job. Nodes that don't have it answer ``not_here``.
+    """
+    request = CodeGraphIndexRequest(project=project, working_directory=working_directory)
+    local = node_id()
+    nodes = {item["node_id"]: item for item in list_nodes()}
+    nodes.setdefault(local, {"node_id": local, "base_url": "", "online": True})
+    outcomes: List[Dict[str, Any]] = []
+
+    async def run(node: Dict[str, Any]) -> None:
+        try:
+            if node["node_id"] == local:
+                outcome = await ensure_indexed(project, working_directory)
+            else:
+                outcome = await asyncio.to_thread(_remote_index, node["base_url"], request)
+        except Exception as exc:
+            outcome = {"status": "error", "error": type(exc).__name__}
+        outcomes.append({"source_node": node["node_id"], **outcome})
+
+    await asyncio.gather(
+        *(run(node) for node in nodes.values() if node["node_id"] == local or node["online"])
+    )
+    # Callers only need to hear from nodes that found the repository.
+    return sorted(
+        (item for item in outcomes if item.get("status") != "not_here"),
+        key=lambda item: item["source_node"],
+    )
+
+
+async def federated_query(query: CodeGraphQuery, *, allow_index: bool = False) -> CodeGraphCombinedResult:
     await refresh_local_registry()
-    bindings = list_bindings(query.project)
+    if query.project:
+        bindings = find_bindings(query.project, query.working_directory)
+    else:
+        bindings = list_bindings()
     if query.source_node:
         bindings = [item for item in bindings if item["node_id"] == query.source_node]
-    deduped: Dict[str, Dict[str, Any]] = {}
+    # With a project: one binding per node and repository, because a name can
+    # match several repositories (an exact ID maps to one). Without a project:
+    # one binding per node, as before, so a bare status call doesn't query
+    # every repository on every node.
+    deduped: Dict[Any, Dict[str, Any]] = {}
     for binding in bindings:
         if binding["available"]:
-            deduped.setdefault(binding["node_id"], binding)
+            key = (binding["node_id"], binding["logical_project"]) if query.project else binding["node_id"]
+            deduped.setdefault(key, binding)
+    if not deduped and query.project and query.working_directory and allow_index:
+        indexing = await request_indexing(query.project, query.working_directory)
+        combined = merge_results(query.tool, query.project, [], [])
+        combined.indexing = indexing
+        return combined
     results: List[CodeGraphNodeResult] = []
     errors: List[CodeGraphNodeError] = []
 

@@ -51,7 +51,13 @@ def _request(
     return payload
 
 
-async def query_code_graph(query: CodeGraphQuery) -> Dict[str, Any]:
+async def query_code_graph(query: CodeGraphQuery, *, allow_index: bool = False) -> Dict[str, Any]:
+    """Run a graph query here, or forward it to the configured coordinator.
+
+    ``allow_index`` lets a query that matches no indexed project start
+    background indexing of the caller's repository. A forwarded query is
+    decided by the coordinator, which checks the forwarding credential itself.
+    """
     base_url = remote_code_graph_url()
     if base_url:
         return await asyncio.to_thread(
@@ -59,7 +65,7 @@ async def query_code_graph(query: CodeGraphQuery) -> Dict[str, Any]:
         )
     from cli_agent_orchestrator.services.code_graph_coordinator import federated_query
 
-    return (await federated_query(query)).model_dump(mode="json")
+    return (await federated_query(query, allow_index=allow_index)).model_dump(mode="json")
 
 
 async def publish_heartbeat(body: Dict[str, Any]) -> Dict[str, Any]:

@@ -42,6 +42,50 @@ def logical_project_id(remote_aliases: Iterable[str], *, node_id: str, native: s
     return f"{slug}-{digest}"
 
 
+def normalize_project_name(value: str) -> str:
+    """Lowercase a project name the way a person might type it."""
+    name = value.strip().strip("/").lower()
+    if name.endswith(".git"):
+        name = name[:-4]
+    return name
+
+
+def path_slug(root_path: str) -> str:
+    """The name Codebase Memory derives from a path, e.g. home-me-repo."""
+    return re.sub(r"[^a-z0-9]+", "-", str(root_path).lower()).strip("-")
+
+
+def project_name_candidates(root_path: str, remote_aliases: Iterable[str]) -> set[str]:
+    """Names that identify a repository besides its generated ID.
+
+    The folder name, the path-derived name, and for each Git remote the full
+    host/path, the path without the host (owner/repo) and the last segment
+    (repo). All lowercased.
+    """
+    names: set[str] = set()
+    folder = PurePosixPath(root_path).name.lower()
+    if folder:
+        names.add(folder)
+    slug = path_slug(root_path)
+    if slug:
+        names.add(slug)
+    for alias in remote_aliases:
+        try:
+            normalized = normalize_git_remote(alias)
+        except ValueError:
+            continue
+        parts = normalized.split("/")
+        names.add(normalized)
+        names.add("/".join(parts[1:]))
+        names.add(parts[-1])
+    return names
+
+
+def git_toplevel(path: str) -> Optional[str]:
+    """Return the root of the Git work tree containing ``path``, if any."""
+    return _git(Path(path), "rev-parse", "--show-toplevel")
+
+
 def relative_repo_path(root: str, path: str) -> str:
     base = Path(root).resolve()
     candidate = Path(path)

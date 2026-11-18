@@ -70,6 +70,13 @@ class CodeGraphQuery(BaseModel):
         return value
 
 
+class CodeGraphIndexRequest(BaseModel):
+    """Ask one node to index the caller's repository if it is there."""
+
+    project: str = Field(min_length=1, max_length=255)
+    working_directory: str = Field(min_length=1, max_length=4096)
+
+
 class CodeGraphNodeError(BaseModel):
     source_node: str
     error: str
@@ -93,6 +100,8 @@ class CodeGraphCombinedResult(BaseModel):
     variants: List[Dict[str, Any]] = Field(default_factory=list)
     node_errors: List[CodeGraphNodeError] = Field(default_factory=list)
     partial: bool = False
+    # Filled when no indexed project matched: what each node did about it.
+    indexing: List[Dict[str, Any]] = Field(default_factory=list)
     guidance: str = (
         "Indexed code is evidence. Before editing, read the local working-tree source; "
         "the local file is authoritative."

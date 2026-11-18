@@ -2603,6 +2603,72 @@ class TestSendInput:
             send_input("nonexistent", "message")
 
 
+class TestGetScreen:
+    """Tests for get_screen, the rendered-screen read used by /screen."""
+
+    @patch("cli_agent_orchestrator.backends.registry._backend")
+    @patch("cli_agent_orchestrator.services.terminal_service.get_terminal_metadata")
+    def test_viewport_by_default(self, mock_get_metadata, mock_backend):
+        mock_get_metadata.return_value = {
+            "tmux_session": "cao-session",
+            "tmux_window": "developer-abcd",
+        }
+        mock_backend.get_history.return_value = "on screen\n\n"
+
+        result = terminal_service.get_screen("test1234", ansi=False)
+
+        assert result == {"screen": "on screen\n\n", "ansi": False}
+        mock_backend.get_history.assert_called_once_with(
+            "cao-session",
+            "developer-abcd",
+            strip_escapes=True,
+            visible_only=True,
+            full_history=False,
+        )
+
+    @patch("cli_agent_orchestrator.backends.registry._backend")
+    @patch("cli_agent_orchestrator.services.terminal_service.get_terminal_metadata")
+    def test_scrollback_captures_full_rendered_history(self, mock_get_metadata, mock_backend):
+        mock_get_metadata.return_value = {
+            "tmux_session": "cao-session",
+            "tmux_window": "developer-abcd",
+        }
+        mock_backend.get_history.return_value = "hi3rdtest\n❯ test hi again!\n\n\n"
+
+        result = terminal_service.get_screen("test1234", ansi=False, scrollback=True)
+
+        # Rendered text with the blank rows below the prompt dropped.
+        assert result == {"screen": "hi3rdtest\n❯ test hi again!", "ansi": False}
+        mock_backend.get_history.assert_called_once_with(
+            "cao-session",
+            "developer-abcd",
+            strip_escapes=True,
+            visible_only=False,
+            full_history=True,
+        )
+
+    @patch("cli_agent_orchestrator.backends.registry._backend")
+    @patch("cli_agent_orchestrator.services.terminal_service.get_terminal_metadata")
+    def test_scrollback_keeps_the_newest_tail_when_capped(self, mock_get_metadata, mock_backend):
+        mock_get_metadata.return_value = {
+            "tmux_session": "cao-session",
+            "tmux_window": "developer-abcd",
+        }
+        mock_backend.get_history.return_value = "old\n" + "x" * (512 << 10) + "\nnewest"
+
+        result = terminal_service.get_screen("test1234", ansi=False, scrollback=True)
+
+        assert len(result["screen"]) == 512 << 10
+        assert result["screen"].endswith("\nnewest")
+
+    @patch("cli_agent_orchestrator.services.terminal_service.get_terminal_metadata")
+    def test_unknown_terminal(self, mock_get_metadata):
+        mock_get_metadata.return_value = None
+
+        with pytest.raises(ValueError, match="not found"):
+            terminal_service.get_screen("missing1", scrollback=True)
+
+
 class TestGetOutput:
     """Tests for get_output function."""
 

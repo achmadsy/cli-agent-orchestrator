@@ -4,6 +4,8 @@ import { useStore } from '../store'
 import { ConfirmModal } from './ConfirmModal'
 import { Clock, Play, Trash2, Plus, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react'
 import { CustomSelect } from './CustomSelect'
+import { HelpHint } from './HelpHint'
+import { FlowsHelp } from './FeatureHelp'
 
 const SCHEDULE_PRESETS = [
   { label: 'Every 5 minutes', cron: '*/5 * * * *' },
@@ -169,9 +171,14 @@ export function FlowsPanel() {
       {/* Flow List */}
       <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">
-            Automated Flows ({flows.length})
-          </h3>
+          <div className="flex items-center gap-1.5">
+            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">
+              Automated Flows ({flows.length})
+            </h3>
+            <HelpHint label="What are flows?">
+              <FlowsHelp />
+            </HelpHint>
+          </div>
           <button
             onClick={() => { resetForm(); setShowCreateModal(true) }}
             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"

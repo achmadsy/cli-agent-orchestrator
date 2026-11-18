@@ -1693,7 +1693,7 @@ class TestGetTerminalScreen:
 
         assert response.status_code == 200
         assert response.json() == {"screen": "\x1b[32mok\x1b[0m", "ansi": True}
-        mock_svc.get_screen.assert_called_once_with("abcd1234", True)
+        mock_svc.get_screen.assert_called_once_with("abcd1234", True, False)
 
     def test_get_screen_strips_escapes_when_ansi_false(self, client):
         """GET /terminals/{id}/screen?ansi=false asks the service for plain text."""
@@ -1704,7 +1704,18 @@ class TestGetTerminalScreen:
 
         assert response.status_code == 200
         assert response.json() == {"screen": "ok", "ansi": False}
-        mock_svc.get_screen.assert_called_once_with("abcd1234", False)
+        mock_svc.get_screen.assert_called_once_with("abcd1234", False, False)
+
+    def test_get_screen_scrollback_passes_flag(self, client):
+        """GET /terminals/{id}/screen?scrollback=true asks for rendered scrollback."""
+        with patch("cli_agent_orchestrator.api.main.terminal_service") as mock_svc:
+            mock_svc.get_screen.return_value = {"screen": "line1\nline2", "ansi": False}
+
+            response = client.get("/terminals/abcd1234/screen?ansi=false&scrollback=true")
+
+        assert response.status_code == 200
+        assert response.json() == {"screen": "line1\nline2", "ansi": False}
+        mock_svc.get_screen.assert_called_once_with("abcd1234", False, True)
 
     def test_get_screen_terminal_not_found(self, client):
         """GET /terminals/{id}/screen returns 404 for nonexistent terminal."""

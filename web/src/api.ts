@@ -942,6 +942,9 @@ export const api = {
     ),
   getTerminalOutput: (id: string, mode: 'full' | 'last' = 'full') =>
     fetchJSON<{ output: string; mode: string }>(`/terminals/${id}/output?mode=${mode}`),
+  // Rendered plain-text scrollback (tmux capture-pane), not the raw byte stream.
+  getTerminalScrollback: (id: string) =>
+    fetchJSON<{ screen: string; ansi: boolean }>(`/terminals/${id}/screen?ansi=false&scrollback=true`),
   // sender_id=ui labels the row the server records in the receiver's Inbox history.
   sendInput: (id: string, message: string) =>
     fetchJSON<{ success: boolean }>(`/terminals/${id}/input?message=${encodeURIComponent(message)}&sender_id=ui`, { method: 'POST' }),

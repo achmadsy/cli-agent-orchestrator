@@ -4218,8 +4218,8 @@ def exit_terminal_cli(terminal_id: str) -> None:
         send_input(terminal_id, exit_command)
 
 
-def get_screen(terminal_id: str, ansi: bool = True) -> dict:
-    """Get the currently rendered viewport of a terminal.
+def get_screen(terminal_id: str, ansi: bool = True, scrollback: bool = False) -> dict:
+    """Get the rendered screen of a terminal.
 
     ``capture-pane -S 0`` (``visible_only``) returns the actual rendered
     screen — SGR colour escapes retained when ``ansi=True``, plain text when
@@ -4227,6 +4227,12 @@ def get_screen(terminal_id: str, ansi: bool = True) -> dict:
     unlike ``get_output``'s rolling FIFO buffer, the viewport never contains
     the agent TUI's protocol-init burst (private modes, kitty keyboard,
     charset), only what is actually on screen.
+
+    ``scrollback=True`` captures the rendered scrollback plus the viewport
+    (``capture-pane -S -``) instead, for the web UI's Full Output view. It is
+    rendered text for the same reason, and trailing blank rows below the
+    prompt are dropped. Full-screen TUIs on the alternate screen keep no
+    scrollback, so for them this is just the current screen.
     """
     _SCREEN_MAX_BYTES = 512 << 10  # matches the sidecar history endpoint cap
 
@@ -4238,8 +4244,11 @@ def get_screen(terminal_id: str, ansi: bool = True) -> dict:
         metadata["tmux_session"],
         metadata["tmux_window"],
         strip_escapes=not ansi,
-        visible_only=True,
+        visible_only=not scrollback,
+        full_history=scrollback,
     )
+    if scrollback:
+        screen = screen.rstrip()
     if len(screen) > _SCREEN_MAX_BYTES:
         screen = screen[-_SCREEN_MAX_BYTES:]
     return {"screen": screen, "ansi": ansi}

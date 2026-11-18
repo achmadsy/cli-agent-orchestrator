@@ -65,6 +65,37 @@ Always report separately: **config migrated**, **loader verified**, and
 **current running session reloaded**. A file edit is not evidence that an already
 running process changed its tool surface.
 
+## Codebase project names and automatic indexing
+
+The `project` argument of the codebase tools accepts the generated ID (for
+example `github-com-owner-repo-1a2b3c4d5e6f7a8b`), the indexer's native name,
+or a short name: the repository folder, the Git remote's `repo`, `owner/repo`
+or `host/owner/repo`. Names are matched case-insensitively. When a name matches
+more than one repository, the one containing the caller's working directory
+wins; otherwise all matches are queried. Clones of the same remote on different
+machines are one project.
+
+When nothing matches, the query still returns empty results right away, and the
+coordinator asks each online node to index the caller's repository in the
+background. A node starts a job only if the caller's working directory is inside
+a Git work tree on that node and the requested name matches that repository.
+Blocked system paths and the home directory itself are never indexed. Starting
+a job needs `cao:write` or `cao:admin`; a read-only caller only queries. The
+response's `indexing` list says what each node did (`started`, `running`,
+`retry_later`, `name_mismatch`, ...). Query again once the job finishes.
+
+Each node runs one indexing job at a time, keeps at most four waiting, and waits
+before indexing the same repository again. Settings:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CAO_CODEBASE_AUTO_INDEX` | `true` | `false` turns automatic indexing off. |
+| `CAO_CODEBASE_INDEX_MODE` | `full` | `full`, `moderate` or `fast`, passed to `index_repository`. |
+| `CAO_CODEBASE_INDEX_TIMEOUT` | `900` | Seconds before an indexing job is stopped. |
+| `CAO_CODEBASE_INDEX_RETRY_SECONDS` | `600` | Wait after a job before the same repository can be indexed again. |
+
+A node running an older CAO reports `unsupported` and is skipped.
+
 ## Fresh Fleet install
 
 The replacement release carries the checksum-pinned `cao_shared_cli_v1` helper,
