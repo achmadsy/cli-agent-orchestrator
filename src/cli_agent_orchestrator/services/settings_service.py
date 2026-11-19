@@ -119,9 +119,41 @@ AUTO_ROUTING_DEFAULTS: Dict[str, Any] = {
     "account_strategy": "default",
     "lanes": {},
     "workers": {},
+    "custom_models": {},
 }
 _ACCOUNT_STRATEGIES = frozenset({"default", "quota_desc"})
 MAX_ROUTE_ENTRIES = 32
+MAX_CUSTOM_MODELS = 50
+
+
+def _valid_model_id(value: Any) -> bool:
+    from cli_agent_orchestrator.constants import MODEL_ID_MAX_LEN, MODEL_ID_RE
+
+    return (
+        isinstance(value, str)
+        and len(value) <= MODEL_ID_MAX_LEN
+        and re.fullmatch(MODEL_ID_RE, value) is not None
+    )
+
+
+def _parse_custom_models(value: Any) -> Dict[str, List[str]]:
+    """Leniently read ``auto_routing.custom_models``; drop anything invalid."""
+    from cli_agent_orchestrator.constants import PROVIDERS
+
+    if not isinstance(value, dict):
+        return {}
+    result: Dict[str, List[str]] = {}
+    for provider, models in value.items():
+        if provider not in PROVIDERS or not isinstance(models, list):
+            continue
+        clean: List[str] = []
+        for model in models:
+            model = model.strip() if isinstance(model, str) else model
+            if _valid_model_id(model) and model not in clean:
+                clean.append(model)
+        if clean:
+            result[provider] = clean[:MAX_CUSTOM_MODELS]
+    return result
 
 
 def get_auto_routing_settings() -> Dict[str, Any]:
@@ -193,6 +225,40 @@ def get_auto_routing_settings() -> Dict[str, Any]:
     lanes = parse_profile_routes_mapping(saved.get("lanes"))
     result["lanes"] = {name: route for name, route in lanes.items() if name in LANES}
     result["workers"] = parse_profile_routes_mapping(saved.get("workers"))
+    result["custom_models"] = _parse_custom_models(saved.get("custom_models"))
+    return result
+
+
+def validate_custom_models(value: Any) -> Dict[str, List[str]]:
+    """Strictly validate a ``{provider: [model, ...]}`` map from a settings write.
+
+    Model IDs are trimmed and de-duplicated, and providers with no models are
+    dropped. Raises ``ValueError`` naming the first bad entry.
+    """
+    from cli_agent_orchestrator.constants import MODEL_ID_MAX_LEN, PROVIDERS
+
+    if not isinstance(value, dict):
+        raise ValueError("custom_models must be an object")
+    result: Dict[str, List[str]] = {}
+    for provider, models in value.items():
+        if provider not in PROVIDERS:
+            raise ValueError(f"custom_models: unknown provider {provider!r}")
+        if not isinstance(models, list):
+            raise ValueError(f"custom_models.{provider} must be a list")
+        clean: List[str] = []
+        for model in models:
+            model = model.strip() if isinstance(model, str) else model
+            if not _valid_model_id(model):
+                raise ValueError(
+                    f"custom_models.{provider}: {model!r} is not a valid model ID "
+                    f"(letters, digits, . _ : / -, at most {MODEL_ID_MAX_LEN} characters)"
+                )
+            if model not in clean:
+                clean.append(model)
+        if len(clean) > MAX_CUSTOM_MODELS:
+            raise ValueError(f"custom_models.{provider} has more than {MAX_CUSTOM_MODELS} models")
+        if clean:
+            result[provider] = clean
     return result
 
 
@@ -247,8 +313,9 @@ def validate_route_map(
 def set_auto_routing_routes(
     lanes: Optional[Dict[str, Dict[str, str]]] = None,
     workers: Optional[Dict[str, Dict[str, str]]] = None,
+    custom_models: Optional[Dict[str, List[str]]] = None,
 ) -> None:
-    """Replace ``auto_routing.lanes`` and/or ``auto_routing.workers``, keeping every other key.
+    """Replace ``auto_routing.lanes``, ``workers`` and/or ``custom_models``, keeping every other key.
 
     Reads strictly: an unreadable settings.json raises
     :class:`SettingsUnreadableError` instead of being overwritten with only
@@ -262,6 +329,8 @@ def set_auto_routing_routes(
         block["lanes"] = lanes
     if workers is not None:
         block["workers"] = workers
+    if custom_models is not None:
+        block["custom_models"] = custom_models
     settings["auto_routing"] = block
     _save(settings)
 

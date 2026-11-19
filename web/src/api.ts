@@ -145,6 +145,10 @@ export interface AutoRoutingRoutes {
   fallback_provider: string
   lanes: Record<string, AutoRoute>
   workers: Record<string, AutoRoute>
+  /** Model choices CAO ships per CLI (services/model_catalog.py). */
+  builtin_models: Record<string, string[]>
+  /** Models the user added per CLI under Settings. */
+  custom_models: Record<string, string[]>
 }
 
 export interface AutoSessionRequest {
@@ -912,7 +916,11 @@ export const api = {
   ),
   getAutoRoutingStatus: () => fetchJSON<AutoRoutingStatus>('/auto-routing/status'),
   getAutoRoutingRoutes: () => fetchJSON<AutoRoutingRoutes>('/settings/auto-routing'),
-  setAutoRoutingRoutes: (data: { lanes?: Record<string, AutoRoute>; workers?: Record<string, AutoRoute> }) =>
+  setAutoRoutingRoutes: (data: {
+    lanes?: Record<string, AutoRoute>
+    workers?: Record<string, AutoRoute>
+    custom_models?: Record<string, string[]>
+  }) =>
     fetchJSON<AutoRoutingRoutes>('/settings/auto-routing', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

@@ -23,6 +23,7 @@ def _cfg(**overrides):
         "account_strategy": "default",
         "lanes": {},
         "workers": {"developer": {"provider": "codex", "model": "gpt-5.5"}},
+        "custom_models": {},
     }
     cfg.update(overrides)
     return cfg
@@ -256,12 +257,35 @@ class TestRoutesEndpoints:
     def test_get_returns_lanes_workers_and_lane_names_only(self, client):
         with patch(ROUTES_GET, return_value=_cfg(lanes={"fix_supervisor": {"provider": "codex"}})):
             body = client.get("/settings/auto-routing").json()
-        assert set(body) == {"enabled", "lane_names", "fallback_provider", "lanes", "workers"}
+        assert set(body) == {
+            "enabled",
+            "lane_names",
+            "fallback_provider",
+            "lanes",
+            "workers",
+            "builtin_models",
+            "custom_models",
+        }
         assert body["lane_names"] == sorted(
             ["architect_supervisor", "feature_supervisor", "fix_supervisor", "probe_supervisor"]
         )
         assert body["lanes"] == {"fix_supervisor": {"provider": "codex"}}
         assert "ninerouter_url" not in body
+
+    def test_get_lists_builtin_and_custom_models(self, client):
+        with patch(ROUTES_GET, return_value=_cfg(custom_models={"hermes": ["my-model"]})):
+            body = client.get("/settings/auto-routing").json()
+        assert "opus" in body["builtin_models"]["claude_code"]
+        assert "gpt-5.5" in body["builtin_models"]["codex"]
+        assert body["custom_models"] == {"hermes": ["my-model"]}
+
+    def test_put_saves_custom_models(self, client):
+        with patch(ROUTES_SET) as save, patch(ROUTES_GET, return_value=_cfg()):
+            response = client.put(
+                "/settings/auto-routing", json={"custom_models": {"codex": [" gpt-7 "]}}
+            )
+        assert response.status_code == 200, response.text
+        save.assert_called_once_with(lanes=None, workers=None, custom_models={"codex": ["gpt-7"]})
 
     def test_put_saves_validated_maps(self, client):
         with patch(ROUTES_SET) as save, patch(ROUTES_GET, return_value=_cfg()):
@@ -276,12 +300,13 @@ class TestRoutesEndpoints:
         save.assert_called_once_with(
             lanes={"probe_supervisor": {"provider": "claude_code", "model": "opus"}},
             workers={"developer": {"provider": "codex"}},
+            custom_models=None,
         )
 
     def test_put_omitted_map_is_left_unchanged(self, client):
         with patch(ROUTES_SET) as save, patch(ROUTES_GET, return_value=_cfg()):
             client.put("/settings/auto-routing", json={"workers": {}})
-        save.assert_called_once_with(lanes=None, workers={})
+        save.assert_called_once_with(lanes=None, workers={}, custom_models=None)
 
     @pytest.mark.parametrize(
         "body",
@@ -293,6 +318,8 @@ class TestRoutesEndpoints:
             {"lanes": {"fix_supervisor": {"provider": "codex", "extra": 1}}},
             {"workers": {"a b": {"provider": "codex"}}},
             {"workers": {f"w{i}": {"provider": "codex"} for i in range(33)}},
+            {"custom_models": {"not-a-cli": ["x"]}},
+            {"custom_models": {"codex": ["rm -rf"]}},
         ],
     )
     def test_put_rejects_bad_entries_without_saving(self, client, body):

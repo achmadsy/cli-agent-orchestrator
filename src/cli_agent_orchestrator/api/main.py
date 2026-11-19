@@ -4083,6 +4083,7 @@ async def create_auto_session(
 
 def _auto_routing_routes_payload() -> Dict[str, Any]:
     from cli_agent_orchestrator.services.auto_router import LANES
+    from cli_agent_orchestrator.services.model_catalog import BUILTIN_MODELS
     from cli_agent_orchestrator.services.settings_service import get_auto_routing_settings
 
     cfg = get_auto_routing_settings()
@@ -4092,6 +4093,8 @@ def _auto_routing_routes_payload() -> Dict[str, Any]:
         "fallback_provider": DEFAULT_PROVIDER,
         "lanes": cfg["lanes"],
         "workers": cfg["workers"],
+        "builtin_models": BUILTIN_MODELS,
+        "custom_models": cfg["custom_models"],
     }
 
 
@@ -4102,6 +4105,7 @@ class AutoRoutingRoutesUpdate(BaseModel):
 
     lanes: Optional[Dict[str, Any]] = None
     workers: Optional[Dict[str, Any]] = None
+    custom_models: Optional[Dict[str, Any]] = None
 
 
 @app.get("/settings/auto-routing")
@@ -4120,7 +4124,7 @@ async def set_auto_routing_routes_endpoint(
     body: AutoRoutingRoutesUpdate,
     _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> Dict[str, Any]:
-    """Replace the lane and/or worker defaults in settings.json.
+    """Replace the lane defaults, worker defaults and/or added models in settings.json.
 
     Every entry is validated before anything is written, so a bad entry
     rejects the whole request with 400 and leaves the file as it was. Other
@@ -4130,6 +4134,7 @@ async def set_auto_routing_routes_endpoint(
     from cli_agent_orchestrator.services.settings_service import (
         SettingsUnreadableError,
         set_auto_routing_routes,
+        validate_custom_models,
         validate_route_map,
     )
 
@@ -4138,10 +4143,13 @@ async def set_auto_routing_routes_endpoint(
             validate_route_map(body.lanes, "lanes", set(LANES)) if body.lanes is not None else None
         )
         workers = validate_route_map(body.workers, "workers") if body.workers is not None else None
+        custom_models = (
+            validate_custom_models(body.custom_models) if body.custom_models is not None else None
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     try:
-        set_auto_routing_routes(lanes=lanes, workers=workers)
+        set_auto_routing_routes(lanes=lanes, workers=workers, custom_models=custom_models)
     except SettingsUnreadableError as exc:
         logger.warning("Refusing to overwrite settings.json: %s", exc)
         raise HTTPException(

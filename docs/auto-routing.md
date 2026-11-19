@@ -62,9 +62,9 @@ enforced: supervisors get only `cao-mcp-server`, `fs_read`, and `fs_list`.
 ## Configuration
 
 Settings are per node, in `~/.aws/cli-agent-orchestrator/settings.json` (or
-under `CAO_HOME_DIR`). The `lanes` and `workers` maps can also be edited in
-the web UI under **Settings › Auto (Jev) defaults**. The other keys are edited
-in the file only.
+under `CAO_HOME_DIR`). The `lanes`, `workers`, and `custom_models` maps can
+also be edited in the web UI under **Settings › Auto (Jev) defaults**. The
+other keys are edited in the file only.
 
 ```json
 {
@@ -100,6 +100,7 @@ in the file only.
 | `account_strategy` | `"default"` | `"default"` or `"quota_desc"`. See [Account selection](#account-selection). |
 | `lanes` | `{}` | Map of lane profile name to `{provider?, model?}`: the default CLI and model for that lane's supervisor. Only the four lane names are kept. Invalid entries are dropped one by one. See [Supervisor CLI](#supervisor-cli). |
 | `workers` | `{}` | Map of agent profile name to `{provider?, model?}`. Invalid entries are dropped one by one. |
+| `custom_models` | `{}` | Map of CLI name to a list of model IDs added in the Settings page, for example `{"codex": ["gpt-7"]}`. They only extend the model dropdown. Invalid IDs are dropped one by one. See [Model choices](#model-choices). |
 
 Each key is validated on its own. An invalid value is replaced by its default
 and logged, and the rest of the block still applies.
@@ -156,6 +157,38 @@ the call passes a different provider than the route, the route's model is
 dropped, so a model is never paired with a CLI it was not written for.
 
 Workers without a route behave as they do in any other supervisor session.
+
+The four lane prompts hand work only to `developer`, `reviewer`, and
+`planner`, so those are the routes Auto sessions normally use. The Settings
+page also lists every other profile on the node, under **Other profiles**. A
+route for one of them applies only when a supervisor delegates to that
+profile, for example because the first prompt asks for it. A name typed into
+the add field can name a profile that exists only on another Fleet node.
+
+## Model choices
+
+The model of each row in **Settings › Auto (Jev) defaults** is a dropdown.
+It lists:
+
+- **CLI's default model**, which sends no `--model`, so the CLI uses its own
+  default.
+- The built-in models for that CLI, from
+  `src/cli_agent_orchestrator/services/model_catalog.py`. `claude_code` lists
+  the aliases `opus`, `sonnet`, `haiku`, and `fable`, which always start the
+  latest model of that family. `codex` lists the models `codex debug models`
+  marks visible. Other CLIs have no built-in list because their model names
+  depend on how each node configures the CLI.
+- Models added by you, from `custom_models`.
+
+**Add a model…** at the end of the list opens a field for a model ID the list
+does not have, for example a model a CLI shipped after this CAO release. The
+ID must be what that CLI's `--model` flag accepts. Saving stores it under
+`custom_models` for that CLI, and it then appears in the dropdown of every row
+on the same CLI. **Added models** under the worker list removes one. A route
+that still names a removed model keeps it and shows it under **Saved**.
+
+The lists are suggestions, not an allow-list. CAO does not check that the CLI
+knows the model; a wrong ID fails when the CLI starts.
 
 ## Account selection
 
@@ -248,10 +281,11 @@ GET  /agents/provider-profiles/select?provider=<name>
 
 GET  /settings/auto-routing
      -> {"enabled": bool, "lane_names": [str], "fallback_provider": str,
-         "lanes": {...}, "workers": {...}}
+         "lanes": {...}, "workers": {...},
+         "builtin_models": {cli: [str]}, "custom_models": {cli: [str]}}
 
 PUT  /settings/auto-routing        (JSON body, write scope)
-     {"lanes": {...}?, "workers": {...}?}
+     {"lanes": {...}?, "workers": {...}?, "custom_models": {...}?}
      -> 200 with the same shape as GET
      -> 400 naming the first bad entry; nothing is written
      -> 503 when settings.json exists but cannot be read; it is not overwritten
@@ -261,7 +295,8 @@ PUT  /settings/auto-routing        (JSON body, write scope)
 other `auto_routing` key is kept. An entry with a `model` must also name a
 `provider`. Model names follow the same rule as other CAO model overrides:
 letters, digits, and `. _ : / -`, at most 128 characters. Each map holds at
-most 32 entries.
+most 32 entries. `custom_models` must name known CLIs and holds at most 50
+models per CLI; IDs are trimmed and de-duplicated.
 
 The prompt is delivered by the same create call, so there is no separate send
 step. The endpoint has no idempotency key: retrying could classify the prompt

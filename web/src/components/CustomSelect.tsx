@@ -20,12 +20,14 @@ interface CustomSelectProps {
   ariaLabel?: string
   /** Validation-error styling: thick red boundary on the trigger. Additive; default unchanged. */
   invalid?: boolean
+  /** Disables the trigger so the menu cannot open. Additive; default unchanged. */
+  disabled?: boolean
 }
 
 /** Menu height cap; also used to decide when to flip the menu upward. */
 const MENU_MAX_H = 256
 
-export function CustomSelect({ value, onChange, options, placeholder = 'Select...', className = '', ariaLabel, invalid = false }: CustomSelectProps) {
+export function CustomSelect({ value, onChange, options, placeholder = 'Select...', className = '', ariaLabel, invalid = false, disabled = false }: CustomSelectProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -102,8 +104,9 @@ export function CustomSelect({ value, onChange, options, placeholder = 'Select..
         type="button"
         aria-label={ariaLabel}
         aria-expanded={open}
+        disabled={disabled}
         onClick={() => setOpen(!open)}
-        className={`w-full flex items-center justify-between bg-gray-900 text-sm rounded-lg px-3 py-2.5 focus:outline-none transition-colors ${
+        className={`w-full flex items-center justify-between bg-gray-900 text-sm rounded-lg px-3 py-2.5 focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
           invalid
             ? 'border-2 !border-red-500 ring-2 ring-red-500/30'
             : 'border border-gray-700 focus:border-emerald-500 hover:border-gray-600'

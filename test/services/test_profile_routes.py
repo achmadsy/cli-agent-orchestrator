@@ -15,6 +15,7 @@ from cli_agent_orchestrator.services.settings_service import (
     SettingsUnreadableError,
     get_auto_routing_settings,
     set_auto_routing_routes,
+    validate_custom_models,
     validate_route_map,
 )
 
@@ -187,8 +188,60 @@ class TestAutoRoutingSettings:
             "fix_supervisor": {"provider": "codex", "model": "gpt-5.5"}
         }
 
+    def test_custom_models_drop_bad_entries(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "auto_routing": {
+                        "custom_models": {
+                            "codex": [" gpt-7 ", "gpt-7", "bad model", 5],
+                            "nope": ["x"],
+                            "claude_code": "opus",
+                            "hermes": [],
+                        }
+                    }
+                }
+            )
+        )
+        assert get_auto_routing_settings()["custom_models"] == {"codex": ["gpt-7"]}
+
+
+class TestValidateCustomModels:
+    def test_valid_map_is_normalized(self):
+        assert validate_custom_models(
+            {"codex": [" gpt-7 ", "gpt-7", "gpt-7-mini"], "hermes": []}
+        ) == {"codex": ["gpt-7", "gpt-7-mini"]}
+
+    @pytest.mark.parametrize(
+        "value, message",
+        [
+            ([], "must be an object"),
+            ({"nope": ["x"]}, "unknown provider"),
+            ({"codex": "gpt-7"}, "must be a list"),
+            ({"codex": ["gpt 7"]}, "not a valid model ID"),
+            ({"codex": [""]}, "not a valid model ID"),
+            ({"codex": [7]}, "not a valid model ID"),
+            ({"codex": ["x" * 129]}, "not a valid model ID"),
+            ({"codex": [f"m{i}" for i in range(51)]}, "more than 50"),
+        ],
+    )
+    def test_rejects_with_a_named_reason(self, value, message):
+        with pytest.raises(ValueError, match=message):
+            validate_custom_models(value)
+
 
 class TestSetAutoRoutingRoutes:
+    def test_custom_models_are_replaced_alone(self, settings_file):
+        settings_file.write_text(
+            json.dumps({"auto_routing": {"workers": {"developer": {"provider": "codex"}}}})
+        )
+        set_auto_routing_routes(custom_models={"codex": ["gpt-7"]})
+        saved = json.loads(settings_file.read_text())["auto_routing"]
+        assert saved == {
+            "workers": {"developer": {"provider": "codex"}},
+            "custom_models": {"codex": ["gpt-7"]},
+        }
+
     def test_replaces_maps_and_keeps_other_keys(self, settings_file):
         settings_file.write_text(
             json.dumps(
