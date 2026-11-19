@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Plus, X } from 'lucide-react'
-import { api, AgentProfileInfo, AutoRoute, AutoRoutingRoutes, ProviderInfo } from '../api'
+import { api, AgentProfileInfo, AutoRoute, AutoRoutingRoutes, ProviderInfo, ProviderProfile } from '../api'
 import { useStore } from '../store'
+import { cliChoiceValue, cliOptions, parseCliChoice } from '../cliChoices'
 import { CustomSelect, SelectOption } from './CustomSelect'
 
 const LANE_ORDER = ['probe_supervisor', 'fix_supervisor', 'feature_supervisor', 'architect_supervisor']
@@ -28,13 +29,17 @@ function orderedLanes(names: string[]): string[] {
   return [...LANE_ORDER.filter(n => names.includes(n)), ...names.filter(n => !LANE_ORDER.includes(n))]
 }
 
-/** Keep only entries that pick a CLI; a model without a CLI means nothing. */
+/** Keep only entries that pick a CLI; a model or account without a CLI means nothing. */
 function compact(routes: Routes): Routes {
   const out: Routes = {}
   for (const [name, route] of Object.entries(routes)) {
     if (!route.provider) continue
     const model = route.model?.trim()
-    out[name] = model ? { provider: route.provider, model } : { provider: route.provider }
+    out[name] = {
+      provider: route.provider,
+      ...(model ? { model } : {}),
+      ...(route.provider_profile ? { provider_profile: route.provider_profile } : {}),
+    }
   }
   return out
 }
@@ -55,6 +60,7 @@ export function AutoRoutingDefaultsCard() {
   const [workers, setWorkers] = useState<Routes>({})
   const [customModels, setCustomModels] = useState<Models>({})
   const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [accounts, setAccounts] = useState<ProviderProfile[]>([])
   const [profiles, setProfiles] = useState<AgentProfileInfo[]>([])
   const [profilesLoaded, setProfilesLoaded] = useState(false)
   const [newWorker, setNewWorker] = useState('')
@@ -88,6 +94,7 @@ export function AutoRoutingDefaultsCard() {
       })
       .catch(() => setLoadFailed(true))
     api.listProviders().then(setProviders).catch(() => {})
+    api.listProviderProfiles().then(setAccounts).catch(() => {})
     api.listProfiles()
       .then(list => { setProfiles(list); setProfilesLoaded(true) })
       .catch(() => {})
@@ -122,14 +129,9 @@ export function AutoRoutingDefaultsCard() {
     JSON.stringify(compact(workers)) !== JSON.stringify(compact(saved.workers)) ||
     JSON.stringify(compactModels(customModels)) !== JSON.stringify(compactModels(saved.custom_models ?? {}))
 
-  const providerOptions = (emptyLabel: string, current?: string): SelectOption[] => [
+  const providerOptions = (emptyLabel: string, current: string): SelectOption[] => [
     { value: '', label: emptyLabel },
-    ...providers.map(p => ({
-      value: p.name,
-      label: cliLabel(p.name),
-      sublabel: !p.installed ? 'Not installed' : undefined,
-      disabled: !p.installed && p.name !== current,
-    })),
+    ...cliOptions(providers, accounts, { current }),
   ]
 
   const modelOptions = (route: AutoRoute): SelectOption[] => {
@@ -195,13 +197,20 @@ export function AutoRoutingDefaultsCard() {
         <div className="flex-1 min-w-[150px]">
           <CustomSelect
             ariaLabel={`${name} CLI`}
-            value={route.provider || ''}
-            // A model is written for one CLI, so a CLI change clears it.
+            value={cliChoiceValue(route.provider, route.provider_profile)}
             onChange={value => {
-              update(setter, name, { provider: value || undefined, model: undefined })
-              if (adding === name) setAdding(null)
+              const choice = parseCliChoice(value)
+              // A model is written for one CLI, so it is cleared only when the
+              // CLI changes; switching between accounts of one CLI keeps it.
+              const sameCli = Boolean(choice.provider) && choice.provider === route.provider
+              update(setter, name, {
+                provider: choice.provider || undefined,
+                provider_profile: choice.account,
+                model: sameCli ? route.model : undefined,
+              })
+              if (adding === name && !sameCli) setAdding(null)
             }}
-            options={providerOptions(emptyLabel, route.provider)}
+            options={providerOptions(emptyLabel, cliChoiceValue(route.provider, route.provider_profile))}
           />
         </div>
         <div className="flex-1 min-w-[150px]">

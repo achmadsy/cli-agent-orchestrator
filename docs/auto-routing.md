@@ -98,8 +98,8 @@ other keys are edited in the file only.
 | `min_confidence` | `0.5` | Number from 0 to 1. Answers below it fall back. |
 | `min_margin` | `0.15` | Number from 0 to 1. When Jev reports probabilities for the other lanes, the chosen lane must lead the runner-up by at least this much. `0` turns the check off. |
 | `account_strategy` | `"default"` | `"default"` or `"quota_desc"`. See [Account selection](#account-selection). |
-| `lanes` | `{}` | Map of lane profile name to `{provider?, model?}`: the default CLI and model for that lane's supervisor. Only the four lane names are kept. Invalid entries are dropped one by one. See [Supervisor CLI](#supervisor-cli). |
-| `workers` | `{}` | Map of agent profile name to `{provider?, model?}`. Invalid entries are dropped one by one. |
+| `lanes` | `{}` | Map of lane profile name to `{provider?, model?, provider_profile?}`: the default CLI, model, and account for that lane's supervisor. Only the four lane names are kept. Invalid entries are dropped one by one. See [Supervisor CLI](#supervisor-cli). |
+| `workers` | `{}` | Map of agent profile name to `{provider?, model?, provider_profile?}`. Invalid entries are dropped one by one. |
 | `custom_models` | `{}` | Map of CLI name to a list of model IDs added in the Settings page, for example `{"codex": ["gpt-7"]}`. They only extend the model dropdown. Invalid IDs are dropped one by one. See [Model choices](#model-choices). |
 
 Each key is validated on its own. An invalid value is replaced by its default
@@ -132,6 +132,11 @@ the form picks a different CLI, the lane model is dropped, the same rule as
 for worker routes. Without a lane model, the CLI starts with its own default
 model.
 
+The lane's `provider_profile` (account) is used only when the form picks no
+CLI. Picking a CLI or an account in the form replaces the whole lane default
+for that launch. See [Account selection](#account-selection) for the full
+order.
+
 In the web UI and the Fleet panel, the provider list in Auto mode starts on
 **Default (from Settings)**, which sends no provider, so the lane defaults
 apply. Picking a CLI there overrides them for that launch.
@@ -154,7 +159,8 @@ worker is resolved in this order:
 
 The route's `model` is used only when the call does not pass its own model. If
 the call passes a different provider than the route, the route's model is
-dropped, so a model is never paired with a CLI it was not written for.
+dropped, so a model is never paired with a CLI it was not written for. The
+route's `provider_profile` (account) follows the same rule.
 
 Workers without a route behave as they do in any other supervisor session.
 
@@ -205,11 +211,37 @@ supervisor and for each worker it starts on the same node:
 - The whole selection has a 5 second budget. A timeout, a store error, or no
   account with a usable quota means the default CLI config is used.
 
-An account chosen explicitly in the spawn form always wins over the strategy.
+The account for the supervisor and for each worker is resolved in this order:
+
+1. The account picked in the Spawn form, or passed to the tool call.
+2. The `provider_profile` of the lane or worker route in Settings, when the
+   launch runs on that route's CLI.
+3. For workers, the session's `role_provider_profiles`. Auto sessions do not
+   set one.
+4. `quota_desc`, when it is the strategy.
+5. The agent profile's `providerProfile`, then the CLI's default account
+   (the one marked default in Provider Profiles), then the CLI's own login on
+   the node.
+
 Workers handed off to another Fleet node never get an account from this node,
 because accounts are local to each node.
 
 With no accounts configured, `quota_desc` behaves like `default`.
+
+## Accounts in CLI menus
+
+Every menu that picks a CLI also lists that CLI's accounts by name: Spawn
+Agent, Add agent, Delegated agent CLIs, Settings › Auto (Jev) defaults, Flows,
+the workflow Run dialog, the profile editor, and Launch in the Fleet panel.
+For a CLI with accounts, the menu shows a section with each account, then the
+CLI itself. The CLI entry uses the CLI's default account, or the CLI's own
+login when there is none. A CLI without accounts shows only its name, as
+before.
+
+Picking an account sends the CLI and the account together. An account that is
+not signed in is listed but disabled. An account used by a lane or worker
+default cannot be deleted until that default picks another account; the
+delete returns `409` and names the lanes and workers that use it.
 
 ## Fallback
 
@@ -294,7 +326,9 @@ PUT  /settings/auto-routing        (JSON body, write scope)
 `PUT` replaces each map it receives and leaves an omitted map unchanged. Every
 other `auto_routing` key is kept. An entry with a `model` must also name a
 `provider`. Model names follow the same rule as other CAO model overrides:
-letters, digits, and `. _ : / -`, at most 128 characters. Each map holds at
+letters, digits, and `. _ : / -`, at most 128 characters. An entry with a
+`provider_profile` must name a `provider`, and the account must exist and
+belong to that provider. Each map holds at
 most 32 entries. `custom_models` must name known CLIs and holds at most 50
 models per CLI; IDs are trimmed and de-duplicated.
 

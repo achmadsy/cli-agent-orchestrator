@@ -42,6 +42,11 @@ vi.mock('../store', () => ({
   }),
 }))
 
+const CLAUDE_WORK = {
+  id: 'claude-work', label: 'Claude Work', provider: 'claude_code', auth_state: 'authenticated',
+  login_method: 'isolated_home', settings: {}, is_default: false, created_at: '', updated_at: '',
+}
+
 async function openProfileMenu() {
   render(<AgentPanel />)
   fireEvent.click(screen.getByRole('button', { name: /Spawn Agent/ }))
@@ -127,6 +132,49 @@ describe('AgentPanel Auto (Jev) option', () => {
 
     await waitFor(() => expect(mocks.createAutoSession).toHaveBeenCalledTimes(1))
     expect(mocks.createAutoSession.mock.calls[0][0]).toMatchObject({ initial_message: 'fix it', provider: 'claude_code' })
+  })
+
+  it('lists accounts by name in the CLI menu and sends the picked account', async () => {
+    vi.mocked(api.getAutoRoutingStatus).mockResolvedValue({ enabled: true, router_model: 'm' })
+    vi.mocked(api.listProviderProfiles).mockResolvedValueOnce([CLAUDE_WORK] as never)
+    mocks.createAutoSession.mockResolvedValue({
+      terminal: { id: 'abcd1234' },
+      decision: { lane: 'fix_supervisor', confidence: 0.9, fallback_reason: null, router_model: 'm' },
+    })
+    await openProfileMenu()
+    fireEvent.click(await screen.findByText('Auto (Jev)'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn CLI' }))
+    const menu = await screen.findByTestId('custom-select-menu')
+    fireEvent.click(await within(menu).findByText('Claude Work'))
+    expect(screen.getByRole('button', { name: 'Spawn CLI' })).toHaveTextContent('Claude Work')
+
+    fireEvent.change(await screen.findByLabelText('First prompt'), { target: { value: 'fix it' } })
+    fireEvent.click(spawnButton())
+    await waitFor(() => expect(mocks.createAutoSession).toHaveBeenCalledTimes(1))
+    expect(mocks.createAutoSession.mock.calls[0][0]).toMatchObject({
+      provider: 'claude_code',
+      provider_profile: 'claude-work',
+    })
+  })
+
+  it('sends the account picked in the CLI menu with a manual launch', async () => {
+    vi.mocked(api.getAutoRoutingStatus).mockResolvedValue({ enabled: false, router_model: 'm' })
+    vi.mocked(api.listProviderProfiles).mockResolvedValueOnce([CLAUDE_WORK] as never)
+    render(<AgentPanel />)
+    fireEvent.click(screen.getByRole('button', { name: /Spawn Agent/ }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn CLI' }))
+    const cliMenu = await screen.findByTestId('custom-select-menu')
+    fireEvent.click(await within(cliMenu).findByText('Claude Work'))
+    fireEvent.click(await screen.findByText('Select a profile...'))
+    fireEvent.click(within(await screen.findByTestId('custom-select-menu')).getByText('developer'))
+    fireEvent.click(spawnButton())
+
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1))
+    const args = mocks.createSession.mock.calls[0]
+    expect(args[0]).toBe('claude_code')
+    expect(args[5]).toBe('claude-work')
   })
 
   it('keeps the modal and the typed prompt when the launch fails', async () => {

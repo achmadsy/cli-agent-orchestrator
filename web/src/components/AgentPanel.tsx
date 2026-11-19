@@ -7,6 +7,7 @@ import { DirectoryPickerDialog } from './DirectoryPickerDialog'
 import { ConfirmModal } from './ConfirmModal'
 import { InboxPanel } from './InboxPanel'
 import { CustomSelect, SelectOption } from './CustomSelect'
+import { cliChoiceValue, cliOptions, parseCliChoice } from '../cliChoices'
 import { TerminalMeta } from '../api'
 import { StatusBadge } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
@@ -45,20 +46,22 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   const [loadingProfiles, setLoadingProfiles] = useState(true)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [providerProfiles, setProviderProfiles] = useState<ProviderProfile[]>([])
+  // The account always comes from the same menu pick as its CLI (see
+  // cliChoices.ts), so a CLI change can never leave a foreign account behind.
   const [providerProfile, setProviderProfile] = useState('')
   const [addProviderProfile, setAddProviderProfile] = useState('')
-
-  useEffect(() => {
-    setProviderProfile('')
-  }, [provider])
 
   useEffect(() => {
     api.listProviders()
       .then(p => {
         setProviders(p)
-        // Default to first installed provider
+        // Default to first installed provider. This replaces any earlier pick,
+        // so drop that pick's account too; it may belong to another CLI.
         const firstInstalled = p.find(prov => prov.installed)
-        if (firstInstalled) setProvider(firstInstalled.name)
+        if (firstInstalled) {
+          setProvider(firstInstalled.name)
+          setProviderProfile('')
+        }
       })
       .catch(() => {})
     api.listProviderProfiles().then(setProviderProfiles).catch(() => {})
@@ -74,10 +77,6 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   const [showAddAgent, setShowAddAgent] = useState(false)
   const [addProvider, setAddProvider] = useState('kiro_cli')
   const [addProfile, setAddProfile] = useState('')
-
-  useEffect(() => {
-    setAddProviderProfile('')
-  }, [addProvider])
   const [addWorkDir, setAddWorkDir] = useState('')
   const [addingAgent, setAddingAgent] = useState(false)
   const [pendingExit, setPendingExit] = useState<TerminalMeta | null>(null)
@@ -111,10 +110,17 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   const [autoProvider, setAutoProvider] = useState('')
   const isAuto = profile === AUTO_PROFILE
   const spawnProvider = isAuto ? autoProvider : provider
+  const spawnChoice = cliChoiceValue(spawnProvider, providerProfile)
+  const addChoice = cliChoiceValue(addProvider, addProviderProfile)
+  const providerList = providers.length > 0
+    ? providers
+    : FALLBACK_PROVIDERS.map(n => ({ name: n, binary: '', installed: true }))
 
+  // Auto and manual launches keep separate CLI picks; an account picked for
+  // one must not follow the user to the other.
   useEffect(() => {
     setProviderProfile('')
-  }, [autoProvider, isAuto])
+  }, [isAuto])
 
   useEffect(() => {
     api.getAutoRoutingStatus()
@@ -518,21 +524,20 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                 Add another agent to this session. Agents in the same session can send messages to each other and coordinate on tasks. A supervisor can delegate work to agents you add here.
               </p>
               <div className="flex gap-3 items-end flex-wrap">
-                <div className="min-w-[160px]">
+                <div className="min-w-[180px]">
                   <label className="block text-xs text-gray-500 mb-1">Provider</label>
                   <CustomSelect
-                    value={addProvider}
-                    onChange={setAddProvider}
+                    ariaLabel="Add agent CLI"
+                    value={addChoice}
+                    onChange={value => {
+                      const choice = parseCliChoice(value)
+                      setAddProvider(choice.provider)
+                      setAddProviderProfile(choice.account ?? '')
+                    }}
                     placeholder="Select provider..."
-                    options={(providers.length > 0 ? providers : FALLBACK_PROVIDERS.map(n => ({ name: n, binary: '', installed: true }))).map(p => ({
-                      value: p.name,
-                      label: p.name.replace(/_/g, ' '),
-                      sublabel: !p.installed ? 'Not installed' : undefined,
-                      disabled: !p.installed,
-                    }))}
+                    options={cliOptions(providerList, providerProfiles, { current: addChoice })}
                   />
                 </div>
-                {providerProfiles.some(p => p.provider === addProvider) && <div className="min-w-[180px]"><label className="block text-xs text-gray-500 mb-1">Provider Account</label><CustomSelect value={addProviderProfile} onChange={setAddProviderProfile} placeholder="Default config" options={[{ value: '', label: 'Default config' }, ...providerProfiles.filter(p => p.provider === addProvider).map(p => ({ value: p.id, label: p.label, sublabel: p.id, disabled: p.auth_state !== 'authenticated' }))]} /></div>}
                 <div className="flex-1 min-w-[180px]">
                   <label className="block text-xs text-gray-500 mb-1">Agent Profile</label>
                   {profiles.length > 0 ? (
@@ -884,8 +889,14 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Provider</label>
                 <CustomSelect
-                  value={spawnProvider}
-                  onChange={isAuto ? setAutoProvider : setProvider}
+                  ariaLabel="Spawn CLI"
+                  value={spawnChoice}
+                  onChange={value => {
+                    const choice = parseCliChoice(value)
+                    if (isAuto) setAutoProvider(choice.provider)
+                    else setProvider(choice.provider)
+                    setProviderProfile(choice.account ?? '')
+                  }}
                   placeholder="Select provider..."
                   options={[
                     ...(isAuto ? [{
@@ -893,17 +904,10 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                       label: 'Default (from Settings)',
                       sublabel: "Each lane's CLI from Settings › Auto (Jev) defaults",
                     }] : []),
-                    ...(providers.length > 0 ? providers : FALLBACK_PROVIDERS.map(n => ({ name: n, binary: '', installed: true }))).map(p => ({
-                      value: p.name,
-                      label: p.name.replace(/_/g, ' '),
-                      sublabel: !p.installed ? 'Not installed' : undefined,
-                      disabled: !p.installed,
-                    })),
+                    ...cliOptions(providerList, providerProfiles, { current: spawnChoice }),
                   ]}
                 />
               </div>
-
-              {spawnProvider && providerProfiles.some(p => p.provider === spawnProvider) && <div><label className="block text-xs text-gray-500 mb-1">Provider Account</label><CustomSelect value={providerProfile} onChange={setProviderProfile} placeholder="Default config" options={[{ value: '', label: 'Default config' }, ...providerProfiles.filter(p => p.provider === spawnProvider).map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]} /></div>}
 
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Agent Profile</label>
@@ -1006,63 +1010,43 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                     {delegatedMode === 'same' && (
                       <>
                         <CustomSelect
-                          value={delegatedProvider}
+                          ariaLabel="Delegated CLI for all roles"
+                          value={cliChoiceValue(delegatedProvider, delegatedProfiles.supervisor)}
                           onChange={value => {
-                            setDelegatedProvider(value)
-                            // A shared account from the old provider is invalid now.
-                            setDelegatedProfiles({})
+                            // The CLI and its account come from one pick, so an
+                            // account from the old CLI never survives a change.
+                            const choice = parseCliChoice(value)
+                            setDelegatedProvider(choice.provider)
+                            setDelegatedProfiles(choice.account
+                              ? { supervisor: choice.account, developer: choice.account, reviewer: choice.account }
+                              : {})
                           }}
                           placeholder="Select installed CLI"
-                          options={providers.map(p => ({ value: p.name, label: p.name.replace(/_/g, ' '), disabled: !p.installed, sublabel: !p.installed ? 'Not installed' : undefined }))}
+                          options={cliOptions(providers, providerProfiles, {
+                            current: cliChoiceValue(delegatedProvider, delegatedProfiles.supervisor),
+                          })}
                         />
-                        {delegatedProvider && providerProfiles.some(p => p.provider === delegatedProvider) && (
-                          <div>
-                            <label className="block mb-1 text-[11px] text-gray-500">Shared account</label>
-                            <CustomSelect
-                              value={delegatedProfiles.supervisor ?? ''}
-                              onChange={value => setDelegatedProfiles(value ? { supervisor: value, developer: value, reviewer: value } : {})}
-                              placeholder="Default account"
-                              options={[{ value: '', label: 'Default account' }, ...providerProfiles.filter(p => p.provider === delegatedProvider).map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]}
-                            />
-                          </div>
-                        )}
                       </>
                     )}
                     {delegatedMode === 'roles' && (
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                         {(['supervisor', 'developer', 'reviewer'] as ProviderRole[]).map(role => {
-                          const roleProvider = delegatedRoles[role] ?? ''
-                          const roleAccounts = providerProfiles.filter(p => p.provider === roleProvider)
+                          const roleChoice = cliChoiceValue(delegatedRoles[role], delegatedProfiles[role])
                           return (
                             <div key={role}>
                               <label className="block mb-1 text-[11px] capitalize text-gray-500">{role}</label>
                               <CustomSelect
-                                value={delegatedRoles[role] ?? ''}
+                                ariaLabel={`Delegated CLI for ${role}`}
+                                value={roleChoice}
                                 onChange={value => {
-                                  setDelegatedRoles(current => ({ ...current, [role]: value || undefined }))
-                                  // Reset the role's account when its provider changed,
-                                  // because a profile from the old provider is invalid now.
-                                  setDelegatedProfiles(current => {
-                                    if (!current[role]) return current
-                                    const next = { ...current }
-                                    delete next[role]
-                                    return next
-                                  })
+                                  // One pick sets the role's CLI and account together.
+                                  const choice = value ? parseCliChoice(value) : { provider: '', account: undefined }
+                                  setDelegatedRoles(current => ({ ...current, [role]: choice.provider || undefined }))
+                                  setDelegatedProfiles(current => ({ ...current, [role]: choice.account }))
                                 }}
                                 placeholder="Default"
-                                options={[{ value: '', label: 'Default' }, ...providers.map(p => ({ value: p.name, label: p.name.replace(/_/g, ' '), disabled: !p.installed }))]}
+                                options={[{ value: '', label: 'Default' }, ...cliOptions(providers, providerProfiles, { current: roleChoice })]}
                               />
-                              {roleProvider && roleAccounts.length > 0 && (
-                                <div className="mt-1">
-                                  <label className="block mb-1 text-[11px] text-gray-500">Account</label>
-                                  <CustomSelect
-                                    value={delegatedProfiles[role] ?? ''}
-                                    onChange={value => setDelegatedProfiles(current => ({ ...current, [role]: value || undefined }))}
-                                    placeholder="Default account"
-                                    options={[{ value: '', label: 'Default account' }, ...roleAccounts.map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]}
-                                  />
-                                </div>
-                              )}
                             </div>
                           )
                         })}

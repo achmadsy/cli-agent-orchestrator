@@ -17,6 +17,53 @@ function setOptions(sel, items) {
   sel.replaceChildren(...items.map((i) => opt(i.value, i.label)));
 }
 
+// A launch "provider" value names a CLI, or a CLI plus one of its accounts
+// ("codex@codex-work"). Neither part can contain "@".
+function splitCliChoice(value) {
+  const at = value.indexOf("@");
+  return at < 0
+    ? { provider: value, account: undefined }
+    : { provider: value.slice(0, at), account: value.slice(at + 1) || undefined };
+}
+
+const AUTH_LABELS = {
+  authenticated: "signed in",
+  unconfigured: "not signed in",
+  expired: "login expired",
+  unknown: "login not checked",
+  error: "login check failed",
+  unsupported: "login not supported",
+};
+
+// Fill the CLI select. A CLI with accounts on the node becomes a group: each
+// account by its name (disabled until signed in), then the CLI itself, which
+// uses the CLI's default account or, without one, the CLI's own login.
+function setProviderOptions(sel, providers, accounts) {
+  const items = [];
+  for (const p of providers) {
+    const mine = accounts.filter((a) => a.provider === p.name);
+    const plainLabel = `${p.name}${p.installed ? "" : " (not installed)"}`;
+    if (!mine.length) {
+      items.push(opt(p.name, plainLabel));
+      continue;
+    }
+    const group = document.createElement("optgroup");
+    group.label = p.name;
+    for (const a of mine) {
+      const o = opt(`${p.name}@${a.id}`, `${a.label} (${AUTH_LABELS[a.auth_state] || a.auth_state})`);
+      o.disabled = a.auth_state !== "authenticated";
+      group.append(o);
+    }
+    const fallback = mine.find((a) => a.is_default);
+    group.append(opt(p.name, fallback ? `${plainLabel}, default account: ${fallback.label}` : `${plainLabel}, CLI login`));
+    items.push(group);
+  }
+  sel.replaceChildren(...items);
+  // Never start on a disabled (not signed in) account.
+  const first = Array.from(sel.options).find((o) => !o.disabled);
+  if (first) sel.value = first.value;
+}
+
 const wallEl = $("#wall");
 const machinesEl = $("#machines");
 const statusLine = $("#status-line");
@@ -406,17 +453,19 @@ async function loadNodeOptions(node) {
   syncAutoTask();
   // Older nodes have no auto-routing endpoint; treat any failure as disabled.
   const autoStatus = api(`/api/machines/${node}/auto-routing/status`).catch(() => null);
+  // Older nodes (or a token without read scope) have no account list; the
+  // dialog then shows plain CLIs as before.
+  const accountsReq = api(`/api/machines/${node}/accounts`).catch(() => []);
   try {
-    const [provs, profs, auto] = await Promise.all([
+    const [provs, profs, auto, accounts] = await Promise.all([
       api(`/api/machines/${node}/providers`),
       api(`/api/machines/${node}/profiles`),
       autoStatus,
+      accountsReq,
     ]);
     const installed = provs.filter((p) => p.installed);
     const provList = installed.length ? installed : provs;
-    setOptions(provSel, provList.map((p) => ({
-      value: p.name, label: `${p.name}${p.installed ? "" : " (not installed)"}`,
-    })));
+    setProviderOptions(provSel, provList, Array.isArray(accounts) ? accounts : []);
     const profileOptions = profs.map((p) => {
       const n = typeof p === "string" ? p : p.name;
       return { value: n, label: n };
@@ -474,9 +523,11 @@ launchForm.addEventListener("submit", async (e) => {
     launchMsg.textContent = "Auto (Jev) needs a first task.";
     return;
   }
+  const choice = splitCliChoice(f.provider.value);
   const body = {
     working_directory: f.working_directory.value.trim() || undefined,
-    provider: f.provider.value,
+    provider: choice.provider,
+    provider_profile: choice.account,
     task: task || undefined,
   };
   // The Auto sentinel is never sent as agent_profile; the node picks the lane.

@@ -246,7 +246,7 @@ def _err(kind, status=None):
 def test_launch_autogenerates_session_name_and_delivers_task(monkeypatch):
     launched = {}
 
-    async def fake_launch(c, base, profile, provider, session_name, wd=None):
+    async def fake_launch(c, base, profile, provider, session_name, wd=None, provider_profile=None):
         launched.update(profile=profile, provider=provider, session_name=session_name, wd=wd)
         return {"id": "term-9", "session_name": f"cao-{session_name}"}
 
@@ -274,7 +274,7 @@ def test_launch_autogenerates_session_name_and_delivers_task(monkeypatch):
 
 
 def test_launch_uses_provided_session_name_and_skips_task(monkeypatch):
-    async def fake_launch(c, base, profile, provider, session_name, wd=None):
+    async def fake_launch(c, base, profile, provider, session_name, wd=None, provider_profile=None):
         return {"id": "term-1", "session_name": f"cao-{session_name}"}
 
     def _boom(*a, **k):
@@ -489,7 +489,7 @@ def test_auto_routing_status_proxy_maps_old_node_to_502(monkeypatch):
 def test_auto_launch_uses_single_create_call_and_returns_decision(monkeypatch):
     seen = {}
 
-    async def fake_auto(c, base, prompt, provider, session_name, wd=None):
+    async def fake_auto(c, base, prompt, provider, session_name, wd=None, provider_profile=None):
         seen.update(prompt=prompt, provider=provider, session_name=session_name, wd=wd)
         return {
             "terminal": {"id": "term-7", "session_name": f"cao-{session_name}"},
@@ -557,7 +557,7 @@ def test_auto_launch_maps_node_errors_to_502(monkeypatch):
 def test_truthy_non_boolean_auto_keeps_manual_launch(monkeypatch):
     launched = {}
 
-    async def fake_launch(c, base, profile, provider, session_name, wd=None):
+    async def fake_launch(c, base, profile, provider, session_name, wd=None, provider_profile=None):
         launched["profile"] = profile
         return {"id": "term-3"}
 
@@ -570,3 +570,86 @@ def test_truthy_non_boolean_auto_keeps_manual_launch(monkeypatch):
     r = tc.post("/api/machines/node-a/launch", json={"auto": "true", "agent_profile": "reviewer"})
     assert r.status_code == 200
     assert launched["profile"] == "reviewer"
+
+
+# --- accounts (CLI accounts in the launch dialog) ---------------------------
+
+
+def test_accounts_proxy_keeps_only_display_fields(monkeypatch):
+    async def fake(c, base):
+        return [
+            {
+                "id": "codex-work",
+                "label": "Codex Work",
+                "provider": "codex",
+                "auth_state": "authenticated",
+                "is_default": False,
+                "settings": {"home": "/secret"},
+                "auth_detail": "token details",
+            },
+            {"id": "../etc", "label": "bad", "provider": "codex"},
+            "not-an-object",
+        ]
+
+    monkeypatch.setattr(client, "list_provider_profiles", fake)
+    tc = TestClient(main.app)
+    r = tc.get("/api/machines/node-a/accounts")
+    assert r.status_code == 200
+    assert r.json() == [
+        {
+            "id": "codex-work",
+            "label": "Codex Work",
+            "provider": "codex",
+            "auth_state": "authenticated",
+            "is_default": False,
+        }
+    ]
+
+
+def test_accounts_proxy_maps_node_errors_to_502(monkeypatch):
+    async def fake(c, base):
+        raise _err("transport")
+
+    monkeypatch.setattr(client, "list_provider_profiles", fake)
+    tc = TestClient(main.app)
+    assert tc.get("/api/machines/node-a/accounts").status_code == 502
+
+
+def test_launch_forwards_the_picked_account(monkeypatch):
+    launched = {}
+
+    async def fake_launch(c, base, profile, provider, session_name, wd=None, provider_profile=None):
+        launched.update(provider=provider, account=provider_profile)
+        return {"id": "term-4"}
+
+    monkeypatch.setattr(client, "launch", fake_launch)
+    tc = TestClient(main.app)
+    r = tc.post(
+        "/api/machines/node-a/launch",
+        json={"provider": "codex", "provider_profile": "codex-work"},
+    )
+    assert r.status_code == 200
+    assert launched == {"provider": "codex", "account": "codex-work"}
+
+
+def test_launch_rejects_a_malformed_account():
+    tc = TestClient(main.app)
+    for bad in ("../x", "a b", 7):
+        r = tc.post("/api/machines/node-a/launch", json={"provider": "codex", "provider_profile": bad})
+        assert r.status_code == 400
+
+
+def test_auto_launch_forwards_the_account_only_with_a_cli(monkeypatch):
+    seen = []
+
+    async def fake_auto(c, base, prompt, provider, session_name, wd=None, provider_profile=None):
+        seen.append((provider, provider_profile))
+        return {"terminal": {"id": "t"}, "decision": {}}
+
+    monkeypatch.setattr(client, "launch_auto", fake_auto)
+    tc = TestClient(main.app)
+    base = {"auto": True, "task": "fix it"}
+    tc.post("/api/machines/node-a/launch", json={**base, "provider": "codex", "provider_profile": "codex-work"})
+    # No CLI means "use the node's lane defaults", so a stray account is dropped.
+    tc.post("/api/machines/node-a/launch", json={**base, "provider": "", "provider_profile": "codex-work"})
+    assert seen == [("codex", "codex-work"), (None, None)]

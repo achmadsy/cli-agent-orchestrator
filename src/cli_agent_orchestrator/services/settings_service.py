@@ -269,11 +269,12 @@ def validate_route_map(
 
     Unlike :func:`parse_profile_routes_mapping`, which drops bad entries when
     reading, a write is rejected with a message naming the bad key. A model
-    needs a provider, because a model name only means something to one CLI.
-    Entries with neither value are dropped. Raises ``ValueError``.
+    or an account needs a provider, because each only means something to one
+    CLI. An account must exist and belong to that provider. Entries with no
+    values are dropped. Raises ``ValueError``.
     """
     from cli_agent_orchestrator.constants import MODEL_ID_MAX_LEN, MODEL_ID_RE, PROVIDERS
-    from cli_agent_orchestrator.models.provider_policy import PROFILE_NAME_RE
+    from cli_agent_orchestrator.models.provider_policy import PROFILE_ID_RE, PROFILE_NAME_RE
 
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
@@ -285,14 +286,23 @@ def validate_route_map(
             raise ValueError(f"{label}: invalid profile name {name!r}")
         if allowed is not None and name not in allowed:
             raise ValueError(f"{label}: unknown lane {name!r}")
-        if not isinstance(raw, dict) or set(raw) - {"provider", "model"}:
-            raise ValueError(f"{label}.{name} must be an object with only provider and model")
+        if not isinstance(raw, dict) or set(raw) - {"provider", "model", "provider_profile"}:
+            raise ValueError(
+                f"{label}.{name} must be an object with only provider, model and provider_profile"
+            )
         provider = raw.get("provider") or None
         model = raw.get("model")
         model = model.strip() if isinstance(model, str) else model
         model = model or None
+        account = raw.get("provider_profile") or None
         if provider is not None and provider not in PROVIDERS:
             raise ValueError(f"{label}.{name}.provider: unknown provider {provider!r}")
+        if account is not None:
+            if not isinstance(account, str) or not PROFILE_ID_RE.fullmatch(account):
+                raise ValueError(f"{label}.{name}.provider_profile: invalid account ID")
+            if provider is None:
+                raise ValueError(f"{label}.{name}: an account needs a provider")
+            _check_account_provider(f"{label}.{name}", account, provider)
         if model is not None:
             if not isinstance(model, str) or len(model) > MODEL_ID_MAX_LEN:
                 raise ValueError(
@@ -304,10 +314,42 @@ def validate_route_map(
                 )
             if provider is None:
                 raise ValueError(f"{label}.{name}: a model needs a provider")
-        route = {key: val for key, val in (("provider", provider), ("model", model)) if val}
+        route = {
+            key: val
+            for key, val in (
+                ("provider", provider),
+                ("model", model),
+                ("provider_profile", account),
+            )
+            if val
+        }
         if route:
             routes[name] = route
     return routes
+
+
+def _check_account_provider(where: str, account: str, provider: str) -> None:
+    """Raise ``ValueError`` unless ``account`` is an existing account of ``provider``."""
+    from cli_agent_orchestrator.services.provider_profile_store import (
+        ProviderProfileError,
+        resolve_provider_profile,
+    )
+
+    try:
+        resolve_provider_profile(provider, account)
+    except ProviderProfileError as exc:
+        raise ValueError(f"{where}.provider_profile: {exc}")
+
+
+def auto_routing_account_references(profile_id: str) -> List[str]:
+    """Return the lane/worker names whose Auto (Jev) default uses this account."""
+    cfg = get_auto_routing_settings()
+    return sorted(
+        name
+        for routes in (cfg["lanes"], cfg["workers"])
+        for name, route in routes.items()
+        if route.get("provider_profile") == profile_id
+    )
 
 
 def set_auto_routing_routes(

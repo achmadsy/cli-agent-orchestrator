@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2, Play, X } from 'lucide-react'
 import { api, ProviderInfo, ProviderProfile, ProviderRole, RoleProviderPolicy, RoleProviderProfilePolicy, WorkflowInputDecl, WorkflowSpecSummary } from '../../api'
 import { useStore } from '../../store'
 import { CustomSelect } from '../CustomSelect'
+import { cliChoiceValue, cliOptions, parseCliChoice } from '../../cliChoices'
 
 interface Props {
   open: boolean
@@ -80,7 +81,11 @@ export function PreRunModal({ open, workflowName, onClose, onStarted }: Props) {
   }, [open, workflowName])
 
   const installed = providers.filter(p => p.installed)
-  const options = installed.map(p => ({ value: p.name, label: p.name }))
+  // One menu per role: each CLI, and each of its accounts by name. Picking an
+  // account sets the role's CLI and account together (cliChoices.ts).
+  const options = (current: string) =>
+    cliOptions(installed, providerProfiles, { current, label: name => name })
+  const sameChoice = cliChoiceValue(sameProvider, roleProviderProfiles.supervisor)
   const policy = useMemo<RoleProviderPolicy>(() => {
     if (mode === 'defaults') return {}
     if (mode === 'same') {
@@ -90,18 +95,8 @@ export function PreRunModal({ open, workflowName, onClose, onStarted }: Props) {
     return Object.fromEntries(Object.entries(roleProviders).filter(([, value]) => Boolean(value))) as RoleProviderPolicy
   }, [mode, sameProvider, roleProviders])
 
-  // Per-role effective provider drives account filtering: a role with no
-  // selected CLI uses either the shared CLI (same mode) or its authored
-  // provider. Only authenticated profiles are selectable — switching
-  // accounts mid-run is the operator's explicit choice and never inferred.
-  const resolvedRoleProvider = (role: ProviderRole): string => {
-    if (policy[role]) return policy[role] as string
-    if (mode === 'same') return sameProvider
-    const step = (spec?.steps ?? []).find(
-      s => s.agent === role || (role === 'supervisor' && s.agent === 'code_supervisor'),
-    )
-    return step?.provider ?? ''
-  }
+  // Only authenticated accounts are selectable — switching accounts mid-run
+  // is the operator's explicit choice and never inferred.
   const profilePolicy = useMemo<RoleProviderProfilePolicy>(() => {
     if (Object.keys(policy).length === 0 && mode !== 'roles') return {}
     return Object.fromEntries(
@@ -196,58 +191,40 @@ export function PreRunModal({ open, workflowName, onClose, onStarted }: Props) {
                   </label>
                 ))}
                 {mode === 'same' && (
-                  <>
-                    <CustomSelect value={sameProvider} onChange={value => { setSameProvider(value); setRoleProviderProfiles({}) }} options={options} placeholder="Select installed CLI" />
-                    {sameProvider && providerProfiles.some(p => p.provider === sameProvider) && (
-                      <div>
-                        <label className="block text-xs text-gray-400 mb-1">Shared account</label>
-                        <CustomSelect
-                          ariaLabel="Shared account"
-                          value={roleProviderProfiles.supervisor ?? ''}
-                          onChange={value => setRoleProviderProfiles(value ? { supervisor: value, developer: value, reviewer: value } : {})}
-                          options={[{ value: '', label: 'Default account' }, ...providerProfiles.filter(p => p.provider === sameProvider).map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]}
-                          placeholder="Default account"
-                        />
-                      </div>
-                    )}
-                  </>
+                  <CustomSelect
+                    ariaLabel="CLI for all roles"
+                    value={sameChoice}
+                    onChange={value => {
+                      const choice = parseCliChoice(value)
+                      setSameProvider(choice.provider)
+                      setRoleProviderProfiles(choice.account
+                        ? { supervisor: choice.account, developer: choice.account, reviewer: choice.account }
+                        : {})
+                    }}
+                    options={options(sameChoice)}
+                    placeholder="Select installed CLI"
+                  />
                 )}
                 {mode === 'roles' && (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     {ROLES.map(role => {
-                      const roleProvider = resolvedRoleProvider(role)
-                      const roleAccounts = providerProfiles.filter(p => p.provider === roleProvider)
+                      const roleChoice = cliChoiceValue(roleProviders[role], roleProviderProfiles[role])
                       return (
                         <div key={role}>
                           <label className="block text-xs capitalize text-gray-400 mb-1">{role}</label>
                           <CustomSelect
-                            value={roleProviders[role] ?? ''}
+                            ariaLabel={`CLI for ${role}`}
+                            value={roleChoice}
                             onChange={value => {
-                              setRoleProviders(current => ({ ...current, [role]: value || undefined }))
-                              // A profile bound to the previous provider's account
-                              // is invalid there — drop it when the CLI changes.
-                              setRoleProviderProfiles(current => {
-                                if (!current[role]) return current
-                                const next = { ...current }
-                                delete next[role]
-                                return next
-                              })
+                              // One pick sets the role's CLI and account together,
+                              // so an account never outlives its CLI.
+                              const choice = value ? parseCliChoice(value) : { provider: '', account: undefined }
+                              setRoleProviders(current => ({ ...current, [role]: choice.provider || undefined }))
+                              setRoleProviderProfiles(current => ({ ...current, [role]: choice.account }))
                             }}
-                            options={[{ value: '', label: 'Workflow default' }, ...options]}
+                            options={[{ value: '', label: 'Workflow default' }, ...options(roleChoice)]}
                             placeholder="Workflow default"
                           />
-                          {roleAccounts.length > 0 && (
-                            <div className="mt-1">
-                              <label className="block text-[11px] text-gray-500 mb-1">Account</label>
-                              <CustomSelect
-                                ariaLabel={`Account for ${role}`}
-                                value={roleProviderProfiles[role] ?? ''}
-                                onChange={value => setRoleProviderProfiles(current => ({ ...current, [role]: value || undefined }))}
-                                options={[{ value: '', label: 'Default account' }, ...roleAccounts.map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]}
-                                placeholder="Default account"
-                              />
-                            </div>
-                          )}
                         </div>
                       )
                     })}

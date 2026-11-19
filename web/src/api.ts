@@ -135,6 +135,8 @@ export interface AutoLaneDecision {
 export interface AutoRoute {
   provider?: string
   model?: string
+  /** Account (provider profile ID) of `provider`. */
+  provider_profile?: string
 }
 
 /** GET/PUT /settings/auto-routing: Auto lane supervisor and worker defaults. */
@@ -304,6 +306,8 @@ export interface Flow {
   schedule: string
   agent_profile: string
   provider: string
+  /** Account (provider profile ID) of `provider`, if the flow picked one. */
+  provider_profile?: string | null
   script: string | null
   last_run: string | null
   next_run: string | null
@@ -1010,7 +1014,7 @@ export const api = {
 
   // Flows
   listFlows: () => fetchJSON<Flow[]>('/flows'),
-  createFlow: (data: { name: string; schedule: string; agent_profile: string; provider?: string; prompt_template: string }) =>
+  createFlow: (data: { name: string; schedule: string; agent_profile: string; provider?: string; provider_profile?: string; prompt_template: string }) =>
     fetchJSON<Flow>('/flows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -108,27 +108,24 @@ describe('PreRunModal provider modes', () => {
     await waitFor(() => expect(screen.getByText('Customize by role')).toBeInTheDocument())
 
     fireEvent.click(screen.getByText('Customize by role'))
-    // The developer account trigger appears once both the spec and the
-    // profile list finish loading (role = developer authors claude_code).
-    const developerAccount = await screen.findByRole('button', {
-      name: /account for developer/i,
-    })
-    expect(developerAccount).toBeInTheDocument()
-
-    // Open the account menu: Claude A is selectable, Claude B (unverified)
-    // is listed but disabled.
-    fireEvent.click(developerAccount)
+    // Accounts are listed by name inside the role's CLI menu.
+    const developerCli = await screen.findByRole('button', { name: 'CLI for developer' })
+    fireEvent.click(developerCli)
     const menu = await screen.findByTestId('custom-select-menu')
     const optionFor = (label: string) =>
-      Array.from(menu.querySelectorAll('button')).find(b => b.textContent?.includes(label))
+      Array.from(menu.querySelectorAll('button')).find(b => b.textContent?.startsWith(label))
+    // Claude A is selectable, Claude B (not signed in) is listed but disabled,
+    // and the plain CLI stays available.
     expect(optionFor('Claude A')?.disabled).toBe(false)
     expect(optionFor('Claude B')?.disabled).toBe(true)
+    expect(optionFor('claude_code')?.disabled).toBe(false)
 
-    // Pick Claude A and submit: the fifth argument carries the account policy.
+    // Picking Claude A sets the role's CLI and account together.
     fireEvent.click(optionFor('Claude A')!)
     fireEvent.change(screen.getByLabelText('count'), { target: { value: '3' } })
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
     await waitFor(() => expect(submit).toHaveBeenCalled())
+    expect(submit.mock.calls[0][3]).toEqual({ developer: 'claude_code' })
     expect(submit.mock.calls[0][4]).toEqual({ developer: 'claude-a' })
   })
 })

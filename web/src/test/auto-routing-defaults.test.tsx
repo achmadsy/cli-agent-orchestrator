@@ -15,9 +15,14 @@ vi.mock('../api', async importOriginal => {
       setAutoRoutingRoutes: vi.fn(),
       listProviders: vi.fn(),
       listProfiles: vi.fn(),
+      listProviderProfiles: vi.fn(),
     },
   }
 })
+
+const ACCOUNT = {
+  login_method: 'isolated_home', settings: {}, is_default: false, created_at: '', updated_at: '',
+}
 
 vi.mock('../store', () => ({ useStore: () => ({ showSnackbar: mocks.showSnackbar }) }))
 
@@ -66,6 +71,7 @@ beforeEach(() => {
     { name: 'kiro_cli', binary: 'kiro-cli', installed: false },
   ] as never)
   vi.mocked(api.listProfiles).mockResolvedValue(PROFILES as never)
+  vi.mocked(api.listProviderProfiles).mockResolvedValue([])
   vi.mocked(api.setAutoRoutingRoutes).mockImplementation(async data => ({
     ...structuredClone(ROUTES),
     lanes: data.lanes!,
@@ -202,6 +208,40 @@ describe('AutoRoutingDefaultsCard', () => {
     fireEvent.click(screen.getByTestId('auto-routing-save'))
     await waitFor(() => expect(mocks.showSnackbar).toHaveBeenCalledWith({ type: 'error', message: 'lanes: unknown lane' }))
     expect(screen.getByTestId('auto-routing-save')).toBeEnabled()
+  })
+
+  it('offers accounts by name in the CLI menu and saves the picked account', async () => {
+    vi.mocked(api.listProviderProfiles).mockResolvedValue([
+      { ...ACCOUNT, id: 'codex-work', label: 'Codex Work', provider: 'codex', auth_state: 'authenticated' },
+      { ...ACCOUNT, id: 'codex-personal', label: 'Codex Personal', provider: 'codex', auth_state: 'unconfigured' },
+    ] as never)
+    await renderCard()
+    await waitFor(() => expect(api.listProviderProfiles).toHaveBeenCalled())
+    const menu = openMenu('developer', 'CLI')
+    expect(await menu.findByText('Codex Work')).toBeInTheDocument()
+    expect(menu.getByText('Codex Personal').closest('button')).toBeDisabled()
+    fireEvent.click(menu.getByText('Codex Work'))
+    expect(screen.getByRole('button', { name: 'developer CLI' })).toHaveTextContent('Codex Work')
+    pickModel('developer', 'gpt-6-sol')
+
+    fireEvent.click(screen.getByTestId('auto-routing-save'))
+    await waitFor(() => expect(api.setAutoRoutingRoutes).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.setAutoRoutingRoutes).mock.calls[0][0].workers).toEqual({
+      developer: { provider: 'codex', model: 'gpt-6-sol', provider_profile: 'codex-work' },
+    })
+  })
+
+  it('keeps the model when switching between accounts of the same CLI', async () => {
+    vi.mocked(api.listProviderProfiles).mockResolvedValue([
+      { ...ACCOUNT, id: 'codex-work', label: 'Codex Work', provider: 'codex', auth_state: 'authenticated' },
+    ] as never)
+    await renderCard()
+    await waitFor(() => expect(api.listProviderProfiles).toHaveBeenCalled())
+    // fix_supervisor starts on codex with model gpt-5.5 (see ROUTES).
+    fireEvent.click((await openMenu('fix_supervisor', 'CLI').findByText('Codex Work')))
+    expect(modelTrigger('fix_supervisor')).toHaveTextContent('gpt-5.5')
+    pickCli('fix_supervisor', 'claude code')
+    expect(modelTrigger('fix_supervisor')).toHaveTextContent("CLI's default model")
   })
 
   it('shows a note instead of the form on a server without the endpoint', async () => {

@@ -27,12 +27,27 @@ _STATIC = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 # paths; keep them to a safe charset so a crafted value can't traverse to another
 # endpoint on the (already-trusted) node.
 _SAFE_SEGMENT = re.compile(r"\A[A-Za-z0-9._-]+\Z")
+# A node's account (provider profile) ID, as cao-server validates it.
+_ACCOUNT_ID = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+# The only account fields the launch dialog needs; settings and login details
+# stay on the node.
+_ACCOUNT_FIELDS = ("id", "label", "provider", "auth_state", "is_default")
 
 
 def _safe_segment(value, kind):
     if not _SAFE_SEGMENT.match(value or ""):
         raise HTTPException(status_code=400, detail=f"invalid {kind}")
     return value
+
+
+def _launch_account(body):
+    """Return the launch body's account ID, or None; 400 when it is malformed."""
+    account = body.get("provider_profile") or None
+    if account is None:
+        return None
+    if not isinstance(account, str) or not _ACCOUNT_ID.match(account):
+        raise HTTPException(status_code=400, detail="invalid provider_profile")
+    return account
 
 
 def _bearer_ok(header):
@@ -390,10 +405,15 @@ async def _launch_auto(name, base, body, session_name):
     if not isinstance(task, str) or not task.strip():
         raise HTTPException(status_code=400, detail="task required for Auto (Jev) launch")
     provider = body.get("provider") or None
+    # An account only means something with its CLI; without one the node uses
+    # each lane's CLI and account from its own Settings.
+    account = _launch_account(body) if provider else None
     wd = body.get("working_directory")
     async with client.async_client(client.AUTO_LAUNCH_TIMEOUT, config.NODE_TOKEN) as c:
         try:
-            result = await client.launch_auto(c, base, task, provider, session_name, wd)
+            result = await client.launch_auto(
+                c, base, task, provider, session_name, wd, provider_profile=account
+            )
         except httpx.HTTPStatusError as exc:
             detail = (exc.response.text or "").strip() or str(exc)
             raise HTTPException(status_code=502, detail=f"{name} auto launch failed: {detail}")
@@ -439,13 +459,16 @@ async def launch(name: str, body: dict = Body(default_factory=dict)):
         return await _launch_auto(name, base, body, session_name)
     agent = body.get("agent_profile") or "developer"
     provider = body.get("provider") or "claude_code"
+    account = _launch_account(body)
     wd = body.get("working_directory")
     task = body.get("task")
     session_name = body.get("session_name") or ("fleet-panel-" + os.urandom(3).hex())
     _safe_segment(session_name, "session_name")
     async with client.async_client(client.LAUNCH_TIMEOUT, config.NODE_TOKEN) as c:
         try:
-            term = await client.launch(c, base, agent, provider, session_name, wd)
+            term = await client.launch(
+                c, base, agent, provider, session_name, wd, provider_profile=account
+            )
         except httpx.HTTPStatusError as exc:
             detail = (exc.response.text or "").strip() or str(exc)
             raise HTTPException(status_code=502, detail=f"{name} launch failed: {detail}")
@@ -601,6 +624,27 @@ async def machine_profiles(name: str):
             return await client.list_profiles(c, base)
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"{name}: {exc}")
+
+
+@app.get("/api/machines/{name}/accounts")
+async def machine_accounts(name: str):
+    """The node's CLI accounts, reduced to what the launch dialog shows."""
+    m = _machine_or_404(name)
+    base = config.base_url(m)
+    async with client.async_client(client.TIMEOUT, config.NODE_TOKEN) as c:
+        try:
+            raw = await client.list_provider_profiles(c, base)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"{name}: {exc}")
+    if not isinstance(raw, list):
+        return []
+    return [
+        {key: item.get(key) for key in _ACCOUNT_FIELDS}
+        for item in raw
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and _ACCOUNT_ID.match(item["id"])
+    ]
 
 
 @app.get("/api/machines/{name}/terminals/{terminal_id}/working-directory")

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
-import { api, Flow, AgentProfileInfo, ProviderInfo } from '../api'
+import { api, Flow, AgentProfileInfo, ProviderInfo, ProviderProfile } from '../api'
 import { useStore } from '../store'
 import { ConfirmModal } from './ConfirmModal'
 import { Clock, Play, Trash2, Plus, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react'
 import { CustomSelect } from './CustomSelect'
+import { cliChoiceValue, cliOptions, parseCliChoice } from '../cliChoices'
 import { HelpHint } from './HelpHint'
 import { FlowsHelp } from './FeatureHelp'
 
@@ -45,12 +46,16 @@ export function FlowsPanel() {
   const [scheduleMode, setScheduleMode] = useState<'preset' | 'custom'>('preset')
   const [agentProfile, setAgentProfile] = useState('')
   const [provider, setProvider] = useState('')
+  // Account of `provider`, picked in the same menu as the CLI.
+  const [providerProfile, setProviderProfile] = useState('')
   const [promptTemplate, setPromptTemplate] = useState('')
   const [creating, setCreating] = useState(false)
 
   // Profiles & providers for dropdowns
   const [profiles, setProfiles] = useState<AgentProfileInfo[]>([])
   const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [accounts, setAccounts] = useState<ProviderProfile[]>([])
+  const accountLabel = (id?: string | null) => (id ? accounts.find(a => a.id === id)?.label ?? id : null)
 
   const fetchFlows = async () => {
     try {
@@ -75,6 +80,7 @@ export function FlowsPanel() {
         if (firstInstalled) setProvider(firstInstalled.name)
       })
       .catch(() => {})
+    api.listProviderProfiles().then(setAccounts).catch(() => {})
   }, [])
 
   const resetForm = () => {
@@ -94,6 +100,7 @@ export function FlowsPanel() {
         schedule: schedule.trim(),
         agent_profile: agentProfile.trim(),
         provider: provider || undefined,
+        ...(provider && providerProfile ? { provider_profile: providerProfile } : {}),
         prompt_template: promptTemplate,
       })
       showSnackbar({ type: 'success', message: `Flow "${name.trim()}" created` })
@@ -213,7 +220,7 @@ export function FlowsPanel() {
                     </span>
                     <span className="text-xs text-gray-500 shrink-0">{f.agent_profile}</span>
                     {f.provider && (
-                      <span className="text-xs text-gray-600 shrink-0">{f.provider}</span>
+                      <span className="text-xs text-gray-600 shrink-0">{accountLabel(f.provider_profile) ?? f.provider}</span>
                     )}
                     <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${f.enabled ? 'bg-emerald-900/50 text-emerald-400' : 'bg-gray-700 text-gray-400'}`}>
                       {f.enabled ? 'enabled' : 'disabled'}
@@ -277,7 +284,7 @@ export function FlowsPanel() {
                   <div className="px-3 pb-3 text-xs text-gray-400 space-y-3 border-t border-gray-700/30 pt-3">
                     <div className="grid grid-cols-2 gap-x-6 gap-y-1">
                       <div>Schedule: <span className="text-gray-300 font-mono">{f.schedule}</span></div>
-                      <div>Provider: <span className="text-gray-300">{f.provider || 'default'}</span></div>
+                      <div>Provider: <span className="text-gray-300">{f.provider || 'default'}{f.provider_profile ? ` · ${accountLabel(f.provider_profile)}` : ''}</span></div>
                       <div>Profile: <span className="text-gray-300">{f.agent_profile}</span></div>
                       <div>Last Run: <span className="text-gray-300">{f.last_run ? new Date(f.last_run).toLocaleString() : 'never'}</span></div>
                       <div>Next Run: <span className="text-gray-300">{f.next_run ? new Date(f.next_run).toLocaleString() : 'n/a'}</span></div>
@@ -396,15 +403,15 @@ export function FlowsPanel() {
                 <div className="flex-1">
                   <label className="block text-xs text-gray-500 mb-1">Provider</label>
                   <CustomSelect
-                    value={provider}
-                    onChange={setProvider}
+                    ariaLabel="Flow CLI"
+                    value={cliChoiceValue(provider, providerProfile)}
+                    onChange={value => {
+                      const choice = parseCliChoice(value)
+                      setProvider(choice.provider)
+                      setProviderProfile(choice.account ?? '')
+                    }}
                     placeholder="Default"
-                    options={providers.map(p => ({
-                      value: p.name,
-                      label: p.name.replace(/_/g, ' '),
-                      sublabel: !p.installed ? 'Not installed' : undefined,
-                      disabled: !p.installed,
-                    }))}
+                    options={cliOptions(providers, accounts, { current: cliChoiceValue(provider, providerProfile) })}
                   />
                 </div>
               </div>

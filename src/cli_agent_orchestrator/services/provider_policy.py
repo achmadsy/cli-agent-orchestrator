@@ -121,6 +121,24 @@ def resolve_profile_route(
     return provider, route.get("model")
 
 
+def resolve_route_account(
+    profile_name: str,
+    provider: Optional[str],
+    profile_routes: Optional[Mapping[str, Mapping[str, str]]],
+) -> Optional[str]:
+    """Return the route's account (provider profile ID) for ``provider``, if any.
+
+    An account belongs to one provider, so it applies only when the launch runs
+    on the route's own provider; a different provider picked explicitly drops
+    it, the same rule as the route model. ``None`` means "no route opinion".
+    """
+    route = (profile_routes or {}).get(profile_name) or {}
+    account = route.get("provider_profile")
+    if account and provider and route.get("provider") == provider:
+        return account
+    return None
+
+
 def parse_role_policy_mapping(value: object) -> Dict[str, str]:
     """Validate an untrusted metadata value, degrading invalid policy to empty."""
     if not isinstance(value, Mapping):

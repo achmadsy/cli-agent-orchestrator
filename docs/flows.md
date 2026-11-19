@@ -51,6 +51,7 @@ name: daily-standup
 schedule: "0 9 * * 1-5"  # 9am weekdays
 agent_profile: developer
 provider: kiro_cli  # Optional, defaults to kiro_cli
+# provider_profile: kiro-work  # Optional account of that provider (Provider Profiles)
 engine: v2          # Optional Kiro engine; v2 is the default, kas is rejected in Phase 0
 ---
 

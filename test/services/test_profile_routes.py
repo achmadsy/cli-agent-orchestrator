@@ -9,10 +9,12 @@ from cli_agent_orchestrator.services import settings_service
 from cli_agent_orchestrator.services.provider_policy import (
     parse_profile_routes_mapping,
     resolve_profile_route,
+    resolve_route_account,
 )
 from cli_agent_orchestrator.services.settings_service import (
     AUTO_ROUTING_DEFAULTS,
     SettingsUnreadableError,
+    auto_routing_account_references,
     get_auto_routing_settings,
     set_auto_routing_routes,
     validate_custom_models,
@@ -291,7 +293,13 @@ class TestValidateRouteMap:
         [
             ([], "must be an object"),
             ({"bad name": {}}, "invalid profile name"),
-            ({"developer": "codex"}, "only provider and model"),
+            ({"developer": "codex"}, "only provider, model and provider_profile"),
+            ({"developer": {"provider": "codex", "extra": 1}}, "only provider, model"),
+            ({"developer": {"provider_profile": "codex-work"}}, "an account needs a provider"),
+            (
+                {"developer": {"provider": "codex", "provider_profile": "../x"}},
+                "invalid account ID",
+            ),
             ({"developer": {"provider": "nope"}}, "unknown provider"),
             ({"developer": {"model": "gpt-5.5"}}, "needs a provider"),
             ({"developer": {"provider": "codex", "model": "a;b"}}, "not allowed"),
@@ -305,3 +313,80 @@ class TestValidateRouteMap:
     def test_allowed_names_are_enforced(self):
         with pytest.raises(ValueError, match="unknown lane"):
             validate_route_map({"developer": {"provider": "codex"}}, "lanes", {"fix_supervisor"})
+
+
+STORE_RESOLVE = "cli_agent_orchestrator.services.provider_profile_store.resolve_provider_profile"
+
+
+class TestRouteAccounts:
+    def test_valid_account_is_kept(self):
+        with patch(STORE_RESOLVE) as resolve:
+            routes = validate_route_map(
+                {"developer": {"provider": "codex", "provider_profile": "codex-work"}}, "workers"
+            )
+        resolve.assert_called_once_with("codex", "codex-work")
+        assert routes == {"developer": {"provider": "codex", "provider_profile": "codex-work"}}
+
+    def test_unknown_or_foreign_account_is_rejected(self):
+        from cli_agent_orchestrator.services.provider_profile_store import ProviderProfileError
+
+        error = ProviderProfileError("provider profile 'x' belongs to 'codex', not 'hermes'")
+        with patch(STORE_RESOLVE, side_effect=error):
+            with pytest.raises(
+                ValueError, match="workers.developer.provider_profile: .*belongs to"
+            ):
+                validate_route_map(
+                    {"developer": {"provider": "hermes", "provider_profile": "x"}}, "workers"
+                )
+
+    def test_saved_account_is_read_back(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "auto_routing": {
+                        "lanes": {
+                            "fix_supervisor": {
+                                "provider": "codex",
+                                "provider_profile": "codex-work",
+                            },
+                            "probe_supervisor": {"provider": "codex", "provider_profile": "../x"},
+                        }
+                    }
+                }
+            )
+        )
+        assert get_auto_routing_settings()["lanes"] == {
+            "fix_supervisor": {"provider": "codex", "provider_profile": "codex-work"}
+        }
+
+    def test_references_list_lanes_and_workers_using_an_account(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "auto_routing": {
+                        "lanes": {"fix_supervisor": {"provider": "codex", "provider_profile": "a"}},
+                        "workers": {
+                            "developer": {"provider": "codex", "provider_profile": "a"},
+                            "reviewer": {"provider": "codex", "provider_profile": "b"},
+                        },
+                    }
+                }
+            )
+        )
+        assert auto_routing_account_references("a") == ["developer", "fix_supervisor"]
+        assert auto_routing_account_references("c") == []
+
+    @pytest.mark.parametrize(
+        "provider, expected",
+        [("codex", "codex-work"), ("claude_code", None), (None, None)],
+    )
+    def test_resolve_route_account_only_on_the_route_cli(self, provider, expected):
+        routes = {"developer": {"provider": "codex", "provider_profile": "codex-work"}}
+        assert resolve_route_account("developer", provider, routes) == expected
+
+    def test_resolve_route_account_without_route(self):
+        assert resolve_route_account("developer", "codex", {}) is None
+        assert (
+            resolve_route_account("developer", "codex", {"developer": {"provider": "codex"}})
+            is None
+        )

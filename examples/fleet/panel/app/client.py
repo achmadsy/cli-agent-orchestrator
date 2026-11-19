@@ -64,10 +64,14 @@ async def send_input(c, base, terminal_id, text, sender_id=SENDER_ID):
     return r.json() if r.content else {}
 
 
-async def launch(c, base, agent_profile, provider, session_name, working_directory=None):
+async def launch(
+    c, base, agent_profile, provider, session_name, working_directory=None, provider_profile=None
+):
     params = {"agent_profile": agent_profile, "session_name": session_name}
     if provider:
         params["provider"] = provider
+    if provider_profile:
+        params["provider_profile"] = provider_profile
     if working_directory:
         params["working_directory"] = working_directory
     r = await c.post(f"{base}/sessions", params=params)
@@ -79,7 +83,9 @@ async def auto_routing_status(c, base):
     return await _get(c, base, "/auto-routing/status")
 
 
-async def launch_auto(c, base, initial_message, provider, session_name, working_directory=None):
+async def launch_auto(
+    c, base, initial_message, provider, session_name, working_directory=None, provider_profile=None
+):
     """Create an Auto (Jev) session; the node picks the supervisor lane.
 
     The prompt goes in the JSON body (never the query string) and is delivered
@@ -88,6 +94,8 @@ async def launch_auto(c, base, initial_message, provider, session_name, working_
     body = {"initial_message": initial_message, "session_name": session_name}
     if provider:
         body["provider"] = provider
+    if provider_profile:
+        body["provider_profile"] = provider_profile
     if working_directory:
         body["working_directory"] = working_directory
     r = await c.post(f"{base}/auto-routing/sessions", json=body)
@@ -116,6 +124,11 @@ async def list_providers(c, base):
 
 async def list_profiles(c, base):
     return await _get(c, base, "/agents/profiles")
+
+
+async def list_provider_profiles(c, base):
+    """The node's CLI accounts (Settings > Provider Profiles)."""
+    return await _get(c, base, "/agents/provider-profiles")
 
 
 async def working_directory(c, base, terminal_id):

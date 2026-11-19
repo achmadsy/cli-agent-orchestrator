@@ -191,3 +191,62 @@ class TestCreateTerminalRoutes:
         assert params["provider"] == "codex"
         assert params["model"] == "gpt-5.5"
         assert "provider_profile" not in params
+
+    def test_assign_path_applies_route_account(self):
+        from cli_agent_orchestrator.utils.orchestration import _create_terminal
+
+        metadata = dict(
+            AUTO_METADATA,
+            profile_routes={"developer": {"provider": "codex", "provider_profile": "codex-work"}},
+        )
+        created = MagicMock()
+        created.json.return_value = {"id": "dev00001", "provider": "codex"}
+        created.raise_for_status.return_value = None
+        workdir = MagicMock(status_code=200)
+        workdir.json.return_value = {"working_directory": "/tmp/project"}
+        with (
+            patch(f"{ORCH}._resolve_child_allowed_tools", return_value=None),
+            patch(f"{ORCH}.resolve_provider", return_value="claude_code"),
+            patch.dict(os.environ, {"CAO_TERMINAL_ID": "c0ffee01"}),
+            patch(f"{ORCH}.requests") as requests,
+        ):
+            requests.get.side_effect = [_meta_response(metadata), workdir]
+            requests.post.return_value = created
+            _create_terminal("developer", defer_init=True, initial_message="do it")
+
+        params = requests.post.call_args.kwargs["params"]
+        assert params["provider"] == "codex"
+        assert params["provider_profile"] == "codex-work"
+
+
+class TestRouteAccounts:
+    ROUTED = dict(
+        AUTO_METADATA,
+        profile_routes={"developer": {"provider": "codex", "provider_profile": "codex-work"}},
+    )
+
+    def _resolve(self, metadata, *args, get_side_effect=None):
+        return TestResolveHandoffProviderRoutes._resolve(
+            self, metadata, *args, get_side_effect=get_side_effect
+        )
+
+    def test_route_account_applies_on_the_route_cli(self):
+        ctx, requests = self._resolve(self.ROUTED)
+        assert ctx.provider == "codex"
+        assert ctx.provider_profile == "codex-work"
+        assert requests.get.call_count == 1
+
+    def test_explicit_other_cli_drops_the_route_account(self):
+        ctx, _ = self._resolve(self.ROUTED, "claude_code")
+        assert ctx.provider == "claude_code"
+        assert ctx.provider_profile is None
+
+    def test_explicit_account_wins(self):
+        ctx, _ = self._resolve(self.ROUTED, None, "codex-personal")
+        assert ctx.provider_profile == "codex-personal"
+
+    def test_route_account_skips_the_quota_selector(self):
+        metadata = dict(self.ROUTED, account_strategy="quota_desc")
+        ctx, requests = self._resolve(metadata, get_side_effect=[_meta_response(metadata)])
+        assert ctx.provider_profile == "codex-work"
+        assert requests.get.call_count == 1

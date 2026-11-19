@@ -207,3 +207,42 @@ async def test_launch_auto_omits_optional_fields():
     async with _mock(handler) as c:
         await client.launch_auto(c, "http://x", "hi", None, "sess-1")
     assert seen["body"] == {"initial_message": "hi", "session_name": "sess-1"}
+
+
+async def test_launch_sends_the_account_as_a_query_param():
+    seen = {}
+
+    def handler(req):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(201, json={"id": "t"})
+
+    async with _mock(handler) as c:
+        await client.launch(c, "http://x", "developer", "codex", "s", provider_profile="codex-work")
+    assert seen["params"]["provider_profile"] == "codex-work"
+
+
+async def test_launch_without_account_sends_no_account_param():
+    seen = {}
+
+    def handler(req):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(201, json={"id": "t"})
+
+    async with _mock(handler) as c:
+        await client.launch(c, "http://x", "developer", "codex", "s")
+    assert "provider_profile" not in seen["params"]
+
+
+async def test_launch_auto_sends_the_account_in_the_body():
+    import json
+
+    seen = {}
+
+    def handler(req):
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(201, json={"terminal": {}, "decision": {}})
+
+    async with _mock(handler) as c:
+        await client.launch_auto(c, "http://x", "fix", "codex", "s", provider_profile="codex-work")
+    assert seen["body"]["provider_profile"] == "codex-work"
+    assert seen["body"]["provider"] == "codex"

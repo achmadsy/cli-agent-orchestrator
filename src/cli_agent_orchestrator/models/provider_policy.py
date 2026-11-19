@@ -55,6 +55,9 @@ class ProfileRoute(BaseModel):
 
     provider: Optional[str] = None
     model: Optional[str] = None
+    # Account (provider profile ID) for the route's provider. Used only when the
+    # launch runs on that same provider, like ``model``.
+    provider_profile: Optional[str] = None
 
     @field_validator("provider")
     @classmethod
@@ -63,6 +66,15 @@ class ProfileRoute(BaseModel):
             raise ValueError(
                 f"unknown provider '{value}' (accepted: {', '.join(sorted(PROVIDERS))})"
             )
+        return value
+
+    @field_validator("provider_profile")
+    @classmethod
+    def validate_provider_profile(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or value == "":
+            return None
+        if not PROFILE_ID_RE.fullmatch(value):
+            raise ValueError("provider profile id must match [A-Za-z0-9_-]{1,64}")
         return value
 
     @field_validator("model")

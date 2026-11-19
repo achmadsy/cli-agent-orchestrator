@@ -108,6 +108,7 @@ from cli_agent_orchestrator.models.memory import (
     MemoryType,
 )
 from cli_agent_orchestrator.models.provider_policy import (
+    PROFILE_ID_RE,
     RoleProviderPolicy,
     RoleProviderProfilePolicy,
 )
@@ -177,6 +178,7 @@ from cli_agent_orchestrator.services.provider_policy import (
     resolve_profile_route,
     resolve_role_provider,
     resolve_role_provider_profile,
+    resolve_route_account,
 )
 from cli_agent_orchestrator.services.install_service import (
     InstallResult,
@@ -1290,6 +1292,8 @@ class CreateFlowRequest(BaseModel):
     schedule: str
     agent_profile: str
     provider: str = "kiro_cli"
+    # Account (provider profile ID) of ``provider`` the flow runs on.
+    provider_profile: Optional[str] = None
     prompt_template: str
 
     @field_validator("name")
@@ -1314,6 +1318,15 @@ class CreateFlowRequest(BaseModel):
     def validate_not_empty(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("must not be empty")
+        return v
+
+    @field_validator("provider_profile")
+    @classmethod
+    def validate_provider_profile(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        if not PROFILE_ID_RE.fullmatch(v):
+            raise ValueError("provider_profile must match [A-Za-z0-9_-]{1,64}")
         return v
 
 
@@ -3157,7 +3170,21 @@ async def delete_provider_profile_endpoint(
         ProviderProfileNotFoundError,
         delete_provider_profile,
     )
+    from cli_agent_orchestrator.services.settings_service import (
+        auto_routing_account_references,
+    )
 
+    # Like a flow or terminal reference, an Auto (Jev) default that names the
+    # account blocks deletion; otherwise the next Auto launch would fail.
+    used_by = auto_routing_account_references(profile_id)
+    if used_by:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"provider profile '{profile_id}' is used by Auto (Jev) defaults "
+                f"({', '.join(used_by)}); pick another account there first"
+            ),
+        )
     try:
         delete_provider_profile(profile_id, delete_home=delete_home)
     except ProviderProfileNotFoundError as exc:
@@ -4038,7 +4065,13 @@ async def create_auto_session(
     supervisor_provider = lane_provider or resolve_provider(
         decision.lane, fallback_provider=DEFAULT_PROVIDER
     )
+    # Account order: the form's account, then the lane's account from
+    # Settings (only on the lane's own CLI), then the quota strategy.
     provider_profile = body.provider_profile
+    if provider_profile is None and body.provider is None:
+        provider_profile = resolve_route_account(
+            decision.lane, supervisor_provider, cfg["lanes"]
+        )
     if provider_profile is None and cfg["account_strategy"] == "quota_desc":
         provider_profile = await select_provider_profile(supervisor_provider)
 
@@ -8662,6 +8695,16 @@ async def create_flow(
     Writes a .flow.md file with YAML frontmatter and prompt body, then
     registers it via flow_service.add_flow().
     """
+    if body.provider_profile is not None:
+        from cli_agent_orchestrator.services.provider_profile_store import (
+            ProviderProfileError,
+            resolve_provider_profile,
+        )
+
+        try:
+            resolve_provider_profile(body.provider, body.provider_profile)
+        except ProviderProfileError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     try:
         flows_dir = CAO_HOME_DIR / "flows"
         flows_dir.mkdir(parents=True, exist_ok=True)
@@ -8670,15 +8713,15 @@ async def create_flow(
 
         # Serialize via yaml.safe_dump so a multi-line value becomes a quoted
         # scalar rather than injecting a new frontmatter key.
-        frontmatter = yaml.safe_dump(
-            {
-                "name": body.name,
-                "schedule": body.schedule,
-                "agent_profile": body.agent_profile,
-                "provider": body.provider,
-            },
-            sort_keys=False,
-        )
+        fields: Dict[str, Any] = {
+            "name": body.name,
+            "schedule": body.schedule,
+            "agent_profile": body.agent_profile,
+            "provider": body.provider,
+        }
+        if body.provider_profile is not None:
+            fields["provider_profile"] = body.provider_profile
+        frontmatter = yaml.safe_dump(fields, sort_keys=False)
         file_content = "---\n" + frontmatter + "---\n" + body.prompt_template
 
         file_path.write_text(file_content)

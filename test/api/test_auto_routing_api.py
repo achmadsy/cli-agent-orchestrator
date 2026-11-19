@@ -248,6 +248,96 @@ class TestLaneDefaults:
         )
         assert kwargs["provider"] == DEFAULT_PROVIDER
 
+    ACCOUNT_LANES = {"fix_supervisor": {"provider": "codex", "provider_profile": "codex-work"}}
+
+    def test_lane_account_applies_without_a_form_provider(self, client):
+        kwargs = self._launch(client, {"initial_message": "fix it"}, lanes=self.ACCOUNT_LANES)
+        assert kwargs["provider"] == "codex"
+        assert kwargs["provider_profile"] == "codex-work"
+
+    @pytest.mark.parametrize("provider", ["codex", "claude_code"])
+    def test_form_provider_drops_the_lane_account(self, client, provider):
+        # Picking a CLI (or an account) in the form replaces the lane default,
+        # so the lane's account is never paired with the form's choice.
+        kwargs = self._launch(
+            client, {"initial_message": "fix it", "provider": provider}, lanes=self.ACCOUNT_LANES
+        )
+        assert kwargs["provider"] == provider
+        assert kwargs["provider_profile"] is None
+
+    def test_form_account_wins_over_the_lane_account(self, client):
+        kwargs = self._launch(
+            client,
+            {
+                "initial_message": "fix it",
+                "provider": "codex",
+                "provider_profile": "codex-personal",
+            },
+            lanes=self.ACCOUNT_LANES,
+        )
+        assert kwargs["provider_profile"] == "codex-personal"
+
+
+class TestAccountDeletion:
+    REFS = "cli_agent_orchestrator.services.settings_service.auto_routing_account_references"
+    DELETE = "cli_agent_orchestrator.services.provider_profile_store.delete_provider_profile"
+
+    def test_account_used_by_auto_defaults_cannot_be_deleted(self, client):
+        with patch(self.REFS, return_value=["fix_supervisor"]), patch(self.DELETE) as delete:
+            response = client.delete("/agents/provider-profiles/codex-work")
+        assert response.status_code == 409
+        assert "fix_supervisor" in response.json()["detail"]
+        delete.assert_not_called()
+
+    def test_unused_account_is_deleted(self, client):
+        with patch(self.REFS, return_value=[]), patch(self.DELETE) as delete:
+            response = client.delete("/agents/provider-profiles/codex-work")
+        assert response.status_code == 204
+        delete.assert_called_once_with("codex-work", delete_home=False)
+
+
+class TestFlowAccount:
+    BODY = {
+        "name": "nightly",
+        "schedule": "0 2 * * *",
+        "agent_profile": "developer",
+        "provider": "codex",
+        "prompt_template": "run the tests",
+    }
+    RESOLVE = "cli_agent_orchestrator.services.provider_profile_store.resolve_provider_profile"
+    ADD = "cli_agent_orchestrator.api.main.flow_service.add_flow"
+
+    def test_flow_account_is_written_to_the_flow_file(self, client, tmp_path):
+        from cli_agent_orchestrator.models.flow import Flow
+
+        flow = Flow(name="nightly", file_path="x", schedule="0 2 * * *", agent_profile="developer")
+        with (
+            patch("cli_agent_orchestrator.api.main.CAO_HOME_DIR", tmp_path),
+            patch(self.RESOLVE) as resolve,
+            patch(self.ADD, return_value=flow),
+        ):
+            response = client.post("/flows", json={**self.BODY, "provider_profile": "codex-work"})
+        assert response.status_code == 201, response.text
+        resolve.assert_called_once_with("codex", "codex-work")
+        text = (tmp_path / "flows" / "nightly.flow.md").read_text()
+        assert "provider_profile: codex-work" in text
+
+    def test_account_of_another_cli_is_400_and_writes_nothing(self, client, tmp_path):
+        from cli_agent_orchestrator.services.provider_profile_store import ProviderProfileError
+
+        error = ProviderProfileError("provider profile 'x' belongs to 'hermes', not 'codex'")
+        with (
+            patch("cli_agent_orchestrator.api.main.CAO_HOME_DIR", tmp_path),
+            patch(self.RESOLVE, side_effect=error),
+        ):
+            response = client.post("/flows", json={**self.BODY, "provider_profile": "x"})
+        assert response.status_code == 400
+        assert not (tmp_path / "flows").exists()
+
+    def test_malformed_account_id_is_422(self, client):
+        response = client.post("/flows", json={**self.BODY, "provider_profile": "a\nscript: x"})
+        assert response.status_code == 422
+
 
 ROUTES_GET = "cli_agent_orchestrator.services.settings_service.get_auto_routing_settings"
 ROUTES_SET = "cli_agent_orchestrator.services.settings_service.set_auto_routing_routes"

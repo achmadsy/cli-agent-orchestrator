@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { api, ApiError, TemplateSummary, ProfileValidationMessage, ProviderInfo } from '../api'
+import { api, ApiError, TemplateSummary, ProfileValidationMessage, ProviderInfo, ProviderProfile } from '../api'
 import { ValidationFindings } from './ValidationFindings'
 import { CustomSelect, SelectOption } from './CustomSelect'
+import { cliChoiceValue, cliOptions, parseCliChoice } from '../cliChoices'
 import { useGeneration } from '../hooks/useGeneration'
 import { AlertTriangle, ChevronDown, ChevronRight, Loader2, Package, X } from 'lucide-react'
 
@@ -332,6 +333,7 @@ export function ProfileCreateModal({ open, onClose, onCreated }: ProfileCreateMo
   // --- scratch mode state ---
   const [profileSchema, setProfileSchema] = useState<Record<string, any> | null>(null)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [accounts, setAccounts] = useState<ProviderProfile[]>([])
   const [scratchValues, setScratchValues] = useState<Record<string, unknown>>({})
   const [jsonDrafts, setJsonDrafts] = useState<Record<string, string>>({})
   const [systemPrompt, setSystemPrompt] = useState('')
@@ -370,6 +372,9 @@ export function ProfileCreateModal({ open, onClose, onCreated }: ProfileCreateMo
     api.listProviders()
       .then(p => { if (token.isCurrent()) setProviders(p) })
       .catch(() => { if (token.isCurrent()) setProviders([]) })
+    api.listProviderProfiles()
+      .then(a => { if (token.isCurrent()) setAccounts(Array.isArray(a) ? a : []) })
+      .catch(() => { if (token.isCurrent()) setAccounts([]) })
   }, [open])
 
   // Switching between From-template and From-scratch clears the shared error
@@ -535,16 +540,24 @@ export function ProfileCreateModal({ open, onClose, onCreated }: ProfileCreateMo
   const primaryKeys = PRIMARY_FIELDS.filter(k => k in scratchProps && k !== 'name')
   const advancedKeys = Object.keys(scratchProps).filter(k => k !== 'name' && !PRIMARY_FIELDS.includes(k))
 
-  // Provider select options from the live registry. Uninstalled providers
-  // stay selectable — a profile may target a provider absent on this machine.
-  const providerOptions: SelectOption[] = providers.map(p => ({
-    value: p.name,
-    label: p.name,
-    sublabel: p.installed ? undefined : 'Not installed',
-  }))
+  // Provider select options from the live registry, with each CLI's accounts
+  // by name. Picking an account sets both `provider` and `providerProfile`.
+  // Uninstalled providers stay selectable — a profile may target a provider
+  // absent on this machine.
+  const providerChoice = cliChoiceValue(
+    scratchValues.provider as string | undefined,
+    scratchValues.providerProfile as string | undefined,
+  )
+  const providerOptions: SelectOption[] = cliOptions(providers, accounts, {
+    current: providerChoice,
+    allowUninstalled: true,
+    label: name => name,
+  })
   const fieldOverrides = (k: string) => ({
     selectOptions: k === 'provider' && providerOptions.length > 0 ? providerOptions : undefined,
     suggestions: k === 'role' ? ROLE_SUGGESTIONS : undefined,
+    // The provider select shows the CLI and account picked together.
+    ...(k === 'provider' && providerOptions.length > 0 ? { value: providerChoice } : {}),
   })
 
   // Stale feedback after a blocked save: findings and the red boundaries
@@ -557,6 +570,17 @@ export function ProfileCreateModal({ open, onClose, onCreated }: ProfileCreateMo
 
   const handleScratchChange = (name: string, value: unknown) => {
     clearBlockedSave()
+    // The provider select carries "cli" or "cli@account": one pick sets the
+    // CLI and its account, so an account never outlives its CLI.
+    if (name === 'provider' && providerOptions.length > 0) {
+      const choice = typeof value === 'string' ? parseCliChoice(value) : { provider: '', account: undefined }
+      setScratchValues(v => ({
+        ...v,
+        provider: choice.provider || undefined,
+        ...('providerProfile' in scratchProps ? { providerProfile: choice.account } : {}),
+      }))
+      return
+    }
     if (scratchProps[name]?.type === 'object') {
       setJsonDrafts(d => ({ ...d, [name]: (value as string) ?? '' }))
     } else {

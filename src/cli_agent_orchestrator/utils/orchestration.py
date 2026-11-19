@@ -53,6 +53,7 @@ from cli_agent_orchestrator.services.provider_policy import (
     resolve_profile_route,
     resolve_role_provider,
     resolve_role_provider_profile,
+    resolve_route_account,
 )
 from cli_agent_orchestrator.services.settings_service import get_server_settings
 from cli_agent_orchestrator.utils.agent_profiles import resolve_provider
@@ -564,14 +565,9 @@ def _create_terminal(
         provider = route_provider or resolve_role_provider(
             agent_profile, profile_provider, role_policy
         )
-        role_profile_policy = parse_role_profile_policy_mapping(
-            metadata.get("role_provider_profiles")
+        resolved_provider_profile = _resolve_worker_account(
+            agent_profile, terminal_metadata, provider, explicit_provider_profile
         )
-        resolved_provider_profile = resolve_role_provider_profile(
-            agent_profile, explicit_provider_profile, role_profile_policy
-        )
-        if resolved_provider_profile is None:
-            resolved_provider_profile = _auto_select_account(provider, metadata)
         session_name = terminal_metadata["session_name"]
         parent_allowed_tools = terminal_metadata.get("allowed_tools")
 
@@ -811,6 +807,34 @@ def _supervisor_profile_route(
     return resolve_profile_route(agent_profile, explicit_provider, explicit_model, routes)
 
 
+def _resolve_worker_account(
+    agent_profile: str,
+    terminal_metadata: Mapping[str, Any],
+    provider: str,
+    explicit_provider_profile: Optional[str],
+) -> Optional[str]:
+    """Pick the worker's account on this node.
+
+    Order: the explicit per-call account, the supervisor's per-profile route
+    account (Auto sessions; only when the worker runs on the route's CLI), the
+    role account policy, then the quota strategy. ``None`` leaves the choice
+    to the agent profile, the CLI's default account, or the CLI's own login.
+    """
+    if explicit_provider_profile is not None:
+        return explicit_provider_profile
+    metadata = terminal_metadata.get("metadata") or {}
+    routes = parse_profile_routes_mapping(metadata.get("profile_routes"))
+    account = resolve_route_account(agent_profile, provider, routes)
+    if account is None:
+        role_profile_policy = parse_role_profile_policy_mapping(
+            metadata.get("role_provider_profiles")
+        )
+        account = resolve_role_provider_profile(agent_profile, None, role_profile_policy)
+    if account is None:
+        account = _auto_select_account(provider, metadata)
+    return account
+
+
 def _auto_select_account(provider: str, metadata: Mapping[str, Any]) -> Optional[str]:
     """Ask the local server for the account with the most quota left.
 
@@ -950,14 +974,9 @@ def _resolve_handoff_provider(
     parent_allowed_tools = terminal_metadata.get("allowed_tools")
     child_allowed_tools = _resolve_child_allowed_tools(parent_allowed_tools, agent_profile)
     allowed_tools_list = child_allowed_tools.split(",") if child_allowed_tools else None
-    role_profile_policy = parse_role_profile_policy_mapping(
-        metadata.get("role_provider_profiles")
+    provider_profile = _resolve_worker_account(
+        agent_profile, terminal_metadata, provider, explicit_provider_profile
     )
-    provider_profile = resolve_role_provider_profile(
-        agent_profile, explicit_provider_profile, role_profile_policy
-    )
-    if provider_profile is None:
-        provider_profile = _auto_select_account(provider, metadata)
     return HandoffContext(
         provider=provider,
         session_name=terminal_metadata["session_name"],
