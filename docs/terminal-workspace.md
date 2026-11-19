@@ -38,7 +38,7 @@ A production service template is in `scripts/cao-terminal.service.example`. Inst
 
 ## Viewer behavior and security
 
-An authenticated browser POST to `/terminal/viewers` requires write/admin scope plus allowed Origin/peer. The server resolves `terminal_id` using exact `@cao_terminal_id` ownership and pins stable window/pane IDs. It issues a 10-minute HttpOnly, SameSite=Strict capability cookie scoped to one viewer path. CAO bearer credentials and the sidecar secret never appear in viewer URLs or forwarded browser headers. Expired viewers are reopened explicitly from CAO.
+An authenticated browser POST to `/terminal/viewers` requires write/admin scope plus allowed Origin/peer. The server resolves `terminal_id` using exact `@cao_terminal_id` ownership and pins stable window/pane IDs. It issues a 30-minute HttpOnly, SameSite=Strict capability cookie scoped to one viewer path. CAO bearer credentials and the sidecar secret never appear in viewer URLs or forwarded browser headers. Expired viewers are reopened explicitly from CAO.
 
 Assets, history and WebSocket traffic use that capability, revalidate the credential and current target identity, and never cache sensitive responses. WebSocket input is allowlisted; the restricted Go dispatcher also rechecks own tmux options and live pane ownership on every action/capture. Shared layout fitting, prefix-command interpretation, raw session/window/pane CRUD, rescue/global kill, unrestricted upstream uploads, federation, relay, TTS/push and deck editing are not available. A separate CAO-owned, bounded raster-image attachment API is described below. Direct program input remains intentionally powerful and requires write permission.
 

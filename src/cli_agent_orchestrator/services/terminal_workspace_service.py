@@ -26,7 +26,7 @@ from cli_agent_orchestrator.security.auth import (
 )
 
 VERSION = "cao-terminal/195ad23136c500b10fc88ba50397a25fa7b8c4d9-grid-v2"
-LEASE_SECONDS = 600
+LEASE_SECONDS = 1800
 MAX_VIEWERS = 128
 MAX_RESPONSE_BYTES = 1024 * 1024
 COOKIE_NAME = "cao_terminal_viewer"
