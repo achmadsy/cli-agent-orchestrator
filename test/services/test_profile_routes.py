@@ -12,7 +12,10 @@ from cli_agent_orchestrator.services.provider_policy import (
 )
 from cli_agent_orchestrator.services.settings_service import (
     AUTO_ROUTING_DEFAULTS,
+    SettingsUnreadableError,
     get_auto_routing_settings,
+    set_auto_routing_routes,
+    validate_route_map,
 )
 
 
@@ -165,3 +168,87 @@ class TestAutoRoutingSettings:
     def test_api_key_is_never_read_from_settings(self, settings_file):
         settings_file.write_text(json.dumps({"auto_routing": {"api_key": "sk-leak"}}))
         assert "sk-leak" not in json.dumps(get_auto_routing_settings())
+
+    def test_lanes_keep_only_known_lanes_and_valid_routes(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "auto_routing": {
+                        "lanes": {
+                            "fix_supervisor": {"provider": "codex", "model": "gpt-5.5"},
+                            "probe_supervisor": {"provider": "nope"},
+                            "code_supervisor": {"provider": "codex"},
+                        }
+                    }
+                }
+            )
+        )
+        assert get_auto_routing_settings()["lanes"] == {
+            "fix_supervisor": {"provider": "codex", "model": "gpt-5.5"}
+        }
+
+
+class TestSetAutoRoutingRoutes:
+    def test_replaces_maps_and_keeps_other_keys(self, settings_file):
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "agents": {"extra_dirs": ["/x"]},
+                    "auto_routing": {
+                        "enabled": True,
+                        "min_margin": 0.2,
+                        "workers": {"developer": {"provider": "codex"}},
+                    },
+                }
+            )
+        )
+        set_auto_routing_routes(lanes={"fix_supervisor": {"provider": "claude_code"}})
+        saved = json.loads(settings_file.read_text())
+        assert saved["agents"] == {"extra_dirs": ["/x"]}
+        assert saved["auto_routing"]["enabled"] is True
+        assert saved["auto_routing"]["min_margin"] == 0.2
+        assert saved["auto_routing"]["workers"] == {"developer": {"provider": "codex"}}
+        assert saved["auto_routing"]["lanes"] == {"fix_supervisor": {"provider": "claude_code"}}
+
+    def test_creates_the_block_when_absent(self, settings_file):
+        set_auto_routing_routes(workers={"reviewer": {"provider": "codex"}})
+        saved = json.loads(settings_file.read_text())
+        assert saved == {"auto_routing": {"workers": {"reviewer": {"provider": "codex"}}}}
+
+    def test_refuses_to_overwrite_an_unreadable_file(self, settings_file):
+        settings_file.write_text("{not json")
+        with pytest.raises(SettingsUnreadableError):
+            set_auto_routing_routes(workers={})
+        assert settings_file.read_text() == "{not json"
+
+
+class TestValidateRouteMap:
+    def test_valid_map_is_normalized(self):
+        assert validate_route_map(
+            {
+                "developer": {"provider": "codex", "model": " gpt-5.5 "},
+                "reviewer": {"provider": "", "model": ""},
+                "planner": {},
+            },
+            "workers",
+        ) == {"developer": {"provider": "codex", "model": "gpt-5.5"}}
+
+    @pytest.mark.parametrize(
+        "value, message",
+        [
+            ([], "must be an object"),
+            ({"bad name": {}}, "invalid profile name"),
+            ({"developer": "codex"}, "only provider and model"),
+            ({"developer": {"provider": "nope"}}, "unknown provider"),
+            ({"developer": {"model": "gpt-5.5"}}, "needs a provider"),
+            ({"developer": {"provider": "codex", "model": "a;b"}}, "not allowed"),
+            ({"developer": {"provider": "codex", "model": "x" * 129}}, "at most"),
+        ],
+    )
+    def test_rejects_with_a_named_reason(self, value, message):
+        with pytest.raises(ValueError, match=message):
+            validate_route_map(value, "workers")
+
+    def test_allowed_names_are_enforced(self):
+        with pytest.raises(ValueError, match="unknown lane"):
+            validate_route_map({"developer": {"provider": "codex"}}, "lanes", {"fix_supervisor"})

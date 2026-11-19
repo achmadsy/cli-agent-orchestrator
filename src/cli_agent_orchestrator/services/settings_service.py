@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Set
 
@@ -116,9 +117,11 @@ AUTO_ROUTING_DEFAULTS: Dict[str, Any] = {
     "min_confidence": 0.5,
     "min_margin": 0.15,
     "account_strategy": "default",
+    "lanes": {},
     "workers": {},
 }
 _ACCOUNT_STRATEGIES = frozenset({"default", "quota_desc"})
+MAX_ROUTE_ENTRIES = 32
 
 
 def get_auto_routing_settings() -> Dict[str, Any]:
@@ -185,8 +188,82 @@ def get_auto_routing_settings() -> Dict[str, Any]:
     if strategy in _ACCOUNT_STRATEGIES:
         result["account_strategy"] = strategy
 
+    from cli_agent_orchestrator.services.auto_router import LANES
+
+    lanes = parse_profile_routes_mapping(saved.get("lanes"))
+    result["lanes"] = {name: route for name, route in lanes.items() if name in LANES}
     result["workers"] = parse_profile_routes_mapping(saved.get("workers"))
     return result
+
+
+def validate_route_map(
+    value: Any, label: str, allowed: Optional[Set[str]] = None
+) -> Dict[str, Dict[str, str]]:
+    """Strictly validate a ``{profile: {provider?, model?}}`` map from a settings write.
+
+    Unlike :func:`parse_profile_routes_mapping`, which drops bad entries when
+    reading, a write is rejected with a message naming the bad key. A model
+    needs a provider, because a model name only means something to one CLI.
+    Entries with neither value are dropped. Raises ``ValueError``.
+    """
+    from cli_agent_orchestrator.constants import MODEL_ID_MAX_LEN, MODEL_ID_RE, PROVIDERS
+    from cli_agent_orchestrator.models.provider_policy import PROFILE_NAME_RE
+
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    if len(value) > MAX_ROUTE_ENTRIES:
+        raise ValueError(f"{label} has more than {MAX_ROUTE_ENTRIES} entries")
+    routes: Dict[str, Dict[str, str]] = {}
+    for name, raw in value.items():
+        if not isinstance(name, str) or not PROFILE_NAME_RE.fullmatch(name):
+            raise ValueError(f"{label}: invalid profile name {name!r}")
+        if allowed is not None and name not in allowed:
+            raise ValueError(f"{label}: unknown lane {name!r}")
+        if not isinstance(raw, dict) or set(raw) - {"provider", "model"}:
+            raise ValueError(f"{label}.{name} must be an object with only provider and model")
+        provider = raw.get("provider") or None
+        model = raw.get("model")
+        model = model.strip() if isinstance(model, str) else model
+        model = model or None
+        if provider is not None and provider not in PROVIDERS:
+            raise ValueError(f"{label}.{name}.provider: unknown provider {provider!r}")
+        if model is not None:
+            if not isinstance(model, str) or len(model) > MODEL_ID_MAX_LEN:
+                raise ValueError(
+                    f"{label}.{name}.model must be at most {MODEL_ID_MAX_LEN} characters"
+                )
+            if not re.fullmatch(MODEL_ID_RE, model):
+                raise ValueError(
+                    f"{label}.{name}.model {model!r} has characters that are not allowed"
+                )
+            if provider is None:
+                raise ValueError(f"{label}.{name}: a model needs a provider")
+        route = {key: val for key, val in (("provider", provider), ("model", model)) if val}
+        if route:
+            routes[name] = route
+    return routes
+
+
+def set_auto_routing_routes(
+    lanes: Optional[Dict[str, Dict[str, str]]] = None,
+    workers: Optional[Dict[str, Dict[str, str]]] = None,
+) -> None:
+    """Replace ``auto_routing.lanes`` and/or ``auto_routing.workers``, keeping every other key.
+
+    Reads strictly: an unreadable settings.json raises
+    :class:`SettingsUnreadableError` instead of being overwritten with only
+    this block. Callers pass maps already checked by :func:`validate_route_map`.
+    """
+    settings = _load_or_raise()
+    block = settings.get("auto_routing")
+    if not isinstance(block, dict):
+        block = {}
+    if lanes is not None:
+        block["lanes"] = lanes
+    if workers is not None:
+        block["workers"] = workers
+    settings["auto_routing"] = block
+    _save(settings)
 
 
 def child_may_delegate() -> bool:

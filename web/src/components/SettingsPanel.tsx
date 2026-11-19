@@ -3,6 +3,7 @@ import { getToken, setToken } from '../auth'
 import { api, AgentDirsSettings } from '../api'
 import { useStore } from '../store'
 import { FolderOpen, Plus, X, RefreshCw } from 'lucide-react'
+import { AutoRoutingDefaultsCard } from './AutoRoutingDefaultsCard'
 
 /** A small on/off switch (GH #280). */
 function Toggle({ on, onClick, disabled, label }: {
@@ -299,6 +300,8 @@ export function SettingsPanel() {
           </p>
         )}
       </div>
+
+      <AutoRoutingDefaultsCard />
 
       {tokenCard}
 

@@ -106,7 +106,15 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   const [switching, setSwitching] = useState(false)
   const [autoRoutingEnabled, setAutoRoutingEnabled] = useState(false)
   const [firstPrompt, setFirstPrompt] = useState('')
+  // Auto (Jev) keeps its own provider choice. '' means "use the lane default
+  // from Settings", so the form only overrides Settings when the user picks a CLI.
+  const [autoProvider, setAutoProvider] = useState('')
   const isAuto = profile === AUTO_PROFILE
+  const spawnProvider = isAuto ? autoProvider : provider
+
+  useEffect(() => {
+    setProviderProfile('')
+  }, [autoProvider, isAuto])
 
   useEffect(() => {
     api.getAutoRoutingStatus()
@@ -239,6 +247,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
     setSessionName('')
     setDelegatedProfiles({})
     setFirstPrompt('')
+    setAutoProvider('')
   }
 
   const handleCreateAuto = async () => {
@@ -248,8 +257,9 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
     try {
       const result = await createAutoSession({
         initial_message: firstPrompt,
-        provider,
-        ...(providerProfile ? { provider_profile: providerProfile } : {}),
+        // Omitted provider = the server uses the lane default from Settings.
+        ...(autoProvider ? { provider: autoProvider } : {}),
+        ...(autoProvider && providerProfile ? { provider_profile: providerProfile } : {}),
         ...(sessionName.trim() ? { session_name: sessionName.trim() } : {}),
         ...(workingDirectory.trim() ? { working_directory: workingDirectory.trim() } : {}),
       })
@@ -874,19 +884,26 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Provider</label>
                 <CustomSelect
-                  value={provider}
-                  onChange={setProvider}
+                  value={spawnProvider}
+                  onChange={isAuto ? setAutoProvider : setProvider}
                   placeholder="Select provider..."
-                  options={(providers.length > 0 ? providers : FALLBACK_PROVIDERS.map(n => ({ name: n, binary: '', installed: true }))).map(p => ({
-                    value: p.name,
-                    label: p.name.replace(/_/g, ' '),
-                    sublabel: !p.installed ? 'Not installed' : undefined,
-                    disabled: !p.installed,
-                  }))}
+                  options={[
+                    ...(isAuto ? [{
+                      value: '',
+                      label: 'Default (from Settings)',
+                      sublabel: "Each lane's CLI from Settings › Auto (Jev) defaults",
+                    }] : []),
+                    ...(providers.length > 0 ? providers : FALLBACK_PROVIDERS.map(n => ({ name: n, binary: '', installed: true }))).map(p => ({
+                      value: p.name,
+                      label: p.name.replace(/_/g, ' '),
+                      sublabel: !p.installed ? 'Not installed' : undefined,
+                      disabled: !p.installed,
+                    })),
+                  ]}
                 />
               </div>
 
-              {providerProfiles.some(p => p.provider === provider) && <div><label className="block text-xs text-gray-500 mb-1">Provider Account</label><CustomSelect value={providerProfile} onChange={setProviderProfile} placeholder="Default config" options={[{ value: '', label: 'Default config' }, ...providerProfiles.filter(p => p.provider === provider).map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]} /></div>}
+              {spawnProvider && providerProfiles.some(p => p.provider === spawnProvider) && <div><label className="block text-xs text-gray-500 mb-1">Provider Account</label><CustomSelect value={providerProfile} onChange={setProviderProfile} placeholder="Default config" options={[{ value: '', label: 'Default config' }, ...providerProfiles.filter(p => p.provider === spawnProvider).map(p => ({ value: p.id, label: p.label, sublabel: `${p.id} · ${p.auth_state}`, disabled: p.auth_state !== 'authenticated' }))]} /></div>}
 
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Agent Profile</label>

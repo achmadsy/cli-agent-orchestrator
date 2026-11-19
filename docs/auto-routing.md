@@ -62,7 +62,9 @@ enforced: supervisors get only `cao-mcp-server`, `fs_read`, and `fs_list`.
 ## Configuration
 
 Settings are per node, in `~/.aws/cli-agent-orchestrator/settings.json` (or
-under `CAO_HOME_DIR`). There is no settings UI for this block.
+under `CAO_HOME_DIR`). The `lanes` and `workers` maps can also be edited in
+the web UI under **Settings › Auto (Jev) defaults**. The other keys are edited
+in the file only.
 
 ```json
 {
@@ -74,6 +76,10 @@ under `CAO_HOME_DIR`). There is no settings UI for this block.
     "min_confidence": 0.5,
     "min_margin": 0.15,
     "account_strategy": "default",
+    "lanes": {
+      "probe_supervisor": { "provider": "claude_code" },
+      "architect_supervisor": { "provider": "claude_code", "model": "opus" }
+    },
     "workers": {
       "planner": { "provider": "claude_code" },
       "developer": { "provider": "codex", "model": "gpt-5.5" },
@@ -92,6 +98,7 @@ under `CAO_HOME_DIR`). There is no settings UI for this block.
 | `min_confidence` | `0.5` | Number from 0 to 1. Answers below it fall back. |
 | `min_margin` | `0.15` | Number from 0 to 1. When Jev reports probabilities for the other lanes, the chosen lane must lead the runner-up by at least this much. `0` turns the check off. |
 | `account_strategy` | `"default"` | `"default"` or `"quota_desc"`. See [Account selection](#account-selection). |
+| `lanes` | `{}` | Map of lane profile name to `{provider?, model?}`: the default CLI and model for that lane's supervisor. Only the four lane names are kept. Invalid entries are dropped one by one. See [Supervisor CLI](#supervisor-cli). |
 | `workers` | `{}` | Map of agent profile name to `{provider?, model?}`. Invalid entries are dropped one by one. |
 
 Each key is validated on its own. An invalid value is replaced by its default
@@ -105,7 +112,28 @@ Environment variables:
 | `CAO_NINEROUTER_URL` | Overrides `ninerouter_url`. |
 | `CAO_NINEROUTER_API_KEY` | Sent as `Authorization: Bearer ...` to 9router when set. It is read only from the environment, never from `settings.json`. |
 
-Restart `cao-server` after changing `settings.json` or the environment.
+Restart `cao-server` after changing the environment. `settings.json` is read
+again on every Auto launch, so a change to it, including a save from the
+Settings page, applies to the next Auto session without a restart. Running
+sessions keep the worker routes they started with.
+
+## Supervisor CLI
+
+The lane supervisor's CLI is resolved in this order:
+
+1. The provider picked in the Spawn form or sent as `provider` to the API.
+2. The `lanes` default for the lane Jev chose.
+3. The lane profile's own `provider`. The bundled lane profiles set none.
+4. CAO's default provider (`kiro_cli`).
+
+The lane's `model` is used when the supervisor runs on the lane's own CLI. If
+the form picks a different CLI, the lane model is dropped, the same rule as
+for worker routes. Without a lane model, the CLI starts with its own default
+model.
+
+In the web UI and the Fleet panel, the provider list in Auto mode starts on
+**Default (from Settings)**, which sends no provider, so the lane defaults
+apply. Picking a CLI there overrides them for that launch.
 
 ## Worker routes
 
@@ -217,7 +245,23 @@ POST /auto-routing/sessions        (JSON body)
 
 GET  /agents/provider-profiles/select?provider=<name>
      -> {"profile_id": str | null}
+
+GET  /settings/auto-routing
+     -> {"enabled": bool, "lane_names": [str], "fallback_provider": str,
+         "lanes": {...}, "workers": {...}}
+
+PUT  /settings/auto-routing        (JSON body, write scope)
+     {"lanes": {...}?, "workers": {...}?}
+     -> 200 with the same shape as GET
+     -> 400 naming the first bad entry; nothing is written
+     -> 503 when settings.json exists but cannot be read; it is not overwritten
 ```
+
+`PUT` replaces each map it receives and leaves an omitted map unchanged. Every
+other `auto_routing` key is kept. An entry with a `model` must also name a
+`provider`. Model names follow the same rule as other CAO model overrides:
+letters, digits, and `. _ : / -`, at most 128 characters. Each map holds at
+most 32 entries.
 
 The prompt is delivered by the same create call, so there is no separate send
 step. The endpoint has no idempotency key: retrying could classify the prompt

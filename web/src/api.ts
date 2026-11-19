@@ -131,6 +131,22 @@ export interface AutoLaneDecision {
   router_model: string | null
 }
 
+/** One default CLI/model route. A model is only set together with a provider. */
+export interface AutoRoute {
+  provider?: string
+  model?: string
+}
+
+/** GET/PUT /settings/auto-routing: Auto lane supervisor and worker defaults. */
+export interface AutoRoutingRoutes {
+  enabled: boolean
+  lane_names: string[]
+  /** CLI a lane uses when neither the form nor Settings picks one. */
+  fallback_provider: string
+  lanes: Record<string, AutoRoute>
+  workers: Record<string, AutoRoute>
+}
+
 export interface AutoSessionRequest {
   initial_message: string
   provider?: string
@@ -895,6 +911,13 @@ export const api = {
     },
   ),
   getAutoRoutingStatus: () => fetchJSON<AutoRoutingStatus>('/auto-routing/status'),
+  getAutoRoutingRoutes: () => fetchJSON<AutoRoutingRoutes>('/settings/auto-routing'),
+  setAutoRoutingRoutes: (data: { lanes?: Record<string, AutoRoute>; workers?: Record<string, AutoRoute> }) =>
+    fetchJSON<AutoRoutingRoutes>('/settings/auto-routing', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
   // The prompt travels in the JSON body (never the query string) and is
   // delivered by the same create call, so it cannot be lost between steps.
   createAutoSession: (request: AutoSessionRequest) => fetchJSON<AutoSessionResult>(

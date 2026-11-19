@@ -21,6 +21,7 @@ def _cfg(**overrides):
         "timeout_ms": 8000,
         "min_confidence": 0.5,
         "account_strategy": "default",
+        "lanes": {},
         "workers": {"developer": {"provider": "codex", "model": "gpt-5.5"}},
     }
     cfg.update(overrides)
@@ -195,6 +196,125 @@ class TestCreateAutoSession:
             )
         assert response.status_code == 400
         svc.create_session.assert_not_called()
+
+
+class TestLaneDefaults:
+    """The supervisor's CLI: form provider > Settings lane default > profile > DEFAULT_PROVIDER."""
+
+    LANES = {"fix_supervisor": {"provider": "codex", "model": "gpt-5.5"}}
+
+    def _launch(self, client, body, lanes=None):
+        decision = LaneDecision("fix_supervisor", 0.9, None, "m")
+        with (
+            patch(SETTINGS, return_value=_cfg(lanes=self.LANES if lanes is None else lanes)),
+            patch(CLASSIFY, return_value=decision),
+            patch(SESSION_SVC) as svc,
+        ):
+            svc.create_session = AsyncMock(return_value=_terminal())
+            response = client.post("/auto-routing/sessions", json=body)
+        assert response.status_code == 201, response.text
+        return svc.create_session.await_args.kwargs
+
+    def test_no_form_provider_uses_lane_default_and_model(self, client):
+        kwargs = self._launch(client, {"initial_message": "fix it"})
+        assert kwargs["provider"] == "codex"
+        assert kwargs["model"] == "gpt-5.5"
+
+    def test_form_provider_wins_and_drops_the_lane_model(self, client):
+        kwargs = self._launch(client, {"initial_message": "fix it", "provider": "claude_code"})
+        assert kwargs["provider"] == "claude_code"
+        assert kwargs["model"] is None
+
+    def test_form_provider_matching_the_lane_keeps_the_lane_model(self, client):
+        kwargs = self._launch(client, {"initial_message": "fix it", "provider": "codex"})
+        assert kwargs["provider"] == "codex"
+        assert kwargs["model"] == "gpt-5.5"
+
+    def test_no_lane_default_falls_back_to_default_provider(self, client):
+        from cli_agent_orchestrator.constants import DEFAULT_PROVIDER
+
+        kwargs = self._launch(client, {"initial_message": "fix it"}, lanes={})
+        assert kwargs["provider"] == DEFAULT_PROVIDER
+        assert kwargs["model"] is None
+
+    def test_other_lanes_default_does_not_apply(self, client):
+        from cli_agent_orchestrator.constants import DEFAULT_PROVIDER
+
+        kwargs = self._launch(
+            client,
+            {"initial_message": "fix it"},
+            lanes={"probe_supervisor": {"provider": "codex"}},
+        )
+        assert kwargs["provider"] == DEFAULT_PROVIDER
+
+
+ROUTES_GET = "cli_agent_orchestrator.services.settings_service.get_auto_routing_settings"
+ROUTES_SET = "cli_agent_orchestrator.services.settings_service.set_auto_routing_routes"
+
+
+class TestRoutesEndpoints:
+    def test_get_returns_lanes_workers_and_lane_names_only(self, client):
+        with patch(ROUTES_GET, return_value=_cfg(lanes={"fix_supervisor": {"provider": "codex"}})):
+            body = client.get("/settings/auto-routing").json()
+        assert set(body) == {"enabled", "lane_names", "fallback_provider", "lanes", "workers"}
+        assert body["lane_names"] == sorted(
+            ["architect_supervisor", "feature_supervisor", "fix_supervisor", "probe_supervisor"]
+        )
+        assert body["lanes"] == {"fix_supervisor": {"provider": "codex"}}
+        assert "ninerouter_url" not in body
+
+    def test_put_saves_validated_maps(self, client):
+        with patch(ROUTES_SET) as save, patch(ROUTES_GET, return_value=_cfg()):
+            response = client.put(
+                "/settings/auto-routing",
+                json={
+                    "lanes": {"probe_supervisor": {"provider": "claude_code", "model": " opus "}},
+                    "workers": {"developer": {"provider": "codex"}, "reviewer": {}},
+                },
+            )
+        assert response.status_code == 200, response.text
+        save.assert_called_once_with(
+            lanes={"probe_supervisor": {"provider": "claude_code", "model": "opus"}},
+            workers={"developer": {"provider": "codex"}},
+        )
+
+    def test_put_omitted_map_is_left_unchanged(self, client):
+        with patch(ROUTES_SET) as save, patch(ROUTES_GET, return_value=_cfg()):
+            client.put("/settings/auto-routing", json={"workers": {}})
+        save.assert_called_once_with(lanes=None, workers={})
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"lanes": {"code_supervisor": {"provider": "codex"}}},
+            {"lanes": {"fix_supervisor": {"provider": "not-a-cli"}}},
+            {"lanes": {"fix_supervisor": {"model": "gpt-5.5"}}},
+            {"lanes": {"fix_supervisor": {"provider": "codex", "model": "rm -rf"}}},
+            {"lanes": {"fix_supervisor": {"provider": "codex", "extra": 1}}},
+            {"workers": {"a b": {"provider": "codex"}}},
+            {"workers": {f"w{i}": {"provider": "codex"} for i in range(33)}},
+        ],
+    )
+    def test_put_rejects_bad_entries_without_saving(self, client, body):
+        with patch(ROUTES_SET) as save:
+            response = client.put("/settings/auto-routing", json=body)
+        assert response.status_code == 400
+        save.assert_not_called()
+
+    def test_put_unknown_top_level_key_is_422(self, client):
+        response = client.put("/settings/auto-routing", json={"enabled": True})
+        assert response.status_code == 422
+
+    def test_put_unreadable_settings_is_503(self, client):
+        from pathlib import Path
+
+        from cli_agent_orchestrator.services.settings_service import SettingsUnreadableError
+
+        error = SettingsUnreadableError(Path("/secret/settings.json"), PermissionError("denied"))
+        with patch(ROUTES_SET, side_effect=error):
+            response = client.put("/settings/auto-routing", json={"workers": {}})
+        assert response.status_code == 503
+        assert "/secret" not in response.text
 
 
 class TestSelectEndpoint:

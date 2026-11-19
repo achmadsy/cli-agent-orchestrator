@@ -174,6 +174,7 @@ from cli_agent_orchestrator.services.inbox_service import inbox_service
 from cli_agent_orchestrator.services.provider_policy import (
     parse_stored_policy,
     parse_stored_profile_policy,
+    resolve_profile_route,
     resolve_role_provider,
     resolve_role_provider_profile,
 )
@@ -4029,7 +4030,12 @@ async def create_auto_session(
         )
 
     decision = await asyncio.to_thread(classify_lane, body.initial_message, cfg)
-    supervisor_provider = body.provider or resolve_provider(
+    # The form's provider wins over the lane default from Settings. A lane
+    # model is kept only when the supervisor runs on the lane's own provider.
+    lane_provider, supervisor_model = resolve_profile_route(
+        decision.lane, body.provider, None, cfg["lanes"]
+    )
+    supervisor_provider = lane_provider or resolve_provider(
         decision.lane, fallback_provider=DEFAULT_PROVIDER
     )
     provider_profile = body.provider_profile
@@ -4062,7 +4068,7 @@ async def create_auto_session(
         allowed_tools=None,
         memory_manager=None,
         engine=None,
-        model=None,
+        model=supervisor_model,
         use_worktree=False,
         idempotency_key=None,
         resume_session_id=None,
@@ -4073,6 +4079,75 @@ async def create_auto_session(
         "terminal": terminal.model_dump(mode="json"),
         "decision": decision.as_metadata(),
     }
+
+
+def _auto_routing_routes_payload() -> Dict[str, Any]:
+    from cli_agent_orchestrator.services.auto_router import LANES
+    from cli_agent_orchestrator.services.settings_service import get_auto_routing_settings
+
+    cfg = get_auto_routing_settings()
+    return {
+        "enabled": bool(cfg["enabled"]),
+        "lane_names": sorted(LANES),
+        "fallback_provider": DEFAULT_PROVIDER,
+        "lanes": cfg["lanes"],
+        "workers": cfg["workers"],
+    }
+
+
+class AutoRoutingRoutesUpdate(BaseModel):
+    """Body for PUT /settings/auto-routing. An omitted map is left unchanged."""
+
+    model_config = {"extra": "forbid"}
+
+    lanes: Optional[Dict[str, Any]] = None
+    workers: Optional[Dict[str, Any]] = None
+
+
+@app.get("/settings/auto-routing")
+async def get_auto_routing_routes_endpoint(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    """Default CLI and model per Auto lane supervisor and per worker profile.
+
+    Carries no 9router URL or key, only the routes the Settings page edits.
+    """
+    return _auto_routing_routes_payload()
+
+
+@app.put("/settings/auto-routing")
+async def set_auto_routing_routes_endpoint(
+    body: AutoRoutingRoutesUpdate,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    """Replace the lane and/or worker defaults in settings.json.
+
+    Every entry is validated before anything is written, so a bad entry
+    rejects the whole request with 400 and leaves the file as it was. Other
+    ``auto_routing`` keys (enabled, URL, thresholds) are kept.
+    """
+    from cli_agent_orchestrator.services.auto_router import LANES
+    from cli_agent_orchestrator.services.settings_service import (
+        SettingsUnreadableError,
+        set_auto_routing_routes,
+        validate_route_map,
+    )
+
+    try:
+        lanes = (
+            validate_route_map(body.lanes, "lanes", set(LANES)) if body.lanes is not None else None
+        )
+        workers = validate_route_map(body.workers, "workers") if body.workers is not None else None
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    try:
+        set_auto_routing_routes(lanes=lanes, workers=workers)
+    except SettingsUnreadableError as exc:
+        logger.warning("Refusing to overwrite settings.json: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=exc.redacted_detail()
+        )
+    return _auto_routing_routes_payload()
 
 
 @app.get("/sessions")

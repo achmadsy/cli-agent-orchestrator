@@ -441,6 +441,24 @@ function syncAutoTask() {
   task.placeholder = isAuto
     ? "required: Jev reads this to choose the probe, fix, feature, or architect supervisor"
     : "e.g. run the tests and summarise failures";
+  syncAutoProvider(isAuto);
+}
+
+// Auto (Jev) offers an empty provider: the node then starts each lane with the
+// CLI from its own Settings. A CLI picked here still wins over that default.
+function syncAutoProvider(isAuto) {
+  const provSel = $("#launch-provider");
+  const existing = provSel.querySelector("option[data-auto-default]");
+  if (isAuto && !existing) {
+    const o = opt("", "Default (lane CLI from the node's Settings)");
+    o.dataset.autoDefault = "1";
+    provSel.prepend(o);
+    provSel.value = "";
+  } else if (!isAuto && existing) {
+    const wasSelected = existing.selected;
+    existing.remove();
+    if (wasSelected && provSel.options.length) provSel.selectedIndex = 0;
+  }
 }
 
 $("#launch-profile").addEventListener("change", syncAutoTask);
