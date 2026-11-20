@@ -15,6 +15,16 @@ describe('terminal theme ownership', () => {
     expect(page).toContain('--cao-shell-bg: #181E28')
     expect(read('vendor/tmux-webui/internal/assets/static/css/cao-tokens.css')).toContain('--bg: #191B1C')
   })
+  it('wraps desktop navigation and keeps mobile tabs scrollable without a scrollbar', () => {
+    const page = read('web/src/index.css')
+    const desktop = page.slice(0, page.indexOf('@media (max-width: 600px)'))
+    const mobile = page.slice(page.indexOf('@media (max-width: 600px)'), page.indexOf('@media (prefers-reduced-motion: reduce)'))
+    expect(desktop).toMatch(/\.cao-shell-tabs\s*\{\s*flex-wrap:\s*wrap;/)
+    expect(desktop).not.toContain('overflow-x: auto')
+    expect(page).toMatch(/\.cao-shell-tabs > button\s*\{[^}]*min-height:\s*44px;[^}]*white-space:\s*nowrap;/)
+    expect(mobile).toMatch(/\.cao-shell-tabs\s*\{[^}]*flex-wrap:\s*nowrap;[^}]*overflow-x:\s*auto;[^}]*scrollbar-width:\s*none;/)
+    expect(mobile).toMatch(/\.cao-shell-tabs::-webkit-scrollbar\s*\{\s*display:\s*none;/)
+  })
   it('does not let stale runtime colors or legacy font pins override workspace chrome', () => {
     const dom = new JSDOM('', { runScripts: 'outside-only', url: 'http://localhost' })
     const w = dom.window

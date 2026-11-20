@@ -16,9 +16,13 @@ body {
 }
 
 .cao-shell { background: var(--cao-shell-bg); }
-.cao-shell-tabs { overflow-x: auto; scrollbar-width: thin; }
-.cao-shell-tabs > button { flex-shrink: 0; min-height: 44px; }
+/* Desktop tabs wrap instead of creating a second horizontal scrollbar. */
+.cao-shell-tabs { flex-wrap: wrap; }
+.cao-shell-tabs > button { flex-shrink: 0; min-height: 44px; white-space: nowrap; }
 @media (max-width: 600px) {
+  /* Keep a compact swipeable row on phones, without browser scrollbar chrome. */
+  .cao-shell-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .cao-shell-tabs::-webkit-scrollbar { display: none; }
   .cao-shell > header > div { padding-inline: 12px; gap: 12px; }
   .cao-shell > header h1 { font-size: 14px; }
   .cao-shell > header > div > div:last-child > span { display: none; }
