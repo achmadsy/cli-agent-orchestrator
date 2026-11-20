@@ -26,7 +26,10 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from cli_agent_orchestrator.services.memory_service import MemoryService
 
 from cli_agent_orchestrator.services.wiki_compiler import (
     SEE_ALSO_LINK_RE,
@@ -945,6 +948,43 @@ def _detect_graph_density(rows_by_scope: dict) -> list:
 # -----------------------------------------------------------------------------
 # Public entry point
 # -----------------------------------------------------------------------------
+
+
+def read_graph_topology_issues(
+    scope: str,
+    scope_id: Optional[str],
+    *,
+    memory_service: "MemoryService",
+) -> list[LintIssue]:
+    """Cheap, read-only graph flags for ONE native scope; never run a full audit.
+
+    No article bodies, repository searches, LLM calls, audit writes or
+    contradiction persistence. Reuse the lint detectors' existing semantics.
+    """
+    from cli_agent_orchestrator.clients.database import MemoryMetadataModel
+
+    base = memory_service.base_dir.resolve()
+    index = memory_service.get_index_path(scope, scope_id)
+    container = index.parent.parent
+    session = _open_readonly_session(memory_service._db_engine)
+    try:
+        query = session.query(
+            MemoryMetadataModel.key,
+            MemoryMetadataModel.related_keys,
+        ).filter(
+            MemoryMetadataModel.source_kind == "native",
+            MemoryMetadataModel.scope == scope,
+        )
+        if scope_id is None:
+            query = query.filter(MemoryMetadataModel.scope_id.is_(None))
+        else:
+            query = query.filter(MemoryMetadataModel.scope_id == scope_id)
+        rows = [{"key": row.key, "related_keys": row.related_keys} for row in query.all()]
+    finally:
+        session.close()
+    issues = _detect_orphan_pages(container, scope, scope_id, {r["key"] for r in rows}, base)
+    issues.extend(_detect_graph_density({(scope, scope_id): rows}))
+    return issues
 
 
 async def run_lint(

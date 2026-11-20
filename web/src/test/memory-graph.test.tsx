@@ -169,7 +169,81 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     // Graph tab now selected; list row gone from the DOM.
     await waitFor(() => expect(screen.getByRole('tab', { name: /graph/i })).toHaveAttribute('aria-selected', 'true'))
     expect(screen.queryByText('project-conventions')).not.toBeInTheDocument()
-    await waitFor(() => expect(mockFetch.mock.calls.some(c => String(c[0]) === '/graph/memory?scope=project&scope_id=my-proj')).toBe(true))
+    await waitFor(() => expect(mockFetch.mock.calls.some(c => String(c[0]) === '/graph/memory?scope=project&scope_id=my-proj&mode=snapshot')).toBe(true))
+  })
+
+  it('keeps the same-scope graph visible during Refresh and shows snapshot provenance', async () => {
+    vi.spyOn(api, 'getGraph').mockResolvedValueOnce({ ...GRAPH, meta: { projection_mode: 'snapshot', as_of: '2026-11-20T00:00:00Z', audit_ran: false } })
+    let release!: (value: typeof GRAPH) => void
+    vi.mocked(api.getGraph).mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    routeFetch(() => ({ status: 200, body: MEMORIES }))
+    render(<MemoryPanel />)
+    await screen.findByText('project-conventions')
+    fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
+    await waitFor(() => expect(getLastSigma()).toBeDefined())
+    const sigma = getLastSigma()!
+    expect(screen.getByText(/No new contradiction audit/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(screen.getByText('Refreshing saved relationships…')).toBeInTheDocument()
+    expect(screen.queryByTestId('graph-loading')).not.toBeInTheDocument()
+    expect(getLastSigma()).toBe(sigma)
+    expect(sigma.killed).toBe(false)
+    expect(screen.getByTestId('graph-canvas')).toBeVisible()
+    release(GRAPH)
+    await waitFor(() => expect(screen.queryByText('Refreshing saved relationships…')).not.toBeInTheDocument())
+    expect(api.getGraph).toHaveBeenCalledWith('memory', 'project', 'my-proj', 'snapshot')
+  })
+
+  it.each([500, 403])('handles a same-scope refresh failure (%s) without hiding authorization changes', async status => {
+    const request = vi.spyOn(api, 'getGraph').mockResolvedValueOnce(GRAPH)
+    request.mockRejectedValueOnce({ status, detail: 'Refresh failed' })
+    routeFetch(() => ({ status: 200, body: MEMORIES }))
+    render(<MemoryPanel />)
+    await screen.findByText('project-conventions')
+    fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
+    await waitFor(() => expect(getLastSigma()).toBeDefined())
+    const sigma = getLastSigma()!
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await screen.findByText(/Refresh failed/)
+    if (status === 500) {
+      expect(screen.getByRole('alert')).toHaveTextContent('Showing the last successfully loaded graph')
+      expect(sigma.killed).toBe(false)
+      expect(screen.queryByTestId('graph-error')).not.toBeInTheDocument()
+    } else {
+      expect(sigma.killed).toBe(true)
+      expect(screen.getByTestId('graph-error')).toHaveTextContent('Refresh failed')
+    }
+  })
+
+  it('ignores a pending graph response after unmount', async () => {
+    let release!: (value: typeof GRAPH) => void
+    vi.spyOn(api, 'getGraph').mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    routeFetch(() => ({ status: 200, body: MEMORIES }))
+    const { unmount } = render(<MemoryPanel />)
+    await screen.findByText('project-conventions')
+    fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
+    await screen.findByTestId('graph-loading')
+    unmount()
+    release(GRAPH)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(getLastSigma()).toBeUndefined()
+  })
+
+  it('removes the previous scope canvas immediately while loading a new scope', async () => {
+    const request = vi.spyOn(api, 'getGraph').mockResolvedValueOnce(GRAPH)
+    request.mockImplementationOnce(() => new Promise(() => {}))
+    routeFetch(() => ({ status: 200, body: MEMORIES }))
+    render(<MemoryPanel />)
+    await screen.findByText('project-conventions')
+    fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
+    await waitFor(() => expect(getLastSigma()).toBeDefined())
+    const sigma = getLastSigma()!
+    selectGlobalScope()
+    expect(sigma.killed).toBe(true)
+    expect(screen.getByTestId('graph-canvas')).not.toBeVisible()
+    expect(screen.getByTestId('graph-loading')).toBeInTheDocument()
+    expect(screen.getByText('Loading graph…')).toBeInTheDocument()
+    expect(screen.queryByText(/148s/)).not.toBeInTheDocument()
   })
 
   it('shows a project empty state without sending an unscoped graph request', async () => {
@@ -193,10 +267,10 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     render(<MemoryPanel />)
     await screen.findByText('project-conventions')
     fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
-    await waitFor(() => expect(mockFetch.mock.calls.some(c => c[0] === '/graph/memory?scope=project&scope_id=large-proj')).toBe(true))
+    await waitFor(() => expect(mockFetch.mock.calls.some(c => c[0] === '/graph/memory?scope=project&scope_id=large-proj&mode=snapshot')).toBe(true))
     fireEvent.click(screen.getByLabelText('Memory project'))
     fireEvent.click(screen.getByRole('button', { name: 'small-proj 2 memories' }))
-    await waitFor(() => expect(mockFetch.mock.calls.some(c => c[0] === '/graph/memory?scope=project&scope_id=small-proj')).toBe(true))
+    await waitFor(() => expect(mockFetch.mock.calls.some(c => c[0] === '/graph/memory?scope=project&scope_id=small-proj&mode=snapshot')).toBe(true))
   })
 
   it('fetches + renders the graph for global scope with hub/orphan/contradiction styling', async () => {
@@ -214,7 +288,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     selectGlobalScope()
 
     await waitFor(() => expect(getLastSigma()).toBeDefined())
-    expect(graphUrl).toBe('/graph/memory?scope=global')
+    expect(graphUrl).toBe('/graph/memory?scope=global&mode=snapshot')
 
     const graph = getLastSigma()!.graph as import('graphology').default
     expect(graph.getNodeAttributes('hub1').size).toBe(12)
@@ -300,6 +374,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     expect(snack.message).toMatch(/Exported 1 note/)
     expect(snack.message).toContain('global-vault')
     expect(exportBody).toEqual({ options: {}, sink: 'obsidian', dest: 'global-vault' })
+    expect(mockFetch.mock.calls.some(c => c[0] === '/graph/memory/export?scope=global&mode=snapshot')).toBe(true)
   })
 
   it('dragging a node updates its x/y, toggles the camera, and does NOT read the memory', async () => {
@@ -404,7 +479,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
 
     await waitFor(() => expect(getLastSigma()).toBeDefined())
     // project → scope_id IS carried on the request.
-    expect(graphUrl).toBe('/graph/memory?scope=project&scope_id=my-proj')
+    expect(graphUrl).toBe('/graph/memory?scope=project&scope_id=my-proj&mode=snapshot')
   })
 
   it('switching project→global drops the stale scope_id (never rides along on global)', async () => {
@@ -424,7 +499,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'project' }))
     await waitFor(() => expect(graphUrls.some(u => u.includes('scope=project'))).toBe(true))
-    expect(graphUrls.some(u => u === '/graph/memory?scope=project&scope_id=my-proj')).toBe(true)
+    expect(graphUrls.some(u => u === '/graph/memory?scope=project&scope_id=my-proj&mode=snapshot')).toBe(true)
 
     // Now switch to global. graphScopeId ('my-proj') is still in state, but the
     // effectiveScopeId guard must OMIT it — global has no scope_id.
@@ -435,7 +510,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     const globalUrls = graphUrls.filter(u => u.includes('scope=global'))
     // Every global fetch is scope-only — no leaked project scope_id.
     for (const u of globalUrls) {
-      expect(u).toBe('/graph/memory?scope=global')
+      expect(u).toBe('/graph/memory?scope=global&mode=snapshot')
       expect(u).not.toContain('scope_id')
     }
   })
@@ -533,7 +608,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
           text: () => Promise.resolve(JSON.stringify(PROJECT_GRAPH)),
         }))
       }
-      if (u.startsWith('/graph/memory?scope=global')) {
+      if (u.startsWith('/graph/memory?scope=global&mode=snapshot')) {
         return Promise.resolve({ ok: true, status: 200, statusText: 'OK', json: () => Promise.resolve(GRAPH), text: () => Promise.resolve(JSON.stringify(GRAPH)) })
       }
       return Promise.resolve({ ok: true, status: 200, statusText: 'OK', json: () => Promise.resolve(MEMORIES), text: () => Promise.resolve(JSON.stringify(MEMORIES)) })
@@ -593,7 +668,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
           text: () => Promise.resolve(JSON.stringify({ detail: 'boom' })),
         }))
       }
-      if (u.startsWith('/graph/memory?scope=global')) {
+      if (u.startsWith('/graph/memory?scope=global&mode=snapshot')) {
         return Promise.resolve({ ok: true, status: 200, statusText: 'OK', json: () => Promise.resolve(GRAPH), text: () => Promise.resolve(JSON.stringify(GRAPH)) })
       }
       return Promise.resolve({ ok: true, status: 200, statusText: 'OK', json: () => Promise.resolve(MEMORIES), text: () => Promise.resolve(JSON.stringify(MEMORIES)) })
@@ -651,7 +726,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
           text: () => Promise.resolve(JSON.stringify(GRAPH)),
         }))
       }
-      if (u.startsWith('/graph/memory?scope=global')) {
+      if (u.startsWith('/graph/memory?scope=global&mode=snapshot')) {
         return globalGate
       }
       return Promise.resolve({ ok: true, status: 200, statusText: 'OK', json: () => Promise.resolve(MEMORIES), text: () => Promise.resolve(JSON.stringify(MEMORIES)) })

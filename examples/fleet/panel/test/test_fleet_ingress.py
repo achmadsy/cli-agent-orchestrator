@@ -16,6 +16,9 @@ def test_snippet_matches_helper_and_narrow_scope():
     assert ingress.POLICY.count('client_max_body_size 10m;') == 1
     assert 'proxy_pass $cao_fleet_backend;' in ingress.POLICY
     assert 'client_body_timeout 30s;' in ingress.POLICY
+    assert 'location = /auto-routing/sessions {' in ingress.POLICY
+    assert ingress.POLICY.count('client_max_body_size 56m;') == 1
+    assert 'proxy_read_timeout 180s;' in ingress.POLICY
     assert 'server_name' not in ingress.POLICY
     assert 'cloudflare' not in PATH.read_text().lower()
 

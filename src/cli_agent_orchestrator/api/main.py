@@ -1692,6 +1692,9 @@ class OriginCheckMiddleware:
 # Security: CSRF / Cross-Origin Request Forgery (CWE-352). See the middleware
 # docstring; the guard must sit INSIDE TrustedHostMiddleware's Host validation
 # (add_middleware stacks last-added outermost), hence it is registered first.
+from cli_agent_orchestrator.api.attachment_limits import AutoAttachmentBodyLimit
+
+app.add_middleware(AutoAttachmentBodyLimit)
 app.add_middleware(OriginCheckMiddleware)
 
 # Security: DNS Rebinding Protection
@@ -1732,7 +1735,7 @@ async def _redact_env_vars_validation_error(
         echoes_env_vars = "env_vars" in err.get("loc", ()) or (
             isinstance(err.get("input"), dict) and "env_vars" in err["input"]
         )
-        if echoes_env_vars:
+        if echoes_env_vars or request.url.path.rstrip("/") == "/auto-routing/sessions":
             err = {k: v for k, v in err.items() if k not in ("input", "ctx")}
         errors.append(err)
     return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
@@ -3911,6 +3914,11 @@ async def create_session(
             resume_session_id=resume_session_id,
             group=body.group if body else None,
             metadata=session_metadata or None,
+            **(
+                {"initial_attachments": request.state.initial_attachments}
+                if getattr(request.state, "initial_attachments", None) is not None
+                else {}
+            ),
         )
 
         if memory_manager and str(memory_manager).lower() in ("true", "1", "yes"):
@@ -3989,6 +3997,15 @@ async def create_session(
         )
 
 
+class AutoAttachmentBody(BaseModel):
+    """Original file bytes only; paths are generated exclusively by the server."""
+
+    model_config = {"extra": "forbid"}
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(default="application/octet-stream", max_length=150)
+    data_base64: str = Field(min_length=1, max_length=13981016)
+
+
 class AutoSessionBody(BaseModel):
     """Body for POST /auto-routing/sessions.
 
@@ -4000,6 +4017,7 @@ class AutoSessionBody(BaseModel):
     model_config = {"extra": "forbid"}
 
     initial_message: str = Field(min_length=1)
+    attachments: List[AutoAttachmentBody] = Field(default_factory=list, max_length=4)
     provider: Optional[str] = None
     provider_profile: Optional[str] = None
     session_name: Optional[str] = None
@@ -4046,8 +4064,6 @@ async def create_auto_session(
     and the account strategy are snapshotted into the supervisor's metadata.
     The prompt itself is never stored in metadata.
     """
-    from cli_agent_orchestrator.services.account_selector import select_provider_profile
-    from cli_agent_orchestrator.services.auto_router import classify_lane
     from cli_agent_orchestrator.services.settings_service import get_auto_routing_settings
 
     cfg = get_auto_routing_settings()
@@ -4056,6 +4072,54 @@ async def create_auto_session(
             status_code=status.HTTP_409_CONFLICT,
             detail="auto routing is disabled on this node (settings.json auto_routing.enabled)",
         )
+
+    batch = None
+    if body.attachments:
+        from cli_agent_orchestrator.services.terminal_attachment_service import (
+            AttachmentError,
+            store,
+        )
+
+        staging = asyncio.create_task(
+            asyncio.to_thread(lambda: store().stage_initial(body.attachments))
+        )
+
+        def discard_cancelled_staging(done: asyncio.Task) -> None:
+            # Native asyncio cancellation (including server shutdown) must not
+            # orphan a thread's completed batch. The shield lets it finish;
+            # this callback owns its result when the request no longer does.
+            if not done.cancelled() and done.exception() is None:
+                done.result().discard()
+
+        try:
+            batch = await asyncio.shield(staging)
+        except asyncio.CancelledError:
+            staging.add_done_callback(discard_cancelled_staging)
+            raise
+        except AttachmentError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+        except OSError:
+            raise HTTPException(503, "Attachment storage is unavailable.") from None
+        body.attachments.clear()
+        request.state.initial_attachments = batch
+    try:
+        return await _create_auto_session_staged(request, background_tasks, body, _scopes, cfg)
+    finally:
+        if batch is not None and batch.terminal_id is None:
+            batch.discard()
+        if hasattr(request.state, "initial_attachments"):
+            del request.state.initial_attachments
+
+
+async def _create_auto_session_staged(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    body: AutoSessionBody,
+    _scopes: List[str],
+    cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    from cli_agent_orchestrator.services.account_selector import select_provider_profile
+    from cli_agent_orchestrator.services.auto_router import classify_lane
 
     decision = await asyncio.to_thread(classify_lane, body.initial_message, cfg)
     # The form's provider wins over the lane default from Settings. A lane

@@ -12,6 +12,8 @@ import { TerminalMeta } from '../api'
 import { StatusBadge } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
 import type { TerminalLink } from '../terminalLink'
+import { encodeAttachments, validateAttachments } from '../attachments'
+import { PromptAttachments } from './PromptAttachments'
 
 export const FALLBACK_PROVIDERS = ['kiro_cli', 'claude_code', 'q_cli', 'codex', 'gemini_cli', 'hermes', 'kimi_cli', 'copilot_cli', 'opencode_cli', 'cursor_cli', 'grok_cli']
 
@@ -105,6 +107,17 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   const [switching, setSwitching] = useState(false)
   const [autoRoutingEnabled, setAutoRoutingEnabled] = useState(false)
   const [firstPrompt, setFirstPrompt] = useState('')
+  const [promptFiles, setPromptFiles] = useState<File[]>([])
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
+  const spawnGeneration = useRef(0)
+  useEffect(() => { return () => { spawnGeneration.current++ } }, [])
+  const addPromptFiles = (added: File[]) => {
+    if (creatingRef.current || !added.length) return
+    const next = [...promptFiles, ...added]
+    const error = validateAttachments(next)
+    setAttachmentError(error)
+    if (!error) setPromptFiles(next)
+  }
   // Auto (Jev) keeps its own provider choice. '' means "use the lane default
   // from Settings", so the form only overrides Settings when the user picks a CLI.
   const [autoProvider, setAutoProvider] = useState('')
@@ -248,6 +261,9 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
   }, [activeSessionDetail?.terminals.map(t => t.id).join(',')])
 
   const resetSpawnForm = () => {
+    spawnGeneration.current++
+    setPromptFiles([])
+    setAttachmentError(null)
     setProfile('')
     setWorkingDirectory('')
     setSessionName('')
@@ -260,9 +276,13 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
     if (creatingRef.current || !firstPrompt.trim()) return
     creatingRef.current = true
     setCreating(true)
+    const generation = spawnGeneration.current
     try {
+      const attachments = promptFiles.length ? await encodeAttachments(promptFiles) : undefined
+      if (generation !== spawnGeneration.current) return
       const result = await createAutoSession({
         initial_message: firstPrompt,
+        ...(attachments ? { attachments } : {}),
         // Omitted provider = the server uses the lane default from Settings.
         ...(autoProvider ? { provider: autoProvider } : {}),
         ...(autoProvider && providerProfile ? { provider_profile: providerProfile } : {}),
@@ -271,10 +291,12 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
       })
       // On failure the store already showed the error; keep the modal and the
       // typed prompt so the user can retry or switch to a manual profile.
-      if (result) {
+      if (result && generation === spawnGeneration.current) {
         setShowSpawnModal(false)
         resetSpawnForm()
       }
+    } catch (error) {
+      if (generation === spawnGeneration.current) setAttachmentError(error instanceof Error ? error.message : 'Could not prepare attachments.')
     } finally {
       setCreating(false)
       creatingRef.current = false
@@ -866,7 +888,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
       {/* Spawn Agent Modal */}
       {showSpawnModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowSpawnModal(false)} />
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { if (!creatingRef.current) { setShowSpawnModal(false); resetSpawnForm() } }} />
           <div className="relative bg-gray-800 border border-gray-700 rounded-2xl shadow-2xl shadow-black/50 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
             {/* Modal header */}
             <div className="flex items-center justify-between p-5 border-b border-gray-700/50">
@@ -877,7 +899,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                 </p>
               </div>
               <button
-                onClick={() => setShowSpawnModal(false)}
+                onClick={() => { if (!creatingRef.current) { setShowSpawnModal(false); resetSpawnForm() } }}
                 className="p-1.5 text-gray-500 hover:text-gray-300 transition-colors rounded-lg hover:bg-gray-700/50"
               >
                 <X size={18} />
@@ -948,6 +970,10 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                 <div>
                   <label htmlFor="spawn-first-prompt" className="block text-xs text-gray-500 mb-1">First prompt</label>
                   <textarea
+                    disabled={creating}
+                    onDragOver={event => { if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault() }}
+                    onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); addPromptFiles(Array.from(event.dataTransfer.files)) } }}
+                    onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); addPromptFiles(Array.from(event.clipboardData.files)) } }}
                     id="spawn-first-prompt"
                     value={firstPrompt}
                     onChange={e => setFirstPrompt(e.target.value)}
@@ -955,7 +981,9 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                     placeholder="Describe the task. Jev uses it to choose the supervisor lane."
                     className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg px-3 py-2.5 focus:border-emerald-500 focus:outline-none resize-y"
                   />
-                  <p className="mt-1 text-[11px] text-gray-600">Sent to Jev through 9router for classification, then delivered to the chosen supervisor as its first message.</p>
+                  <p className="mt-1 text-[11px] text-gray-600">Task text is sent to Jev through 9router for classification, then delivered with attachments to the chosen supervisor as its first message.</p>
+                  <PromptAttachments files={promptFiles} disabled={creating} onAdd={addPromptFiles} onRemove={index => { setPromptFiles(files => files.filter((_, i) => i !== index)); setAttachmentError(null) }} />
+                  {attachmentError && <p role="alert" className="mt-2 text-xs text-red-400">{attachmentError}</p>}
                 </div>
               )}
 
@@ -1083,7 +1111,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
             {/* Modal footer */}
             <div className="flex items-center justify-end gap-3 p-5 border-t border-gray-700/50">
               <button
-                onClick={() => setShowSpawnModal(false)}
+                onClick={() => { if (!creatingRef.current) { setShowSpawnModal(false); resetSpawnForm() } }}
                 className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
               >
                 Cancel

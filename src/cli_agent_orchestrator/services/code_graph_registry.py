@@ -184,8 +184,10 @@ def find_bindings(
     return matches
 
 
-def list_nodes(*, max_age_seconds: int = 180) -> List[Dict[str, Any]]:
-    """Every registered node, including nodes with no indexed projects."""
+def list_nodes(
+    *, max_age_seconds: int = 180, include_last_seen: bool = False
+) -> List[Dict[str, Any]]:
+    """Every registered node, optionally with its last reported snapshot time."""
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
     with SessionLocal() as db:
         return [
@@ -193,6 +195,7 @@ def list_nodes(*, max_age_seconds: int = 180) -> List[Dict[str, Any]]:
                 "node_id": node.node_id,
                 "base_url": node.base_url,
                 "online": bool(node.enabled and node.last_seen_at >= cutoff),
+                **({"last_seen_at": node.last_seen_at} if include_last_seen else {}),
             }
             for node in db.query(CodeGraphNodeModel).all()
         ]

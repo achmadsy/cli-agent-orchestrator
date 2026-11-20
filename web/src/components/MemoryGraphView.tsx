@@ -62,7 +62,11 @@ export function buildGraph(view: GraphView): Graph {
 export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
   const { showSnackbar } = useStore()
 
-  const [view, setView] = useState<GraphView | null>(null)
+  const scopeKey = `${scope}:${scope === 'project' ? scopeId : ''}`
+  const [snapshot, setSnapshot] = useState<{ key: string; data: GraphView } | null>(null)
+  // Never render the old scope even for the frame before its fetch effect runs.
+  const view = snapshot?.key === scopeKey ? snapshot.data : null
+  const setView = (data: GraphView | null) => setSnapshot(data ? { key: scopeKey, data } : null)
   const [loading, setLoading] = useState(false)
   // Inline error message shown in the canvas area (unreachable / timeout / bad
   // scope), distinct from the friendly scope-guard below.
@@ -134,13 +138,15 @@ export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
     setLoading(true)
     setError(null)
     try {
-      const data = await api.getGraph('memory', scope, effectiveScopeId)
+      const data = await api.getGraph('memory', scope, effectiveScopeId, 'snapshot')
       if (isStale()) return
       setView(data)
     } catch (e) {
       if (isStale()) return
       const err = e as ApiError
-      setView(null)
+      // A refresh failure may retain a same-scope graph as last-known data,
+      // but auth/feature/policy refusals must remove it.
+      if (!view || err.status === 400 || err.status === 401 || err.status === 403 || err.status === 404) setView(null)
       if (err.status === 400) {
         setError(err.detail || 'This scope cannot be viewed as a graph.')
       } else if (err.status === 404) {
@@ -148,14 +154,10 @@ export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
       } else if (err.status === 504 && err.kind === 'graph_projection_timeout') {
         const timeout = err.detailMeta?.timeout_s
         const timeoutText = typeof timeout === 'number' ? `${timeout}s` : 'the server limit'
-        setError(`Graph projection timed out on the server after ${timeoutText}. The CAO server stayed responsive; refresh to retry or disable memory lint enrichment.`)
+        setError(`Graph loading timed out on the server after ${timeoutText}. The CAO server stayed responsive; refresh to retry.`)
       } else if (err.name === 'AbortError') {
-        // The AbortController in api.ts fired after the 120s graph budget. The
-        // wiki-lint projection is ~30s typical / up to ~148s under load, so a
-        // full timeout usually means the CAO server is stuck or down rather
-        // than merely slow.
         setError(
-          'Graph fetch timed out (waited 120s). The wiki-lint projection is ~30s typical, up to ~148s under load, so a full timeout usually means the CAO server is stuck or down. In dev the UI proxies to cao-server on :9889 — check it’s running (uv run cao-server), then Refresh.',
+          'Graph fetch timed out (waited 120s). Loading saved relationships should not run a full audit. Check the CAO server connection on :9889, then Refresh.',
         )
       } else if (err.status === undefined) {
         // No HTTP status = the fetch never reached a server (connection
@@ -187,6 +189,7 @@ export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
       setView(null)
       setError(null)
     }
+    return () => { fetchSeqRef.current++ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, scopeId])
 
@@ -288,7 +291,7 @@ export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
       // dest is a RELATIVE vault name; the server confines it under
       // CAO_GRAPH_EXPORT_ROOT. Never send an absolute path.
       const dest = `${scope}-vault`
-      const res = await api.exportGraph('memory', { sink: 'obsidian', dest }, scope, effectiveScopeId)
+      const res = await api.exportGraph('memory', { sink: 'obsidian', dest }, scope, effectiveScopeId, 'snapshot')
       const n = res.written_files.length
       const first = n ? ` (${res.written_files[0]})` : ''
       showSnackbar({
@@ -343,7 +346,7 @@ export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
             onClick={fetchGraph}
             disabled={loading}
             className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-200 text-sm font-medium px-3 py-2 rounded-lg transition-colors"
-            title="Rebuild the graph"
+            title="Reload saved relationships"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             Refresh
@@ -359,9 +362,12 @@ export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
           </button>
         </div>
       </div>
+      {view?.meta.projection_mode === 'snapshot' && <p className="mb-3 text-xs text-gray-400">Saved relationships{typeof view.meta.as_of === 'string' ? ` · loaded ${new Date(view.meta.as_of).toLocaleString()}` : ''}. No new contradiction audit runs when opening this graph.</p>}
+      {loading && hasGraph && <p role="status" className="mb-3 text-xs text-gray-400">Refreshing saved relationships…</p>}
+      {error && hasGraph && <p role="alert" className="mb-3 text-xs text-red-400">{error} Showing the last successfully loaded graph.</p>}
       {lintDisabled ? (
         <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-          Memory lint enrichment is disabled; this graph shows related-key topology only.
+          Memory lint enrichment is disabled; this graph shows saved relationships without orphan or hub analysis.
         </div>
       ) : null}
 
@@ -369,13 +375,13 @@ export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
       <div className="flex gap-4 h-[600px]">
         {/* Canvas area */}
         <div className="relative flex-1 min-w-0 bg-gray-950/60 border border-gray-700/30 rounded-lg overflow-hidden">
-          {loading ? (
+          {loading && !hasGraph ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6" data-testid="graph-loading">
               <RefreshCw size={26} className="text-emerald-500 animate-spin mb-3" />
-              <p className="text-gray-300 text-sm">Building graph…</p>
-              <p className="text-gray-500 text-xs mt-1">This can take ~30s (up to ~148s under load) — the server runs wiki-lint detectors.</p>
+              <p className="text-gray-300 text-sm">Loading graph…</p>
+              <p className="text-gray-500 text-xs mt-1">Reading saved relationships and memory topology.</p>
             </div>
-          ) : error ? (
+          ) : error && !hasGraph ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6" data-testid="graph-error">
               <X size={28} className="text-red-500 mb-3" />
               <p className="text-red-400 text-sm">{error}</p>
@@ -390,9 +396,9 @@ export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
               </p>
             </div>
           ) : null}
-          {/* Canvas is always mounted (but empty until Sigma attaches) so the
-              ref exists for the mount effect. Overlays above cover it. */}
-          <div ref={containerRef} data-testid="graph-canvas" className="absolute inset-0" />
+          {/* Keep the ref mounted, but hide stale canvas pixels immediately on
+              scope change, before the effect tears down the previous renderer. */}
+          <div ref={containerRef} data-testid="graph-canvas" className="absolute inset-0" style={{ visibility: hasGraph ? 'visible' : 'hidden' }} />
         </div>
 
         {/* Side panel: click-to-read. Content renders as PLAIN TEXT only —

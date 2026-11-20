@@ -67,11 +67,15 @@ export function CodeGraphPanel() {
     {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
     {loading && <p role="status" className="text-gray-400 text-sm">Loading code indexes…</p>}
     {overview && <>
+      <p className="text-xs text-gray-400">Latest reported snapshot; fleet heartbeats update it automatically. Refresh rereads saved reports without scanning repositories.</p>
+      {overview.nodes.length > 0 && <ul className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-gray-400" aria-label="Fleet reports">
+        {overview.nodes.map(n => <li key={n.node_id}>{n.node_id}: {n.online ? 'Online' : 'Offline'} — {n.last_seen_at ? <>last reported <time dateTime={n.last_seen_at}>{new Date(n.last_seen_at).toLocaleString()}</time></> : 'report time unknown'}</li>)}
+      </ul>}
       <CustomSelect value={node} onChange={setNode} ariaLabel="Code graph node" className="w-64" options={[
         { value: '', label: 'All nodes' },
         ...overview.nodes.map(n => ({ value: n.node_id, label: `${n.node_id} (${n.online ? 'Online' : 'Offline'})` })),
       ]} />
-      {shown.length === 0 ? <p className="text-gray-400 text-sm py-6">No code indexes registered{node ? ' on this node' : ''}. A permitted agent query can index its repository automatically; this page never starts indexing.</p> :
+      {shown.length === 0 ? <p className="text-gray-400 text-sm py-6">No code indexes registered{node ? ' on this node' : ''}. Waiting for fleet reports if this server just started. A permitted agent query can index its repository automatically; this page never starts indexing.</p> :
         <div className="overflow-x-auto border border-gray-700 rounded-lg">
           <table className="w-full text-sm text-left">
             <caption className="sr-only">Code indexes by repository and fleet node</caption>

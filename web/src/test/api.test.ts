@@ -377,6 +377,21 @@ describe('API wrapper', () => {
     )
   })
 
+  it('requests the same snapshot mode for graph display and export', async () => {
+    mockResponse({ nodes: [], edges: [], meta: {} })
+    await api.getGraph('memory', 'project', 'my/proj', 'snapshot')
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/graph/memory?scope=project&scope_id=my%2Fproj&mode=snapshot',
+      expect.any(Object),
+    )
+    mockResponse({ written_files: [], sink: 'obsidian', dest: 'vault' })
+    await api.exportGraph('memory', { sink: 'obsidian', dest: 'vault' }, 'project', 'my/proj', 'snapshot')
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      '/graph/memory/export?scope=project&scope_id=my%2Fproj&mode=snapshot',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
   it('getGraph omits scope_id when not given', async () => {
     mockResponse({ nodes: [], edges: [], meta: {} })
     await api.getGraph('memory', 'global')

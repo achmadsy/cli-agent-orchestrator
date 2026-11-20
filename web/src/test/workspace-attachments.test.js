@@ -23,6 +23,20 @@ function setup(responses){
 const error=(status,detail,type='application/json')=>new Response(type==='application/json'?JSON.stringify({detail}):detail,{status,headers:{'content-type':type}})
 const ok=data=>new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}})
 describe('attachment upload failures',()=>{
+ it('documents use a file card and insert only after confirmation',async()=>{
+  const t=setup([ok({id:'doc'}),ok({path:'/private/doc.data.pdf'})])
+  t.w.caoAttachFiles([new t.w.File(['%PDF-fixture'],'report.pdf',{type:'application/pdf'})]);await flush()
+  expect(t.w.document.querySelector('dialog img')).toBeNull()
+  expect(t.w.document.querySelector('dialog').textContent).toContain('report.pdf')
+  expect(t.w.fetch.mock.calls[0][1].headers['X-CAO-Filename']).toBe('report.pdf')
+  expect(t.w.caoPasteText).not.toHaveBeenCalled()
+  t.button('Insert path').click();await flush()
+  expect(t.w.caoPasteText).toHaveBeenCalledExactlyOnceWith('/private/doc.data.pdf ',{pane:'%1',socket:1})
+  expect(t.w.URL.revokeObjectURL).not.toHaveBeenCalled();t.w.close()
+ })
+ it('the old image hook remains a compatibility alias',()=>{
+  const t=setup([]);expect(t.w.caoAttachFiles).toBe(t.w.caoAttachImages);t.w.close()
+ })
  it('preserves safe CAO JSON 413 and never inserts a path',async()=>{
   const t=setup([error(413,'Image exceeds 10 MiB')]);t.attach();await flush()
   expect(t.note()).toBe('Image exceeds 10 MiB');expect(t.button('Insert path').disabled).toBe(true)
@@ -41,7 +55,7 @@ describe('attachment upload failures',()=>{
  }
  it('bounds and type-checks error details',async()=>{
   const t=setup([error(409,{unexpected:'object'})]);t.attach();await flush()
-  expect(t.note()).toContain('Image request failed (409)');t.w.close()
+  expect(t.note()).toContain('File request failed (409)');t.w.close()
  })
  it('retry is explicit, confirm is explicit, insertion never submits',async()=>{
   const t=setup([error(413,'limit','text/html'),ok({id:'a'}),ok({path:'/private/a.png'})]);t.attach();await flush()

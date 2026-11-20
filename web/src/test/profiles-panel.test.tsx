@@ -87,6 +87,19 @@ describe('Profiles tab navigation (stage 1)', () => {
     expect(agents).toBe(profiles + 1)
   })
 
+  it('renders Code graph immediately after Memory and before Workflows', async () => {
+    vi.stubGlobal('fetch', routedFetch({
+      '/settings/memory': () => okJson({ enabled: true }),
+    }))
+    render(<App />)
+    const memory = await screen.findByRole('tab', { name: 'Memory' })
+    const tabs = within(screen.getByRole('tablist', { name: 'CAO sections' })).getAllByRole('tab')
+    const index = tabs.indexOf(memory)
+    expect(tabs[index + 1]).toHaveAccessibleName('Code graph')
+    expect(tabs[index + 2]).toHaveAccessibleName('Workflows')
+    expect(tabs[index + 1]).toHaveAttribute('title', 'Alt+7')
+  })
+
   it('opens the Profiles panel when the tab is clicked', async () => {
     render(<App />)
     fireEvent.click(screen.getByRole('tab', { name: /profiles/i }))

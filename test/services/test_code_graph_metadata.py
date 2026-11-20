@@ -160,7 +160,7 @@ async def test_overview_hides_paths_and_legacy_heartbeat_dates(registry_db, monk
     )
 
     async def no_refresh():
-        return None
+        raise AssertionError("browser overview must not rediscover repositories")
 
     monkeypatch.setattr(coordinator, "refresh_local_registry", no_refresh)
     data = await gateway.code_graph_overview()
@@ -170,6 +170,44 @@ async def test_overview_hides_paths_and_legacy_heartbeat_dates(registry_db, monk
     assert rows["old"]["indexed_at"] is None
     assert "root_path" not in str(data) and "base_url" not in str(data)
     assert "/private" not in str(data)
+    assert all(n["last_seen_at"] > STAMP for n in data["nodes"])
+    assert data["snapshot_source"] == "heartbeat_registry"
+
+
+@pytest.mark.asyncio
+async def test_browser_overview_empty_and_stale_registry_never_run_discovery(
+    registry_db, monkeypatch
+):
+    from datetime import timedelta
+
+    monkeypatch.delenv("CAO_CODEBASE_API_URL", raising=False)
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("discovery on browser read")
+
+    monkeypatch.setattr(coordinator, "refresh_local_registry", forbidden)
+    monkeypatch.setattr(gateway, "list_code_graph_projects", forbidden)
+    empty = await gateway.code_graph_overview()
+    assert empty["nodes"] == [] and empty["projects"] == []
+    registry.upsert_heartbeat(CodeGraphHeartbeat(node_id="stale"), "http://private:9889")
+    with registry.SessionLocal.begin() as db:
+        db.get(registry.CodeGraphNodeModel, "stale").last_seen_at = datetime.now(
+            timezone.utc
+        ) - timedelta(seconds=181)
+    stale = await gateway.code_graph_overview()
+    assert stale["nodes"][0]["online"] is False
+    assert stale["nodes"][0]["last_seen_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_browser_overview_forwarding_uses_snapshot_route(monkeypatch):
+    monkeypatch.setenv("CAO_CODEBASE_API_URL", "http://coordinator:9889")
+    calls = []
+    monkeypatch.setattr(
+        gateway, "_request", lambda *args: calls.append(args) or {"nodes": [], "projects": []}
+    )
+    await gateway.code_graph_overview()
+    assert calls == [("http://coordinator:9889", "/code-graph/projects")]
 
 
 @pytest.mark.asyncio

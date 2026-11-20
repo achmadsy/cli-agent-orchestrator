@@ -82,6 +82,39 @@ describe('AgentPanel Auto (Jev) option', () => {
     expect(within(menu).queryByText('Auto (Jev)')).not.toBeInTheDocument()
   })
 
+  it('attaches original document bytes and retains the task/files when launch fails', async () => {
+    vi.mocked(api.getAutoRoutingStatus).mockResolvedValue({ enabled: true, router_model: 'm' })
+    mocks.createAutoSession.mockResolvedValue(null)
+    await openProfileMenu()
+    fireEvent.click(await screen.findByText('Auto (Jev)'))
+    const prompt = await screen.findByLabelText('First prompt')
+    fireEvent.change(prompt, { target: { value: 'inspect this PDF' } })
+    const file = new File(['%PDF-fixture'], 'report.pdf', { type: 'application/pdf' })
+    fireEvent.change(screen.getByLabelText('Attach files to first prompt'), { target: { files: [file] } })
+    expect(screen.getByLabelText('Prompt attachments')).toHaveTextContent('report.pdf')
+    fireEvent.click(spawnButton())
+    await waitFor(() => expect(mocks.createAutoSession).toHaveBeenCalledTimes(1))
+    expect(mocks.createAutoSession.mock.calls[0][0]).toMatchObject({ initial_message: 'inspect this PDF', attachments: [{ filename: 'report.pdf', content_type: 'application/pdf', data_base64: btoa('%PDF-fixture') }] })
+    await waitFor(() => expect(spawnButton()).toBeEnabled())
+    expect(prompt).toHaveValue('inspect this PDF')
+    fireEvent.click(screen.getByLabelText('Remove attachment report.pdf'))
+    expect(screen.queryByLabelText('Prompt attachments')).not.toBeInTheDocument()
+  })
+
+  it('accepts document drops and rejects a fifth pending attachment', async () => {
+    vi.mocked(api.getAutoRoutingStatus).mockResolvedValue({ enabled: true, router_model: 'm' })
+    await openProfileMenu()
+    fireEvent.click(await screen.findByText('Auto (Jev)'))
+    const prompt = await screen.findByLabelText('First prompt')
+    const files = Array.from({ length: 4 }, (_, i) => new File(['text'], `note-${i}.txt`, { type: 'text/plain' }))
+    fireEvent.drop(prompt, { dataTransfer: { files } })
+    expect(screen.getByLabelText('Prompt attachments').querySelectorAll('li')).toHaveLength(4)
+    fireEvent.paste(prompt, { clipboardData: { files: [new File(['extra'], 'extra.txt')] } })
+    expect(screen.getByRole('alert')).toHaveTextContent('up to four')
+    expect(screen.getByLabelText('Prompt attachments').querySelectorAll('li')).toHaveLength(4)
+    expect(spawnButton()).toBeDisabled() // typed task is still required
+  })
+
   it('requires a first prompt and launches through createAutoSession only', async () => {
     vi.mocked(api.getAutoRoutingStatus).mockResolvedValue({ enabled: true, router_model: 'm' })
     mocks.createAutoSession.mockResolvedValue({

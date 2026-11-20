@@ -21,17 +21,9 @@ import { Bot, Home, Clock, Settings, Brain, Workflow, FolderTree, Puzzle, CheckC
 
 type TabKey = 'home' | 'profiles' | 'agents' | 'flows' | 'settings' | 'memory' | 'workflows' | 'plugins' | 'providerProfiles' | 'quota' | 'workspaceMcp' | 'codeGraph'
 
-// Profiles sits between Home and Agents (#510): browsing/authoring profiles
-// precedes launching agents, and AgentPanel stays the launch picker. This was
-// a one-time Alt+N renumbering of the tabs after it; Workflows + Memory remain
-// appended last (Memory is conditional, so keeping it last stops the numbering
-// of the always-visible tabs shifting with the memory backend's status).
-//
-// Plugins is appended after them, always. Alt+N numbers the VISIBLE tabs in
-// array order, so inserting anywhere but the end renumbers every shortcut after
-// the insertion point — which is why Memory, then Workflows, then Plugins each
-// went last rather than into a "logical" slot. (Agent Plugins, not the
-// event-plugin system — see docs/agent-plugins.md.)
+// Profiles stays between Home and Agents (#510). Keep Code graph immediately
+// after Memory so the two knowledge views are adjacent. Alt+N follows visible
+// tab order; Memory and Plugins are conditional.
 const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: 'home', label: 'Home', icon: <Home size={16} /> },
   { key: 'profiles', label: 'Profiles', icon: <Package size={16} /> },
@@ -39,12 +31,12 @@ const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: 'flows', label: 'Flows', icon: <Clock size={16} /> },
   { key: 'settings', label: 'Settings', icon: <Settings size={16} /> },
   { key: 'memory', label: 'Memory', icon: <Brain size={16} /> },
+  { key: 'codeGraph', label: 'Code graph', icon: <FolderTree size={16} /> },
   { key: 'workflows', label: 'Workflows', icon: <Workflow size={16} /> },
   { key: 'workspaceMcp', label: 'Workspace MCP', icon: <FolderTree size={16} /> },
   { key: 'plugins', label: 'Plugins', icon: <Puzzle size={16} /> },
   { key: 'providerProfiles', label: 'Accounts', icon: <KeyRound size={16} /> },
   { key: 'quota', label: 'Quota', icon: <Gauge size={16} /> },
-  { key: 'codeGraph', label: 'Code graph', icon: <FolderTree size={16} /> },
 ]
 
 function Snackbar() {

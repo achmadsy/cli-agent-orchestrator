@@ -4,7 +4,7 @@ import { api } from '../api'
 import { CodeGraphPanel } from '../components/CodeGraphPanel'
 
 const overview = {
-  nodes: [{ node_id: 'node-a', online: true }, { node_id: 'node-b', online: false }],
+  nodes: [{ node_id: 'node-a', online: true, last_seen_at: '2026-11-20T12:00:00Z' }, { node_id: 'node-b', online: false }],
   projects: [{ node_id: 'node-a', logical_project: 'repo-id', native_project: 'native-repo', display_name: 'example/repo', online: true, available: true, branch: 'main', head_sha: '123456789', dirty: true, indexed_at: '2026-11-18T18:37:41Z', node_count: 100, edge_count: 240, stale: true, commits_since_index: 3 }],
 }
 
@@ -20,6 +20,8 @@ describe('CodeGraphPanel', () => {
     expect(screen.getByText('100')).toBeInTheDocument()
     expect(screen.getByTitle('2026-11-18T18:37:41Z')).toHaveAttribute('datetime', '2026-11-18T18:37:41Z')
     expect(search).not.toHaveBeenCalled()
+    expect(screen.getByText(/Latest reported snapshot/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Fleet reports').querySelector('time')).toHaveAttribute('datetime', '2026-11-20T12:00:00Z')
     fireEvent.change(screen.getByLabelText('Symbol query'), { target: { value: 'run' } })
     fireEvent.click(screen.getByRole('button', { name: 'Search' }))
     expect(await screen.findByText('repo.run')).toBeInTheDocument()
@@ -30,6 +32,14 @@ describe('CodeGraphPanel', () => {
     vi.spyOn(api, 'getCodeGraphProjects').mockResolvedValue({ ...overview, projects: [{ ...overview.projects[0], indexed_at: null, node_count: null, edge_count: null, stale: null, commits_since_index: null }] })
     render(<CodeGraphPanel />)
     expect(await screen.findAllByText('Unknown')).toHaveLength(4)
+  })
+
+  it('returns an honest empty state while waiting for the first heartbeat', async () => {
+    const get = vi.spyOn(api, 'getCodeGraphProjects').mockResolvedValue({ nodes: [], projects: [], snapshot_source: 'heartbeat_registry' })
+    render(<CodeGraphPanel />)
+    expect(await screen.findByText(/Waiting for fleet reports if this server just started/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
   })
 
   it('explains the disabled feature', async () => {

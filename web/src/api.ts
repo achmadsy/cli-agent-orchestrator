@@ -155,6 +155,7 @@ export interface AutoRoutingRoutes {
 
 export interface AutoSessionRequest {
   initial_message: string
+  attachments?: { filename: string; content_type: string; data_base64: string }[]
   provider?: string
   provider_profile?: string
   session_name?: string
@@ -382,8 +383,9 @@ export interface CodeGraphProject {
 }
 
 export interface CodeGraphOverview {
-  nodes: { node_id: string; online: boolean }[]
+  nodes: { node_id: string; online: boolean; last_seen_at?: string | null }[]
   projects: CodeGraphProject[]
+  snapshot_source?: 'heartbeat_registry'
 }
 
 export interface CodeGraphSearchResult {
@@ -966,7 +968,7 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
-      timeoutMs: 90000,
+      timeoutMs: request.attachments?.length ? 180000 : 90000,
     },
   ),
   deleteSession: async (name: string) => {
@@ -1084,24 +1086,24 @@ export const api = {
   clearMemories: (scope: string, scopeId?: string) =>
     fetchJSON<{ success: boolean; deleted_count: number }>(`/memory?scope=${encodeURIComponent(scope)}${scopeId ? `&scope_id=${encodeURIComponent(scopeId)}` : ''}`, { method: 'DELETE' }),
 
-  // Graph (Issue #348). The projection runs wiki_lint (ripgrep detectors)
-  // server-side, so both routes get a wide timeout — a populated scope can take
-  // ~30s typical, up to ~148s under load. Errors surface as ApiError (status +
-  // server detail) for the caller.
-  getGraph: (provider = 'memory', scope?: string, scopeId?: string) => {
+  // Snapshot mode reads saved topology; the default retains full-audit
+  // compatibility for other consumers. Export must use the same mode as display.
+  getGraph: (provider = 'memory', scope?: string, scopeId?: string, mode?: 'snapshot') => {
     const params = [
       scope ? `scope=${encodeURIComponent(scope)}` : '',
       scopeId ? `scope_id=${encodeURIComponent(scopeId)}` : '',
+      mode ? `mode=${mode}` : '',
     ].filter(Boolean).join('&')
     return fetchJSON<GraphView>(
       `/graph/${encodeURIComponent(provider)}${params ? `?${params}` : ''}`,
       { timeoutMs: 120000 },
     )
   },
-  exportGraph: (provider = 'memory', body: GraphExportBody, scope?: string, scopeId?: string) => {
+  exportGraph: (provider = 'memory', body: GraphExportBody, scope?: string, scopeId?: string, mode?: 'snapshot') => {
     const params = [
       scope ? `scope=${encodeURIComponent(scope)}` : '',
       scopeId ? `scope_id=${encodeURIComponent(scopeId)}` : '',
+      mode ? `mode=${mode}` : '',
     ].filter(Boolean).join('&')
     return fetchJSON<GraphExportResult>(
       `/graph/${encodeURIComponent(provider)}/export${params ? `?${params}` : ''}`,

@@ -107,6 +107,7 @@ class TestCreateTerminal:
     @patch("cli_agent_orchestrator.services.terminal_service.generate_session_name")
     @patch("cli_agent_orchestrator.services.terminal_service.generate_terminal_id")
     @patch("cli_agent_orchestrator.services.terminal_service.agent_profiles.load_agent_profile")
+    @pytest.mark.parametrize("with_attachments", [False, True])
     async def test_create_terminal_forwards_deferred_launch_payload(
         self,
         mock_load_profile,
@@ -121,6 +122,7 @@ class TestCreateTerminal:
         mock_status_monitor,
         mock_schedule_deferred_init,
         mock_delete_terminals_by_session,
+        with_attachments,
     ):
         """The real terminal layer sends the model to provider construction and
         the first task to the established deferred-init scheduler."""
@@ -144,6 +146,8 @@ class TestCreateTerminal:
             assert terminal_service._is_deferred_init_external_owner_active("test1234")
 
         mock_db_create.side_effect = assert_external_owner_fenced_before_insert
+        batch = MagicMock() if with_attachments else None
+        attachment_kwargs = {"initial_attachments": batch} if batch is not None else {}
 
         result = await create_terminal(
             "codex",
@@ -153,6 +157,7 @@ class TestCreateTerminal:
             initial_message="Review the current change",
             initial_message_orchestration_type=OrchestrationType.SEND_MESSAGE,
             model="gpt-5.1-codex",
+            **attachment_kwargs,
         )
 
         assert result.status == TerminalStatus.UNKNOWN
@@ -170,7 +175,10 @@ class TestCreateTerminal:
             None,
             initial_caller_id=None,
             delete_on_failure=False,
+            **attachment_kwargs,
         )
+        if batch is not None:
+            batch.claim.assert_called_once_with("test1234")
         # The scheduler is mocked in this test, so create_terminal releases the
         # process-local fence instead of leaking it into later tests.
         assert not terminal_service._is_deferred_init_external_owner_active("test1234")

@@ -80,8 +80,12 @@ async def code_graph_overview() -> Dict[str, Any]:
     base_url = remote_code_graph_url()
     if base_url:
         return await asyncio.to_thread(_request, base_url, "/code-graph/projects")
-    payload = await list_code_graph_projects()
-    from cli_agent_orchestrator.services.code_graph_registry import list_nodes
+    from cli_agent_orchestrator.services.code_graph_registry import list_bindings, list_nodes
+
+    # Heartbeats and completed index jobs already persist this snapshot. A page
+    # view must not rerun CBM discovery and Git inspection before showing it.
+    bindings = await asyncio.to_thread(list_bindings)
+    nodes = await asyncio.to_thread(list_nodes, include_last_seen=True)
 
     fields = (
         "node_id",
@@ -101,14 +105,18 @@ async def code_graph_overview() -> Dict[str, Any]:
         "commits_since_index",
     )
     projects = []
-    for binding in payload["projects"]:
+    for binding in bindings:
         row = {key: binding.get(key) for key in fields}
         if row["node_count"] is None:
             row["indexed_at"] = None
         projects.append(row)
     return {
         "projects": projects,
-        "nodes": [{"node_id": n["node_id"], "online": n["online"]} for n in list_nodes()],
+        "nodes": [
+            {"node_id": n["node_id"], "online": n["online"], "last_seen_at": n["last_seen_at"]}
+            for n in nodes
+        ],
+        "snapshot_source": "heartbeat_registry",
     }
 
 

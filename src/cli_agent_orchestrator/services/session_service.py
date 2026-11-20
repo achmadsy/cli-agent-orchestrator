@@ -77,6 +77,7 @@ async def create_session(
     resume_session_id: str | None = None,
     group: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    initial_attachments: Any = None,
 ) -> Terminal:
     """Create a new session by creating its initial terminal.
 
@@ -137,6 +138,7 @@ async def create_session(
         resume_session_id=resume_session_id,
         group=group,
         metadata=metadata,
+        **({"initial_attachments": initial_attachments} if initial_attachments is not None else {}),
     )
     dispatch_plugin_event(
         registry,

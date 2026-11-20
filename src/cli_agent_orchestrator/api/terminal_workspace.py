@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import re
+from urllib.parse import unquote
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket
@@ -98,7 +99,7 @@ async def revoke(viewer_id: str, request: Request):
 def _upload_origin(request: Request) -> None:
     _request_gate(request)
     if not request.headers.get("origin"):
-        raise HTTPException(403, "Image upload requires a same-origin browser request")
+        raise HTTPException(403, "File upload requires a same-origin browser request")
 
 
 async def attachment_write_access(viewer_id: str, request: Request) -> service.Viewer:
@@ -115,8 +116,19 @@ async def attachment_write_access(viewer_id: str, request: Request) -> service.V
 async def upload_image(viewer_id: str, request: Request,
                        viewer: service.Viewer = Depends(attachment_write_access)):
     content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
-    if content_type not in {v[1] for v in attachments.FORMATS.values()}:
-        raise HTTPException(415, "Use PNG, JPEG or WebP")
+    encoded_name = request.headers.get("x-cao-filename")
+    filename = None
+    if encoded_name is not None:
+        try:
+            if len(encoded_name) > 1024:
+                raise attachments.AttachmentError("Attachment filename is too long.")
+            filename = attachments.validate_filename(unquote(encoded_name, errors="strict"))
+        except (UnicodeError, attachments.AttachmentError) as exc:
+            raise HTTPException(400, "Invalid attachment filename.") from exc
+    elif content_type not in {v[1] for v in attachments.FORMATS.values()}:
+        raise HTTPException(
+            415, "Provide a filename for documents; use PNG, JPEG or WebP for images."
+        )
     item = None
     store = None
     published = False
@@ -131,10 +143,12 @@ async def upload_image(viewer_id: str, request: Request,
                 async for chunk in request.stream():
                     size += len(chunk)
                     if size > attachments.MAX_IMAGE:
-                        raise attachments.AttachmentError("Image exceeds 10 MiB", 413)
+                        raise attachments.AttachmentError("File exceeds 10 MiB", 413)
                     await anyio.to_thread.run_sync(stream.write, chunk)
         async with attachments._decode_slots:
-            extension = await anyio.to_thread.run_sync(attachments.verify_image, store.root / (item.id + ".part"), content_type)
+            extension = await anyio.to_thread.run_sync(
+                attachments.verify_file, store.root / (item.id + ".part"), content_type, filename
+            )
         await asyncio.to_thread(attachments.shared_filesystem, viewer.target, store.root, store.fd)
         # Look up the capability again: an upload can outlive viewer revocation,
         # not merely its token/target validation performed before streaming.
@@ -147,7 +161,7 @@ async def upload_image(viewer_id: str, request: Request,
     except service.WorkspaceUnavailable as exc:
         raise HTTPException(401, str(exc)) from exc
     except TimeoutError as exc:
-        raise HTTPException(408, "Image upload timed out") from exc
+        raise HTTPException(408, "File upload timed out") from exc
     finally:
         if item is not None and not published and store is not None:
             store.discard(item)

@@ -1,8 +1,8 @@
-/* Lease-scoped browser image upload. Preview -> explicit path insertion, no Enter. */
+/* Lease-scoped browser file upload. Preview -> explicit path insertion, no Enter. */
 (() => {
   const toolbar = document.querySelector('.quick-actions');
-  const chooser = document.createElement('input'); chooser.id = 'cao-image-picker'; chooser.type = 'file'; chooser.accept = 'image/png,image/jpeg,image/webp'; chooser.multiple = true; chooser.hidden = true;
-  const button = document.createElement('button'); button.type = 'button'; button.className = 'ek cao-clipboard-button'; button.textContent = 'Attach'; button.setAttribute('aria-label', 'Attach image');
+  const chooser = document.createElement('input'); chooser.id = 'cao-image-picker'; chooser.type = 'file'; chooser.accept = '*/*'; chooser.multiple = true; chooser.hidden = true;
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'ek cao-clipboard-button'; button.textContent = 'Attach'; button.setAttribute('aria-label', 'Attach files');
   button.onclick = () => chooser.click(); toolbar.append(button, chooser);
   const base = location.pathname.replace(/\/+$/, '');
   const active = new Set();
@@ -22,20 +22,24 @@
       // Never display proxy HTML. A proxy can reject even a valid <=10 MiB
       // image before CAO sees it, so do not mislabel that as a client-size error.
       const fallback = r.status === 413
-        ? 'Upload blocked by the server request limit. Images may be up to 10 MiB; the server upload limit needs checking.'
-        : `Image request failed (${r.status}). Retry or reopen the terminal.`;
+        ? 'Upload blocked by the server request limit. Files may be up to 10 MiB; the server upload limit needs checking.'
+        : `File request failed (${r.status}). Retry or reopen the terminal.`;
       throw Error(detail || fallback);
     }
     return r.status === 204 ? null : r.json();
   }
   async function attach(file) {
-    if (active.size >= 4) { message('Attach up to four pending images.'); return; }
-    if (!['image/png','image/jpeg','image/webp'].includes(file.type) || file.size > 10*1024*1024) { message('Use PNG, JPEG or WebP up to 10 MiB.'); return; }
-    const c = current(); if (!valid(c)) { message('Connect to the terminal before attaching an image.'); return; }
+    if (active.size >= 4) { message('Attach up to four pending files.'); return; }
+    const image = file.type.startsWith('image/');
+    if ((image && !['image/png','image/jpeg','image/webp'].includes(file.type)) || !file.size || file.size > 10*1024*1024) { message('Use files up to 10 MiB; images must be PNG, JPEG or WebP.'); return; }
+    const c = current(); if (!valid(c)) { message('Connect to the terminal before attaching a file.'); return; }
     const abort = new AbortController(); let ident, closed = false, confirmed = false;
     const dialog = document.createElement('dialog'); dialog.className = 'cao-paste-dialog cao-image-dialog';
-    const title = document.createElement('h2'); title.textContent = 'Attach image';
-    const preview = document.createElement('img'); const url = URL.createObjectURL(file); preview.src = url; preview.alt = 'Selected image preview';
+    const title = document.createElement('h2'); title.textContent = 'Attach files';
+    const preview = document.createElement(image ? 'img' : 'p');
+    const url = image ? URL.createObjectURL(file) : null;
+    if (url) { preview.src = url; preview.alt = 'Selected image preview'; }
+    else preview.textContent = `${file.name} · ${file.type || 'file'} · ${file.size.toLocaleString()} bytes`;
     const note = document.createElement('p'); note.textContent = 'Uploading…';
     const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.onclick = () => dialog.close();
     const insert = document.createElement('button'); insert.textContent = 'Insert path'; insert.disabled = true;
@@ -43,7 +47,7 @@
     const token = {close: () => dialog.close()}; active.add(token);
     dialog.append(title, preview, note, cancel, insert, retry); document.body.append(dialog);
     dialog.addEventListener('close', () => {
-      closed = true; abort.abort(); URL.revokeObjectURL(url); active.delete(token); dialog.remove();
+      closed = true; abort.abort(); if (url) URL.revokeObjectURL(url); active.delete(token); dialog.remove();
       if (ident && !confirmed) request('/'+ident, {method:'DELETE'}).catch(()=>{});
     });
     dialog.showModal();
@@ -56,13 +60,13 @@
         confirmed = true;
         if (document.getElementById('app').classList.contains('cao-direct-active')) {
           if (!window.caoPasteText(info.path+' ', {pane:c.pane,socket:c.generation})) {
-            note.textContent = 'Image retained for 24 hours, but its path was not sent. Check the terminal connection before attaching again.';
+            note.textContent = 'File retained for 24 hours, but its path was not sent. Check the terminal connection before attaching again.';
             return;
           }
         } else {
           const input = document.getElementById('input'); input.setRangeText(info.path+' ',input.selectionStart,input.selectionEnd,'end'); input.dispatchEvent(new Event('input',{bubbles:true}));
         }
-        message('Image path inserted; retained for 24 hours. The active app must support local images. Press Enter only when ready.');
+        message('File path inserted; retained for 24 hours. The active app needs tools to read this format. Press Enter only when ready.');
         dialog.close();
       } catch (e) { if (!closed) {note.textContent=e.message;insert.disabled=false;} }
     };
@@ -70,16 +74,17 @@
       if (closed || !valid(c)) { note.textContent = 'Target changed. Nothing was inserted.'; retry.hidden = true; return; }
       retry.hidden = true; note.textContent = 'Uploading…';
       try {
-        const data = await request('', {method:'POST',headers:{'Content-Type':file.type},body:file,signal:abort.signal}); ident = data.id;
+        const data = await request('', {method:'POST',headers:{'Content-Type':file.type || 'application/octet-stream','X-CAO-Filename':encodeURIComponent(file.name)},body:file,signal:abort.signal}); ident = data.id;
         if (closed) {request('/'+ident,{method:'DELETE'}).catch(()=>{});return;}
         if (!valid(c)) {note.textContent='Target changed. Nothing was inserted.';return;}
-        note.textContent = 'Ready. Insert a local image path, not a command. File retained for 24 hours after confirmation.'; insert.disabled = false;
+        note.textContent = 'Ready. Insert a local file path, not a command. Do not execute untrusted files or macros. Retained for 24 hours after confirmation.'; insert.disabled = false;
       } catch (e) { if (!closed) { note.textContent = e.message; retry.hidden = !valid(c); } }
     }
     retry.onclick = upload;
     await upload();
   }
-  window.caoAttachImages = files => { for (const file of files) attach(file); };
+  window.caoAttachFiles = files => { for (const file of files) attach(file); };
+  window.caoAttachImages = window.caoAttachFiles; // clipboard/backward compatibility
   chooser.onchange = () => { window.caoAttachImages([...chooser.files]); chooser.value = ''; };
   document.addEventListener('dragover', e => { if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault(); });
   document.addEventListener('drop', e => { const files=[...(e.dataTransfer?.files || [])];if(files.length){e.preventDefault();e.stopPropagation();window.caoAttachImages(files);} },true);

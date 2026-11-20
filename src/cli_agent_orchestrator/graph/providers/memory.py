@@ -1,15 +1,15 @@
 """Memory wiki GraphProvider (U2, Issue #348).
 
-Projects one memory scope's wiki into a GraphView by calling the
-memory-service internals directly (ADR-1: no facade, no MemoryBackend
-ABC, no edits to memory_service/wiki_lint) and awaiting
-``wiki_lint.run_lint`` in-request (ADR-7).
+Projects one memory scope's wiki into a GraphView. Snapshot mode reads saved
+relationships and cheap scoped topology flags; the default full mode retains
+the cached in-request audit behavior for existing consumers.
 """
 
 import asyncio
 import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional, cast
 
 from cli_agent_orchestrator.graph.cache import GraphViewCache, make_meta
@@ -105,14 +105,17 @@ class MemoryGraphProvider(GraphProvider):
         self._binding_resolver = binding_resolver or binding.resolve
 
     async def project(self, **filters: Any) -> GraphView:
-        """Return this scope's GraphView, served from cache when fresh.
+        """Read current saved topology, or the cached full-audit projection.
 
-        The expensive build (``_build`` — which awaits ``wiki_lint.run_lint``)
+        In default full mode, the expensive build (``_build`` — which awaits ``wiki_lint.run_lint``)
         runs at most once per (scope, scope_id) per TTL window; concurrent cold
         requests for the same key collapse onto a single build (single-flight,
         see GraphViewCache). ``meta.cached`` / ``meta.as_of`` tell the frontend
         whether it got a hit and when the underlying data was projected.
         """
+        mode = str(filters.get("mode", "full"))
+        if mode not in {"full", "snapshot"}:
+            raise ValueError("memory graph mode must be 'full' or 'snapshot'")
         scope = str(filters.get("scope", "global"))
         raw_scope_id = filters.get("scope_id")
         scope_id: Optional[str] = None if raw_scope_id is None else str(raw_scope_id)
@@ -134,6 +137,18 @@ class MemoryGraphProvider(GraphProvider):
                 },
             )
         scope_id = resolved_binding.scope_id
+        if mode == "snapshot":
+            # Source topology is already durable and cheap to read. Bypassing
+            # the full-audit cache reflects edits/curation on the next request
+            # and remains fast after process restarts without another store.
+            view = await self._build(scope, scope_id, lint_enabled, resolved_binding, snapshot=True)
+            return GraphView(
+                nodes=view.nodes,
+                edges=view.edges,
+                meta=make_meta(
+                    view.meta, cached=False, as_of=datetime.now(timezone.utc).isoformat()
+                ),
+            )
         key = (
             "memory",
             scope,
@@ -159,13 +174,19 @@ class MemoryGraphProvider(GraphProvider):
         scope_id: Optional[str],
         lint_enabled: bool,
         resolved_binding: ScopeBinding | None = None,
+        *,
+        snapshot: bool = False,
     ) -> GraphView:
-        """Project the scope's wiki into a GraphView (the uncached, ~148s path)."""
+        """Shared assembly for saved topology or the legacy full-audit view."""
         meta: dict[str, Any] = {
             "provider": "memory",
             "scope": scope,
             "scope_id": scope_id,
         }
+        if snapshot:
+            meta.update(
+                {"projection_mode": "snapshot", "relationship_source": "saved", "audit_ran": False}
+            )
         if not lint_enabled:
             meta.update(
                 {
@@ -262,24 +283,31 @@ class MemoryGraphProvider(GraphProvider):
 
         issues = []
         if lint_enabled and not vault_bound:
-            # Lint findings may run expensive detectors. A failure degrades to
-            # a lint-free graph rather than a 500.
+            # Snapshot checks only this scope's cheap topology. Full mode may
+            # run expensive detectors; either failure degrades rather than 500.
             try:
-                # project_hash arg is only used for run_lint's audit log, not
-                # lookup — `project()` has no cwd/terminal_context to resolve
-                # the real project id (resolve_project_id), so this is a
-                # placeholder.
-                issues = await wiki_lint.run_lint(scope_id or scope, scope=scope)
+                if snapshot:
+                    issues = await asyncio.to_thread(
+                        wiki_lint.read_graph_topology_issues,
+                        scope,
+                        scope_id,
+                        memory_service=self._svc,
+                    )
+                    meta["lint_enrichment"] = "topology_only"
+                else:
+                    # This argument is only run_lint's audit placeholder, not
+                    # a lookup: this projection has no terminal/cwd context.
+                    issues = await wiki_lint.run_lint(scope_id or scope, scope=scope)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning("memory graph provider: run_lint failed: %r", e, exc_info=True)
+                logger.warning("memory graph provider: topology/lint failed: %r", e, exc_info=True)
                 meta["lint_error"] = type(e).__name__
                 meta["lint_enrichment"] = "failed"
                 meta["disabled_enrichments"] = _LINT_ENRICHMENTS
 
-        # ORDERING (human review, PR #524): the relationship read MUST come after
-        # run_lint. run_lint persists its contradiction findings into this same
+        # FULL-MODE ORDERING (human review, PR #524): the relationship read MUST
+        # follow run_lint. run_lint persists its contradiction findings into this same
         # store (wiki_lint._persist_contradictions), so reading first meant a
         # contradiction detected during THIS projection was absent from the graph
         # it produced — invisible for a full cache window, and reappearing later
@@ -337,11 +365,9 @@ class MemoryGraphProvider(GraphProvider):
                     nodes[issue.key] = node
                 node.attrs["is_orphan"] = True
             elif issue.issue_type == "graph_density":
-                # graph_density findings carry no scope_id; membership in
-                # this container's key set is the only available guard, so
-                # a same-named hub in another container of this scope can
-                # mis-mark this one. Fixing it needs wiki_lint to emit
-                # scope_id, which ADR-1 forbids editing — tracked follow-up.
+                # Snapshot topology is scoped before detection, preventing
+                # same-key hub bleed. Legacy full-lint findings carry no
+                # scope_id; that path retains its membership-only guard.
                 node = nodes.get(issue.key)
                 if node is not None:
                     node.attrs["is_hub"] = True

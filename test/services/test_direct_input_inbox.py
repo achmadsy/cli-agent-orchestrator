@@ -5,6 +5,7 @@ Covers the ``channel`` column (queued vs direct), ``record_direct_message``, the
 ``inbox_log_sender`` option, and the deferred-init initial message.
 """
 
+import asyncio
 import logging
 import sqlite3
 from types import SimpleNamespace
@@ -230,6 +231,111 @@ def deferred(db):
 
 
 class TestDeferredInitRecording:
+
+    @pytest.mark.asyncio
+    async def test_attachments_join_the_first_message_and_retry_payload(self, deferred):
+        from unittest.mock import MagicMock
+
+        provider = _provider()
+        order = []
+        provider.initialize.side_effect = lambda: order.append("initialize")
+        batch = MagicMock()
+        batch.prepare.side_effect = lambda terminal: order.append("prepare") or [
+            "/private/generated.data.pdf"
+        ]
+        batch.retain.side_effect = lambda: order.append("retain")
+        deferred.dispatch.side_effect = lambda *args, **kwargs: order.append("dispatch") or 0
+        task = terminal_service._schedule_deferred_init(
+            provider,
+            "worker99",
+            "inspect report",
+            None,
+            None,
+            initial_attachments=batch,
+            delete_on_failure=False,
+        )
+        await task
+        assert order == ["initialize", "prepare", "retain", "dispatch"]
+        message = deferred.dispatch.call_args.args[1]
+        assert message.startswith("inspect report") and "/private/generated.data.pdf" in message
+        assert deferred.confirm.call_args.args[1] == message
+        assert _rows("worker99")[0].message == message
+        batch.discard.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_attachment_prepare_failure_never_dispatches(self, deferred):
+        from unittest.mock import MagicMock
+
+        batch = MagicMock()
+        batch.prepare.side_effect = ValueError("Attachment unavailable")
+        task = terminal_service._schedule_deferred_init(
+            _provider(),
+            "worker99",
+            "inspect",
+            None,
+            None,
+            initial_attachments=batch,
+            delete_on_failure=False,
+        )
+        await task
+        deferred.dispatch.assert_not_called()
+        batch.discard.assert_called_once()
+        deferred.surface.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("before_start", [True, False])
+    async def test_attachment_cancellation_cleans_pending_batch(self, deferred, before_start):
+        from unittest.mock import MagicMock
+
+        provider = _provider()
+        entered = asyncio.Event()
+
+        async def initialize():
+            entered.set()
+            await asyncio.Event().wait()
+
+        provider.initialize.side_effect = initialize
+        batch = MagicMock()
+        task = terminal_service._schedule_deferred_init(
+            provider,
+            "worker99",
+            "inspect",
+            None,
+            None,
+            initial_attachments=batch,
+            delete_on_failure=False,
+        )
+        if not before_start:
+            await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)  # done callback also owns never-started cleanup
+        batch.discard.assert_called_once()
+        batch.retain.assert_not_called()
+        deferred.dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_attachment_init_failure_cleans_pending_batch(self, deferred):
+        from unittest.mock import MagicMock
+
+        provider = _provider()
+        provider.initialize.side_effect = RuntimeError("init failed")
+        batch = MagicMock()
+        task = terminal_service._schedule_deferred_init(
+            provider,
+            "worker99",
+            "inspect",
+            None,
+            None,
+            initial_attachments=batch,
+            delete_on_failure=False,
+        )
+        await task
+        batch.discard.assert_called_once()
+        batch.retain.assert_not_called()
+        deferred.dispatch.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_initial_message_is_recorded_once_despite_a_resubmit(self, deferred):
         async def _resubmit_then_start(*_args, **_kwargs):

@@ -98,8 +98,9 @@ def _graph_candidate(key: str):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot", [False, True])
 async def test_vault_nodes_use_candidates_without_reading_note_content(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, snapshot
 ) -> None:
     """The graph receives indexed metadata only; it never needs a note body."""
     run_lint = AsyncMock(return_value=[])
@@ -120,7 +121,7 @@ async def test_vault_nodes_use_candidates_without_reading_note_content(
         ),
     )
 
-    view = await provider._build("global", None, lint_enabled=True)
+    view = await provider._build("global", None, lint_enabled=True, snapshot=snapshot)
 
     assert [(node.id, node.label, node.attrs) for node in view.nodes] == [
         ("design", "design", {"is_vault": True})
