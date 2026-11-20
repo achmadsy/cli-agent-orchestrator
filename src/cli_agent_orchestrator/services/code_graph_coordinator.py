@@ -16,6 +16,7 @@ from cli_agent_orchestrator.models.code_graph import (
     CodeGraphQuery,
 )
 from cli_agent_orchestrator.security.auth import get_local_bearer
+from cli_agent_orchestrator.services.code_graph_indexer import ensure_indexed
 from cli_agent_orchestrator.services.code_graph_registry import (
     find_bindings,
     list_bindings,
@@ -29,13 +30,14 @@ from cli_agent_orchestrator.services.code_graph_service import (
     merge_results,
     node_id,
 )
-from cli_agent_orchestrator.services.code_graph_indexer import ensure_indexed
 from cli_agent_orchestrator.services.elastic_worker_gateway import elastic_worker_gateway_headers
 
 
 async def refresh_local_registry(base_url: str = "http://127.0.0.1:9889") -> CodeGraphHeartbeat:
     heartbeat = CodeGraphHeartbeat(
-        node_id=node_id(), cbm_version=await binary_version(), projects=await discover_local_projects()
+        node_id=node_id(),
+        cbm_version=await binary_version(),
+        projects=await discover_local_projects(),
     )
     await asyncio.to_thread(upsert_heartbeat, heartbeat, base_url)
     return heartbeat
@@ -111,7 +113,9 @@ async def request_indexing(project: str, working_directory: str) -> List[Dict[st
     )
 
 
-async def federated_query(query: CodeGraphQuery, *, allow_index: bool = False) -> CodeGraphCombinedResult:
+async def federated_query(
+    query: CodeGraphQuery, *, allow_index: bool = False
+) -> CodeGraphCombinedResult:
     await refresh_local_registry()
     if query.project:
         bindings = find_bindings(query.project, query.working_directory)
@@ -126,17 +130,44 @@ async def federated_query(query: CodeGraphQuery, *, allow_index: bool = False) -
     deduped: Dict[Any, Dict[str, Any]] = {}
     for binding in bindings:
         if binding["available"]:
-            key = (binding["node_id"], binding["logical_project"]) if query.project else binding["node_id"]
+            key = (
+                (binding["node_id"], binding["logical_project"])
+                if query.project
+                else binding["node_id"]
+            )
             deduped.setdefault(key, binding)
     if not deduped and query.project and query.working_directory and allow_index:
-        indexing = await request_indexing(query.project, query.working_directory)
+        miss_indexing = await request_indexing(query.project, query.working_directory)
         combined = merge_results(query.tool, query.project, [], [])
-        combined.indexing = indexing
+        combined.indexing = miss_indexing
         return combined
     results: List[CodeGraphNodeResult] = []
     errors: List[CodeGraphNodeError] = []
+    indexing: List[Dict[str, Any]] = []
 
     async def run(binding: Dict[str, Any]) -> None:
+        if allow_index and query.project and binding.get("stale") is True and binding["online"]:
+            try:
+                if binding["node_id"] == node_id():
+                    outcome = await ensure_indexed(binding["native_project"], binding["root_path"])
+                else:
+                    outcome = await asyncio.to_thread(
+                        _remote_index,
+                        binding["base_url"],
+                        CodeGraphIndexRequest(
+                            project=binding["native_project"],
+                            working_directory=binding["root_path"],
+                        ),
+                    )
+                indexing.append({"source_node": binding["node_id"], **outcome})
+            except Exception as exc:
+                indexing.append(
+                    {
+                        "source_node": binding["node_id"],
+                        "status": "error",
+                        "error": type(exc).__name__,
+                    }
+                )
         local_request = query.model_copy(
             update={"project": binding["native_project"], "source_node": None}
         )
@@ -146,16 +177,14 @@ async def federated_query(query: CodeGraphQuery, *, allow_index: bool = False) -
             elif not binding["online"]:
                 raise RuntimeError("node heartbeat is stale")
             else:
-                payload = await asyncio.to_thread(
-                    _remote_query, binding["base_url"], local_request
-                )
+                payload = await asyncio.to_thread(_remote_query, binding["base_url"], local_request)
                 result = CodeGraphNodeResult.model_validate(payload)
             result.logical_project = binding["logical_project"]
             results.append(result)
         except Exception as exc:
-            errors.append(
-                CodeGraphNodeError(source_node=binding["node_id"], error=str(exc)[:300])
-            )
+            errors.append(CodeGraphNodeError(source_node=binding["node_id"], error=str(exc)[:300]))
 
     await asyncio.gather(*(run(binding) for binding in deduped.values()))
-    return merge_results(query.tool, query.project, results, errors)
+    combined = merge_results(query.tool, query.project, results, errors)
+    combined.indexing = sorted(indexing, key=lambda item: item["source_node"])
+    return combined

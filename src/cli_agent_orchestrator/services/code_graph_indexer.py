@@ -1,4 +1,4 @@
-"""Background Codebase Memory indexing for a repository nobody indexed yet.
+"""Background Codebase Memory indexing for missing or stale repository indexes.
 
 When a graph query names a project that no node has indexed, the coordinator
 asks each node to index the caller's repository. A node starts a job only if
@@ -6,7 +6,8 @@ the caller's working directory is inside a Git work tree on that node and the
 requested name matches that repository's folder name, path-derived name or a
 Git remote (full host/path, owner/repo, or repo). The query itself returns at
 once with empty results, as before; the next query after the job finishes finds
-the new index.
+the new index. Existing indexes behind Git HEAD are refreshed through the same
+queue; their existing results remain queryable while a refresh is pending.
 
 Guards: one job per repository, one job running at a time, at most
 ``MAX_PENDING_JOBS`` waiting, a retry delay after each attempt, and no blocked
@@ -111,15 +112,30 @@ async def ensure_indexed(project: str, working_directory: str) -> Dict[str, Any]
 
     identity = await asyncio.to_thread(inspect_project, node_id(), path_slug(root), root)
     names = project_name_candidates(root, identity.remote_aliases)
-    if normalize_project_name(project) not in names and project != identity.logical_project:
-        return {"status": "name_mismatch", "root_path": root}
-
     try:
         indexed_roots = await list_local_roots()
     except Exception:
         indexed_roots = []
-    if any(os.path.realpath(path) == root for _name, path in indexed_roots):
-        return {"status": "already_indexed", "root_path": root}
+    matching_indexes = [name for name, path in indexed_roots if os.path.realpath(path) == root]
+    if (
+        normalize_project_name(project) not in names
+        and project != identity.logical_project
+        and project not in matching_indexes
+    ):
+        return {"status": "name_mismatch", "root_path": root}
+    indexed_name = project if project in matching_indexes else next(iter(matching_indexes), None)
+    if indexed_name:
+        from cli_agent_orchestrator.services.code_graph_metadata import (
+            index_freshness,
+            read_index_metadata,
+        )
+
+        metadata = await asyncio.to_thread(read_index_metadata, indexed_name)
+        freshness = await asyncio.to_thread(
+            index_freshness, root, identity.head_sha, metadata.get("indexed_at")
+        )
+        if freshness.get("stale") is not True:
+            return {"status": "already_indexed", "root_path": root}
 
     # No await from here to create_task, so two concurrent misses for the same
     # repository cannot both start a job.
@@ -137,20 +153,27 @@ async def ensure_indexed(project: str, working_directory: str) -> Dict[str, Any]
             }
     if sum(1 for item in _jobs.values() if not item.done()) >= MAX_PENDING_JOBS:
         return {"status": "busy"}
-    _jobs[root] = asyncio.create_task(_index(root))
+    _jobs[root] = asyncio.create_task(_index(root, indexed_name))
     logger.info("Codebase Memory indexing queued for %s", root)
     return {"status": "started", "root_path": root}
 
 
-async def _index(root: str) -> None:
+async def _index(root: str, native_project: Optional[str] = None) -> None:
+    async def attempt() -> bool:
+        # Preserve custom names when refreshing an existing index, instead of
+        # creating a second path-derived project and leaving the old one stale.
+        if native_project is not None:
+            return await _run_index(root, native_project=native_project)
+        return await _run_index(root)
+
     ok = False
     try:
         async with _slot():
             started = time.monotonic()
-            ok = await _run_index(root)
+            ok = await attempt()
             if not ok:
                 await asyncio.sleep(RETRY_PAUSE_SECONDS)
-                ok = await _run_index(root)
+                ok = await attempt()
             elapsed = time.monotonic() - started
             if ok:
                 logger.info("Codebase Memory indexing finished for %s after %.1fs", root, elapsed)
@@ -168,10 +191,13 @@ async def _index(root: str) -> None:
         await _publish()
 
 
-async def _run_index(root: str) -> bool:
+async def _run_index(root: str, *, native_project: Optional[str] = None) -> bool:
     from cli_agent_orchestrator.services.code_graph_service import _binary
 
-    payload = json.dumps({"repo_path": root, "mode": _index_mode()}).encode("utf-8")
+    arguments = {"repo_path": root, "mode": _index_mode()}
+    if native_project is not None:
+        arguments["name"] = native_project
+    payload = json.dumps(arguments).encode("utf-8")
     process = await asyncio.create_subprocess_exec(
         _binary(),
         "cli",

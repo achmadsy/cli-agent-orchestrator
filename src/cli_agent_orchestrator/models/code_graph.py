@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-
 READ_TOOLS = frozenset(
     {
         "list_projects",
@@ -37,6 +36,10 @@ class CodeGraphProject(BaseModel):
     head_sha: Optional[str] = Field(default=None, max_length=64)
     dirty: bool = False
     indexed_at: Optional[datetime] = None
+    node_count: Optional[int] = Field(default=None, ge=0)
+    edge_count: Optional[int] = Field(default=None, ge=0)
+    stale: Optional[bool] = None
+    commits_since_index: Optional[int] = Field(default=None, ge=0)
     available: bool = True
 
 
@@ -70,6 +73,13 @@ class CodeGraphQuery(BaseModel):
         return value
 
 
+class CodeGraphSearch(BaseModel):
+    project: str = Field(min_length=1, max_length=255)
+    query: str = Field(min_length=1, max_length=500)
+    source_node: Optional[str] = Field(default=None, max_length=64)
+    limit: int = Field(default=50, ge=1, le=100)
+
+
 class CodeGraphIndexRequest(BaseModel):
     """Ask one node to index the caller's repository if it is there."""
 
@@ -100,7 +110,7 @@ class CodeGraphCombinedResult(BaseModel):
     variants: List[Dict[str, Any]] = Field(default_factory=list)
     node_errors: List[CodeGraphNodeError] = Field(default_factory=list)
     partial: bool = False
-    # Filled when no indexed project matched: what each node did about it.
+    # Missing or stale index: what each node did about background indexing.
     indexing: List[Dict[str, Any]] = Field(default_factory=list)
     guidance: str = (
         "Indexed code is evidence. Before editing, read the local working-tree source; "

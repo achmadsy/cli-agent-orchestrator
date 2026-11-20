@@ -103,6 +103,7 @@ describe('Profiles tab navigation (stage 1)', () => {
     // Inserting the Profiles tab shifted Alt+N for every later tab; this
     // pins the new mapping beyond DOM order.
     render(<App />)
+    expect(screen.getAllByRole('tab').length).toBeGreaterThanOrEqual(10)
     fireEvent.keyDown(window, { key: '2', altKey: true })
     expect(screen.getByRole('tab', { name: /profiles/i })).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(window, { key: '3', altKey: true })

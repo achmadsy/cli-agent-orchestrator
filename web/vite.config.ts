@@ -40,6 +40,7 @@ export default defineConfig({
       '/flows': { target: 'http://localhost:9889', changeOrigin: true },
       '/memory': { target: 'http://localhost:9889', changeOrigin: true },
       '/graph': { target: 'http://localhost:9889', changeOrigin: true },
+      '/code-graph': { target: 'http://localhost:9889', changeOrigin: true },
       // Workflow run journal (#504 / U8). The events route is content-negotiated
       // SSE, so we signal "do not buffer or cache this response" to any
       // intermediary via X-Accel-Buffering: no + Cache-Control: no-cache on

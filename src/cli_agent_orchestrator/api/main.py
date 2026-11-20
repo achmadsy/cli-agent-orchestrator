@@ -97,6 +97,7 @@ from cli_agent_orchestrator.graph.providers import GraphProvider, get_provider
 # Import the sinks package for its import-time @register_sink side effects
 # ("okf", "obsidian", "graphml"); get_sink resolves by name from the registry.
 from cli_agent_orchestrator.graph.sinks import get_sink
+from cli_agent_orchestrator.models.code_graph import CodeGraphSearch
 from cli_agent_orchestrator.models.flow import Flow
 from cli_agent_orchestrator.models.inbox import MessageStatus, OrchestrationType
 from cli_agent_orchestrator.models.kiro_engine import KiroEngine
@@ -8850,6 +8851,27 @@ def _require_private_code_graph_peer(request: Request) -> str:
     return host
 
 
+@app.get("/code-graph/projects")
+async def code_graph_projects_endpoint(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    _require_code_graph_enabled()
+    from cli_agent_orchestrator.services.code_graph_gateway import code_graph_overview
+
+    return await code_graph_overview()
+
+
+@app.post("/code-graph/search")
+async def code_graph_search_endpoint(
+    body: CodeGraphSearch,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    _require_code_graph_enabled()
+    from cli_agent_orchestrator.services.code_graph_gateway import search_code_graph
+
+    return await search_code_graph(body.model_dump(exclude_none=True))
+
+
 @app.get("/internal/code-graph/local/status")
 async def internal_code_graph_local_status(
     request: Request,
@@ -9245,6 +9267,27 @@ async def list_memories_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list memories: {str(e)}",
         )
+
+
+@app.get("/memory/projects")
+async def list_memory_projects_endpoint(
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> List[Dict[str, Any]]:
+    """Project choices independent of the list page size and type filter."""
+    _require_memory_enabled()
+    svc = _get_memory_service()
+    memories = await svc.recall(
+        scope="project", limit=1000000, scan_all=True, search_mode="metadata"
+    )
+    counts: Dict[str, int] = {}
+    for memory in memories:
+        scope_id = _memory_scope_id(memory, svc.base_dir)
+        if scope_id:
+            counts[scope_id] = counts.get(scope_id, 0) + 1
+    return [
+        {"scope_id": scope_id, "memory_count": count}
+        for scope_id, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
 
 
 @app.get("/memory/export")

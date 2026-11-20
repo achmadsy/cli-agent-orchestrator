@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Boolean, Column, String, Text
+from sqlalchemy import Boolean, Column, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 from cli_agent_orchestrator.clients.database import Base, SessionLocal, UTCDateTime, _utcnow
 from cli_agent_orchestrator.models.code_graph import CodeGraphHeartbeat
@@ -39,6 +40,10 @@ class CodeGraphProjectModel(Base):
     head_sha = Column(String, nullable=True)
     dirty = Column(Boolean, nullable=False, default=False)
     indexed_at = Column(UTCDateTime, nullable=True)
+    node_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    edge_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    stale: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    commits_since_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     available = Column(Boolean, nullable=False, default=True)
     last_seen_at = Column(UTCDateTime, nullable=False, default=_utcnow)
 
@@ -66,7 +71,9 @@ def upsert_heartbeat(heartbeat: CodeGraphHeartbeat, base_url: str) -> None:
                 for existing in db.query(CodeGraphProjectModel).all():
                     if aliases.intersection(json.loads(existing.remote_aliases_json or "[]")):
                         overlapping_groups.add(existing.logical_project)
-            logical_project = min(overlapping_groups) if overlapping_groups else project.logical_project
+            logical_project = (
+                min(overlapping_groups) if overlapping_groups else project.logical_project
+            )
             # Any shared normalized remote means one logical repository. Collapse
             # previously independent groups transactionally when a bridge appears.
             if len(overlapping_groups) > 1:
@@ -86,6 +93,10 @@ def upsert_heartbeat(heartbeat: CodeGraphHeartbeat, base_url: str) -> None:
             row.head_sha = project.head_sha
             row.dirty = project.dirty
             row.indexed_at = project.indexed_at
+            row.node_count = project.node_count
+            row.edge_count = project.edge_count
+            row.stale = project.stale
+            row.commits_since_index = project.commits_since_index
             row.available = project.available
             row.last_seen_at = now
         for row in db.query(CodeGraphProjectModel).filter(
@@ -127,6 +138,10 @@ def list_bindings(
                     "head_sha": project.head_sha,
                     "dirty": bool(project.dirty),
                     "indexed_at": project.indexed_at,
+                    "node_count": project.node_count,
+                    "edge_count": project.edge_count,
+                    "stale": project.stale,
+                    "commits_since_index": project.commits_since_index,
                     "available": bool(project.available),
                 }
             )

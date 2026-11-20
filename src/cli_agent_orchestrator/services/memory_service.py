@@ -99,6 +99,65 @@ def _redact_injected_vault_content(memory: Memory) -> tuple[str, tuple[str, ...]
     return content, tuple(fired)
 
 
+def _article_body(file_content: str) -> str:
+    """A topic file's text without its ``# key`` line and ``<!-- id: ... -->`` header."""
+    lines = file_content.splitlines()
+    index = 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index < len(lines) and lines[index].startswith("# "):
+        index += 1
+    while index < len(lines) and (
+        not lines[index].strip() or lines[index].lstrip().startswith("<!-- id:")
+    ):
+        index += 1
+    return "\n".join(lines[index:]).strip()
+
+
+def _index_entry_time(value: Optional[str]) -> Optional[datetime]:
+    """Parse an index entry's ``updated:`` value; None when absent or malformed."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _file_mtime(path: Path) -> Optional[datetime]:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(microsecond=0)
+    except OSError:
+        return None
+
+
+_SECTION_HEADING_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$", re.MULTILINE)
+
+
+def _keep_section_timestamp(compiled: str, source: str) -> str:
+    """Return ``compiled`` with a ``## <timestamp>`` heading under its header.
+
+    Unchanged when it already has one. Otherwise the heading uses the latest
+    timestamp in ``source`` (the article the compile started from), or now.
+    """
+    if _SECTION_HEADING_RE.search(compiled):
+        return compiled
+    stamps = _SECTION_HEADING_RE.findall(source)
+    stamp = stamps[-1] if stamps else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines = compiled.splitlines()
+    end = 0
+    while end < len(lines) and not lines[end].strip():
+        end += 1
+    if end < len(lines):
+        end += 1  # the "# key" (or id comment) header line
+        if end < len(lines) and lines[end].lstrip().startswith("<!-- id:"):
+            end += 1
+    rest = lines[end:]
+    while rest and not rest[0].strip():
+        rest.pop(0)
+    return "\n".join([*lines[:end], "", f"## {stamp}", *rest]).rstrip("\n") + "\n"
+
+
 def _is_memory_enabled() -> bool:
     """Module-level guard for memory entry points.
 
@@ -1473,7 +1532,10 @@ class MemoryService:
             )
             return f"fallback:{result.fallback_reason}"
 
-        compiled_content = result.compiled_content
+        # The LLM may reorganise the article under topical headings and drop
+        # every ``## <timestamp>`` line. Recall, the append clamp and startup
+        # repair all date a topic from those lines, so keep one.
+        compiled_content = _keep_section_timestamp(result.compiled_content, expected_content)
 
         # Second-pass cross-reference detection (See-Also). Only runs when
         # the first pass actually used the LLM — append mode and fallbacks
@@ -3341,19 +3403,28 @@ class MemoryService:
 
         # Extract all timestamped entries
         timestamps = re.findall(r"## (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", file_content)
-        if not timestamps:
-            return None
+        if timestamps:
+            created_at = datetime.strptime(timestamps[0], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            updated_at = datetime.strptime(timestamps[-1], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
 
-        created_at = datetime.strptime(timestamps[0], "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
-        updated_at = datetime.strptime(timestamps[-1], "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
-
-        # Extract content (everything after the last ## timestamp line)
-        last_section = file_content.rsplit(f"## {timestamps[-1]}", 1)
-        latest_content = last_section[-1].strip() if len(last_section) > 1 else ""
+            # Extract content (everything after the last ## timestamp line)
+            last_section = file_content.rsplit(f"## {timestamps[-1]}", 1)
+            latest_content = last_section[-1].strip() if len(last_section) > 1 else ""
+        else:
+            # An LLM-compiled article can come back with topical headings only.
+            # It is still one whole article: return its body, dated from the
+            # index entry, or from the file itself when there is no entry.
+            latest_content = _article_body(file_content)
+            if not latest_content:
+                return None
+            dated = _index_entry_time(entry.get("updated_at")) or _file_mtime(wiki_file)
+            if dated is None:
+                return None
+            created_at = updated_at = dated
 
         return Memory(
             id=memory_id,

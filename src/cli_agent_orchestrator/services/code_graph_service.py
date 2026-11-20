@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import shutil
-from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from cli_agent_orchestrator.models.code_graph import (
@@ -139,12 +138,23 @@ async def discover_local_projects() -> List[CodeGraphProject]:
     projects: List[CodeGraphProject] = []
     for name, root in await list_local_roots():
         project = await asyncio.to_thread(inspect_project, node_id(), name, root)
-        project.indexed_at = datetime.now(timezone.utc)
+        from cli_agent_orchestrator.services.code_graph_metadata import (
+            index_freshness,
+            read_index_metadata,
+        )
+
+        metadata = await asyncio.to_thread(read_index_metadata, name)
+        freshness = await asyncio.to_thread(
+            index_freshness, root, project.head_sha, metadata.get("indexed_at")
+        )
+        project = project.model_copy(update={**metadata, **freshness})
         projects.append(project)
     return projects
 
 
-def _normalize_result(result: Dict[str, Any], metadata: Optional[CodeGraphProject]) -> Dict[str, Any]:
+def _normalize_result(
+    result: Dict[str, Any], metadata: Optional[CodeGraphProject]
+) -> Dict[str, Any]:
     """Turn upstream columnar JSON into mergeable rows and logical names."""
     normalized = dict(result)
     columns, rows = normalized.get("cols"), normalized.get("rows")

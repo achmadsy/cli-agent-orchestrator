@@ -746,6 +746,7 @@ def init_db() -> None:
     from cli_agent_orchestrator.services import code_graph_registry  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _migrate_code_graph_metadata()
     _restrict_db_file_permissions()
     _migrate_terminals_schema()
     _migrate_add_access_count()
@@ -1044,6 +1045,26 @@ def _migrate_add_last_compiled_at() -> None:
                 logger.info("Migration: added last_compiled_at column to memory_metadata")
     except Exception as e:
         logger.debug(f"Migration check for last_compiled_at failed: {e}")
+
+
+def _migrate_code_graph_metadata() -> None:
+    """Nullable metadata lets older fleet nodes continue publishing heartbeats."""
+    import sqlite3
+
+    from cli_agent_orchestrator.constants import DATABASE_FILE
+
+    with sqlite3.connect(str(DATABASE_FILE)) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(code_graph_projects)")}
+        if not columns:
+            return
+        for name, kind in (
+            ("node_count", "INTEGER"),
+            ("edge_count", "INTEGER"),
+            ("stale", "BOOLEAN"),
+            ("commits_since_index", "INTEGER"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE code_graph_projects ADD COLUMN {name} {kind}")
 
 
 def _migrate_add_related_keys() -> None:

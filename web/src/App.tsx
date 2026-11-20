@@ -7,6 +7,7 @@ import { DashboardHome } from './components/DashboardHome'
 import { AgentPanel } from './components/AgentPanel'
 import { FlowsPanel } from './components/FlowsPanel'
 import { MemoryPanel } from './components/MemoryPanel'
+import { CodeGraphPanel } from './components/CodeGraphPanel'
 import { ProfilesPanel } from './components/ProfilesPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { WorkflowsPanel } from './components/WorkflowsPanel'
@@ -18,7 +19,7 @@ import { PLUGINS_TAB_ENABLED } from './featureFlags'
 import { CaoMark } from './components/CaoMark'
 import { Bot, Home, Clock, Settings, Brain, Workflow, FolderTree, Puzzle, CheckCircle, XCircle, Info, Wifi, WifiOff, Package, KeyRound, Gauge } from 'lucide-react'
 
-type TabKey = 'home' | 'profiles' | 'agents' | 'flows' | 'settings' | 'memory' | 'workflows' | 'plugins' | 'providerProfiles' | 'quota' | 'workspaceMcp'
+type TabKey = 'home' | 'profiles' | 'agents' | 'flows' | 'settings' | 'memory' | 'workflows' | 'plugins' | 'providerProfiles' | 'quota' | 'workspaceMcp' | 'codeGraph'
 
 // Profiles sits between Home and Agents (#510): browsing/authoring profiles
 // precedes launching agents, and AgentPanel stays the launch picker. This was
@@ -43,6 +44,7 @@ const TABS: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: 'plugins', label: 'Plugins', icon: <Puzzle size={16} /> },
   { key: 'providerProfiles', label: 'Accounts', icon: <KeyRound size={16} /> },
   { key: 'quota', label: 'Quota', icon: <Gauge size={16} /> },
+  { key: 'codeGraph', label: 'Code graph', icon: <FolderTree size={16} /> },
 ]
 
 function Snackbar() {
@@ -133,9 +135,10 @@ export default function App() {
   // Keyboard shortcuts: Alt+1-N over the visible tabs
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.altKey && e.key >= '1' && e.key <= String(visibleTabs.length)) {
+      const index = /^[1-9]$/.test(e.key) ? Number(e.key) - 1 : -1
+      if (e.altKey && index >= 0 && index < visibleTabs.length) {
         e.preventDefault()
-        requestTabChange(visibleTabs[parseInt(e.key) - 1].key)
+        requestTabChange(visibleTabs[index].key)
       }
     }
     window.addEventListener('keydown', handler)
@@ -185,7 +188,7 @@ export default function App() {
                       ? 'text-gray-600 cursor-not-allowed'
                       : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
                 }`}
-                title={navLocked && tab !== t.key ? 'Finish or cancel the in-flight save first' : `Alt+${i + 1}`}
+                title={navLocked && tab !== t.key ? 'Finish or cancel the in-flight save first' : i < 9 ? `Alt+${i + 1}` : undefined}
               >
                 {t.icon}
                 {t.label}
@@ -210,6 +213,7 @@ export default function App() {
             {tab === 'flows' && <FlowsPanel />}
             {tab === 'settings' && <SettingsPanel />}
             {tab === 'memory' && <MemoryPanel />}
+            {tab === 'codeGraph' && <CodeGraphPanel />}
             {tab === 'workflows' && <WorkflowsPanel />}
             {tab === 'workspaceMcp' && <WorkspaceMcpPanel />}
             {tab === 'plugins' && PLUGINS_TAB_ENABLED && <PluginsPanel />}

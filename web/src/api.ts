@@ -364,6 +364,34 @@ export interface ProviderQuota {
   stale: boolean
 }
 
+export interface CodeGraphProject {
+  node_id: string
+  logical_project: string
+  native_project: string
+  display_name: string
+  online: boolean
+  available: boolean
+  branch: string | null
+  head_sha: string | null
+  dirty: boolean
+  indexed_at: string | null
+  node_count: number | null
+  edge_count: number | null
+  stale: boolean | null
+  commits_since_index: number | null
+}
+
+export interface CodeGraphOverview {
+  nodes: { node_id: string; online: boolean }[]
+  projects: CodeGraphProject[]
+}
+
+export interface CodeGraphSearchResult {
+  matches: { source_node: string; branch: string | null; qualified_name: string; kind: string | null; file_path: string; lines: string }[]
+  partial: boolean
+  node_errors: { source_node: string; error: string }[]
+}
+
 export interface MemoryStatus {
   enabled: boolean
 }
@@ -1026,8 +1054,15 @@ export const api = {
   disableFlow: (name: string) => fetchJSON<{ success: boolean }>(`/flows/${name}/disable`, { method: 'POST' }),
   runFlow: (name: string) => fetchJSON<{ executed: boolean }>(`/flows/${name}/run`, { method: 'POST', timeoutMs: 90000 }),
 
+  getCodeGraphProjects: () => fetchJSON<CodeGraphOverview>('/code-graph/projects', { timeoutMs: 60000 }),
+  searchCodeGraph: (project: string, query: string, sourceNode?: string) => fetchJSON<CodeGraphSearchResult>('/code-graph/search', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, query, source_node: sourceNode, limit: 50 }), timeoutMs: 120000,
+  }),
+
   // Memory
   getMemoryStatus: () => fetchJSON<MemoryStatus>('/settings/memory'),
+  listMemoryProjects: () => fetchJSON<{ scope_id: string; memory_count: number }[]>('/memory/projects'),
   listMemories: (filters?: { scope?: string; type?: string; scopeId?: string; limit?: number }) => {
     const params = [
       filters?.scope ? `scope=${encodeURIComponent(filters.scope)}` : '',

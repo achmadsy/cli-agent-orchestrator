@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { useStore } from '../store'
+import { api } from '../api'
 
 type AnyHandler = (payload: any) => void
 
@@ -120,6 +121,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     // otherwise see calls from an earlier test.
     mockFetch.mockClear()
     vi.stubGlobal('fetch', mockFetch)
+    vi.spyOn(api, 'listMemoryProjects').mockResolvedValue([{ scope_id: 'my-proj', memory_count: 1 }])
   })
 
   afterEach(() => {
@@ -133,7 +135,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
   // text — but that same string also appears in the graph scope-guard message,
   // so target the FIRST match (the select trigger, rendered before the guard).
   function selectGlobalScope() {
-    fireEvent.click(screen.getAllByText('All scopes')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     // The dropdown option is a <button>; "global" also appears as text in the
     // guard message, so disambiguate by role.
     fireEvent.click(screen.getByRole('button', { name: 'global' }))
@@ -167,9 +169,11 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     // Graph tab now selected; list row gone from the DOM.
     await waitFor(() => expect(screen.getByRole('tab', { name: /graph/i })).toHaveAttribute('aria-selected', 'true'))
     expect(screen.queryByText('project-conventions')).not.toBeInTheDocument()
+    await waitFor(() => expect(mockFetch.mock.calls.some(c => String(c[0]) === '/graph/memory?scope=project&scope_id=my-proj')).toBe(true))
   })
 
-  it('shows the friendly scope guard for All scopes and does NOT fetch the graph', async () => {
+  it('shows a project empty state without sending an unscoped graph request', async () => {
+    vi.mocked(api.listMemoryProjects).mockResolvedValue([])
     routeFetch(url => {
       if (url.startsWith('/graph/')) return { status: 200, body: GRAPH }
       return { status: 200, body: [] }
@@ -177,9 +181,22 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     render(<MemoryPanel />)
     await screen.findByText('No memories stored.')
     fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
-    // scopeFilter defaults to '' (All scopes) → guard, no graph fetch.
-    expect(await screen.findByText(/Pick/i)).toBeInTheDocument()
+    expect(await screen.findByText(/No project memories yet/)).toBeInTheDocument()
     expect(mockFetch.mock.calls.some(c => String(c[0]).startsWith('/graph/'))).toBe(false)
+  })
+
+  it('uses the largest project by default and lets the user select another', async () => {
+    vi.mocked(api.listMemoryProjects).mockResolvedValue([
+      { scope_id: 'large-proj', memory_count: 80 }, { scope_id: 'small-proj', memory_count: 2 },
+    ])
+    routeFetch(url => ({ status: 200, body: url.startsWith('/graph/') ? GRAPH : MEMORIES }))
+    render(<MemoryPanel />)
+    await screen.findByText('project-conventions')
+    fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
+    await waitFor(() => expect(mockFetch.mock.calls.some(c => c[0] === '/graph/memory?scope=project&scope_id=large-proj')).toBe(true))
+    fireEvent.click(screen.getByLabelText('Memory project'))
+    fireEvent.click(screen.getByRole('button', { name: 'small-proj 2 memories' }))
+    await waitFor(() => expect(mockFetch.mock.calls.some(c => c[0] === '/graph/memory?scope=project&scope_id=small-proj')).toBe(true))
   })
 
   it('fetches + renders the graph for global scope with hub/orphan/contradiction styling', async () => {
@@ -382,7 +399,7 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     await screen.findByText('project-conventions')
     fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
     // Pick the project scope; the panel defaults graphScopeId from MEMORIES.
-    fireEvent.click(screen.getAllByText('All scopes')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'project' }))
 
     await waitFor(() => expect(getLastSigma()).toBeDefined())
@@ -404,14 +421,14 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
 
     // First select project so a scope_id ('my-proj') lands in shared state.
-    fireEvent.click(screen.getAllByText('All scopes')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'project' }))
     await waitFor(() => expect(graphUrls.some(u => u.includes('scope=project'))).toBe(true))
     expect(graphUrls.some(u => u === '/graph/memory?scope=project&scope_id=my-proj')).toBe(true)
 
     // Now switch to global. graphScopeId ('my-proj') is still in state, but the
     // effectiveScopeId guard must OMIT it — global has no scope_id.
-    fireEvent.click(screen.getByRole('button', { name: 'project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'global' }))
 
     await waitFor(() => expect(graphUrls.some(u => u.includes('scope=global'))).toBe(true))
@@ -527,12 +544,12 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
 
     // Start the (slow) project fetch.
-    fireEvent.click(screen.getAllByText('All scopes')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'project' }))
 
     // Switch to global before the project fetch resolves; global resolves first
     // and renders its graph.
-    fireEvent.click(screen.getByRole('button', { name: 'project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'global' }))
     await waitFor(() => expect(getLastSigma()).toBeDefined())
     const graphAfterGlobal = getLastSigma()!.graph as import('graphology').default
@@ -588,9 +605,9 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
 
     // Start the (slow, doomed) project fetch, then switch to global before it
     // settles. Global resolves first and renders its graph.
-    fireEvent.click(screen.getAllByText('All scopes')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'project' }))
-    fireEvent.click(screen.getByRole('button', { name: 'project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'global' }))
     await waitFor(() => expect(getLastSigma()).toBeDefined())
     const graphAfterGlobal = getLastSigma()!.graph as import('graphology').default
@@ -646,9 +663,9 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
 
     // Start project (fetch A, loading=true), then switch to global (fetch B,
     // still pending). Both leave loading=true; the spinner is showing.
-    fireEvent.click(screen.getAllByText('All scopes')[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'project' }))
-    fireEvent.click(screen.getByRole('button', { name: 'project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Memory scope' }))
     fireEvent.click(screen.getByRole('button', { name: 'global' }))
     await waitFor(() => expect(screen.getByTestId('graph-loading')).toBeInTheDocument())
 

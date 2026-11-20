@@ -48,10 +48,30 @@ export function MemoryPanel() {
 
   // List⇄Graph view toggle. Component state only (no persistence).
   const [viewMode, setViewMode] = useState<ViewMode>('list')
-  // scope_id for the graph view in project scope. Shared with the list clear
-  // logic conceptually, but the list doesn't need one. Defaulted from the
-  // listed memories when a project scope_id is discoverable.
   const [graphScopeId, setGraphScopeId] = useState('')
+  const [projects, setProjects] = useState<{ scope_id: string; memory_count: number }[]>([])
+  const [projectsLoading, setProjectsLoading] = useState(false)
+  const [projectsError, setProjectsError] = useState('')
+
+  useEffect(() => {
+    if (viewMode !== 'graph') return
+    let cancelled = false
+    setProjectsLoading(true)
+    setProjectsError('')
+    api.listMemoryProjects().then(data => {
+      if (cancelled) return
+      setProjects(data)
+      setGraphScopeId(current => data.some(p => p.scope_id === current) ? current : data[0]?.scope_id ?? '')
+    }).catch(() => {
+      if (!cancelled) setProjectsError('Could not load memory projects. Switch to global or reopen Graph to retry.')
+    }).finally(() => { if (!cancelled) setProjectsLoading(false) })
+    return () => { cancelled = true }
+  }, [viewMode])
+
+  const openGraph = () => {
+    if (scopeFilter !== 'global' && scopeFilter !== 'project') setScopeFilter('project')
+    setViewMode('graph')
+  }
 
   // Expanded detail state; detail is keyed by row id so a slow fetch for a
   // previously-expanded row can't land under the currently-expanded one
@@ -80,15 +100,6 @@ export function MemoryPanel() {
   useEffect(() => {
     fetchMemories()
   }, [scopeFilter, typeFilter])
-
-  // Default the graph's project scope_id from the listed memories when one is
-  // discoverable and the user hasn't typed their own. Keeps the graph view
-  // usable in project scope without forcing the user to know the canonical id.
-  useEffect(() => {
-    if (scopeFilter !== 'project' || graphScopeId) return
-    const discovered = memories.find(m => m.scope === 'project' && m.scope_id)?.scope_id
-    if (discovered) setGraphScopeId(discovered)
-  }, [scopeFilter, memories, graphScopeId])
 
   const handleExpand = async (m: MemorySummary) => {
     const id = rowId(m)
@@ -189,7 +200,7 @@ export function MemoryPanel() {
           <button
             role="tab"
             aria-selected={viewMode === 'graph'}
-            onClick={() => setViewMode('graph')}
+            onClick={openGraph}
             className={`flex items-center gap-2 px-3 py-2 text-sm font-medium transition-colors ${
               viewMode === 'graph' ? 'bg-emerald-600 text-white' : 'bg-gray-900 text-gray-400 hover:text-white hover:bg-gray-800'
             }`}
@@ -202,25 +213,30 @@ export function MemoryPanel() {
         <CustomSelect
           value={scopeFilter}
           onChange={setScopeFilter}
-          options={SCOPE_OPTIONS}
+          options={viewMode === 'graph' ? SCOPE_OPTIONS.filter(o => o.value === 'global' || o.value === 'project') : SCOPE_OPTIONS}
+          ariaLabel="Memory scope"
           className="w-40"
         />
 
-        {/* Graph + project needs a concrete scope_id (defaulted from the listed
-            memories when discoverable). Only shown where it applies. */}
         {viewMode === 'graph' && scopeFilter === 'project' && (
-          <input
-            type="text"
+          <CustomSelect
             value={graphScopeId}
-            onChange={e => setGraphScopeId(e.target.value)}
-            placeholder="project scope_id (e.g. github-com-…)"
-            className="bg-gray-900 border border-gray-700 text-gray-200 text-xs rounded-lg px-3 py-2 w-72 focus:border-emerald-500 focus:outline-none font-mono"
+            onChange={setGraphScopeId}
+            options={projects.map(p => ({ value: p.scope_id, label: p.scope_id, sublabel: `${p.memory_count} memories` }))}
+            ariaLabel="Memory project"
+            placeholder={projectsLoading ? 'Loading projects…' : 'No project memories'}
+            disabled={projectsLoading || projects.length === 0}
+            className="w-80 max-w-full"
           />
         )}
       </div>
 
       {viewMode === 'graph' ? (
-        <MemoryGraphView scope={scopeFilter} scopeId={graphScopeId} />
+        scopeFilter === 'project' && (projectsLoading || !graphScopeId || projectsError) ? (
+          <p className="text-sm text-gray-400 py-8 text-center" role="status">
+            {projectsLoading ? 'Loading memory projects…' : projectsError || 'No project memories yet. Select global to view global memories.'}
+          </p>
+        ) : <MemoryGraphView scope={scopeFilter} scopeId={graphScopeId} />
       ) : loading ? (
         <div className="text-gray-500 text-sm py-8 text-center">Loading memories...</div>
       ) : (
