@@ -35,12 +35,14 @@ const { FakeSigma, getLastSigma, resetLastSigma } = vi.hoisted(() => {
   class FakeSigmaImpl {
     graph: any
     container: HTMLElement
+    settings: any
     handlers: Record<string, AnyHandler[]> = {}
     killed = false
     camera = new FakeCamera()
-    constructor(graph: unknown, container: HTMLElement) {
+    constructor(graph: unknown, container: HTMLElement, settings: unknown) {
       this.graph = graph
       this.container = container
+      this.settings = settings
       last = this
     }
     on(event: string, handler: AnyHandler) {
@@ -73,7 +75,9 @@ const { FakeSigma, getLastSigma, resetLastSigma } = vi.hoisted(() => {
   }
 })
 
+const { drawHover } = vi.hoisted(() => ({ drawHover: vi.fn() }))
 vi.mock('sigma', () => ({ default: FakeSigma }))
+vi.mock('sigma/rendering', () => ({ drawDiscNodeHover: drawHover }))
 
 // eslint-disable-next-line import/first
 import { MemoryPanel } from '../components/MemoryPanel'
@@ -170,6 +174,23 @@ describe('MemoryPanel — List⇄Graph toggle & graph view', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: /graph/i })).toHaveAttribute('aria-selected', 'true'))
     expect(screen.queryByText('project-conventions')).not.toBeInTheDocument()
     await waitFor(() => expect(mockFetch.mock.calls.some(c => String(c[0]) === '/graph/memory?scope=project&scope_id=my-proj&mode=snapshot')).toBe(true))
+  })
+
+  it('uses readable resting labels without losing white-background hover contrast', async () => {
+    vi.spyOn(api, 'getGraph').mockResolvedValueOnce(GRAPH)
+    routeFetch(() => ({ status: 200, body: MEMORIES }))
+    render(<MemoryPanel />)
+    await screen.findByText('project-conventions')
+    fireEvent.click(screen.getByRole('tab', { name: /graph/i }))
+    await waitFor(() => expect(getLastSigma()).toBeDefined())
+    const { settings } = getLastSigma()
+    expect(settings.labelColor).toEqual({ color: '#e5e7eb' })
+    const context = {}, node = { label: 'Hub' }
+    settings.defaultDrawNodeHover(context, node, settings)
+    expect(drawHover).toHaveBeenLastCalledWith(context, node, expect.objectContaining({
+      labelColor: { color: '#111827' },
+    }))
+    expect(settings.labelColor).toEqual({ color: '#e5e7eb' })
   })
 
   it('keeps the same-scope graph visible during Refresh and shows snapshot provenance', async () => {

@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from 'react'
 import Graph from 'graphology'
 import { circular } from 'graphology-layout'
 import Sigma from 'sigma'
+import { drawDiscNodeHover } from 'sigma/rendering'
 import { Brain, Download, RefreshCw, X } from 'lucide-react'
 import { api, ApiError, GraphView, MemoryDetail } from '../api'
 import { useStore } from '../store'
@@ -207,6 +208,12 @@ export function MemoryGraphView({ scope, scopeId }: MemoryGraphViewProps) {
     const sigma = new Sigma(graph, containerRef.current, {
       renderLabels: true,
       labelRenderedSizeThreshold: 0,
+      labelColor: { color: '#e5e7eb' },
+      // Sigma's stock hover renderer uses a white label background.
+      defaultDrawNodeHover: (context, data, settings) => drawDiscNodeHover(context, data, {
+        ...settings,
+        labelColor: { color: '#111827' },
+      }),
     })
     const container = containerRef.current
 
