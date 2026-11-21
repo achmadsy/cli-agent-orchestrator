@@ -1318,6 +1318,10 @@ class ClaudeCodeProvider(BaseProvider):
     # detector below is tuned for a COMPOSITED viewport, not the raw stream.
     supports_screen_detection = True
     supports_midburst_processing_probe = True
+    # Pollers must read the same composited state as the output consumer.
+    # Incremental redraw bytes can parse IDLE while the live screen is busy;
+    # applying that verdict would latch-block the turn's subsequent spinners.
+    status_recheck_uses_screen = True
 
     def probe_processing_from_screen(self, screen_lines: List[str]) -> bool:
         """Observe live work without invoking dispatch-derived status fallbacks.

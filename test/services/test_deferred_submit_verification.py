@@ -218,6 +218,46 @@ class TestRedeliverDroppedMessageHelper:
 
 @pytest.mark.asyncio
 class TestConfirmWorkerStartedOrResubmit:
+    async def test_real_claude_screen_processing_confirms_without_redelivery(self):
+        """The confirmation poll must not replace screen evidence with raw IDLE."""
+        import time
+
+        from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
+        from cli_agent_orchestrator.services.status_monitor import StatusMonitor
+
+        provider = ClaudeCodeProvider("t1", "s", "w")
+        backend = MagicMock()
+        backend.supports_event_inbox.return_value = False
+        backend.get_native_status.return_value = None
+        monitor = StatusMonitor()
+        monitor._last_status["t1"] = TerminalStatus.IDLE
+        monitor._allow_processing_revert["t1"] = True
+        monitor._output_generation["t1"] = 2
+        monitor._buffers["t1"] = "❯ Analyze the weather data\n"
+        monitor._buffer_changed_at["t1"] = time.monotonic()
+        monitor._feed_screen_locked("t1", "✻ Cooking…\r\n❯ Analyze the weather data")
+        with (
+            patch("cli_agent_orchestrator.backends.registry.get_backend", return_value=backend),
+            patch("cli_agent_orchestrator.providers.claude_code.get_backend", return_value=backend),
+            patch("cli_agent_orchestrator.services.status_monitor.provider_manager") as manager,
+            patch("cli_agent_orchestrator.services.status_monitor.bus"),
+            patch.object(ts, "status_monitor", monitor),
+            patch.object(ts, "_DEFERRED_SUBMIT_CONFIRM_TIMEOUT", 0),
+            patch.object(ts, "redeliver_dropped_message_with_boundary") as redeliver,
+        ):
+            manager.get_provider.return_value = provider
+            monitor._apply_detection("t1", TerminalStatus.PROCESSING)
+            assert await ts._confirm_worker_started_or_resubmit(
+                "t1",
+                "Analyze the weather data",
+                None,
+                None,
+                None,
+                provider=provider,
+                dispatch_generation=1,
+            )
+            redeliver.assert_not_called()
+
     async def test_started_on_first_confirm_no_resubmit(self):
         with (
             patch.object(ts, "_wait_for_post_dispatch_start", new=AsyncMock(return_value=True)),

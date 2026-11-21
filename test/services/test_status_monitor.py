@@ -134,6 +134,58 @@ class TestPollerRecheckInput:
 
         assert sm.get_status("t1") == TerminalStatus.PROCESSING
 
+    @patch("cli_agent_orchestrator.providers.claude_code.get_backend")
+    @patch("cli_agent_orchestrator.backends.registry.get_backend")
+    @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
+    def test_claude_confirmation_poll_does_not_latch_raw_redraw_idle(
+        self, mock_pm, mock_get_backend, mock_claude_backend
+    ):
+        """A real spinner was reversed to IDLE by the raw poller within 41ms.
+
+        Incremental redraw bytes need not contain the spinner retained on the
+        composited screen. Polling that raw fragment must not end a busy turn
+        and latch-block every subsequent positive PROCESSING probe.
+        """
+        from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
+
+        provider = ClaudeCodeProvider("t1", "s", "w")
+        mock_pm.get_provider.return_value = provider
+        backend = _backend(event_inbox=False)
+        backend.get_native_status.return_value = None
+        mock_get_backend.return_value = backend
+        mock_claude_backend.return_value = backend
+        sm = StatusMonitor()
+        sm._buffers["t1"] = "❯ Analyze the weather data\n"
+        sm._buffer_changed_at["t1"] = time.monotonic()
+        sm._output_generation["t1"] = 2
+        sm._last_status["t1"] = TerminalStatus.IDLE
+        sm._allow_processing_revert["t1"] = True
+        with sm._lock:
+            sm._feed_screen_locked(
+                "t1", "✻ Cooking…\r\n────────────────────\r\n❯ \r\n────────────────────"
+            )
+        assert provider.get_status(sm._buffers["t1"]) == TerminalStatus.IDLE
+        assert sm._detect_screen("t1", provider) == TerminalStatus.PROCESSING
+        sm._apply_detection("t1", TerminalStatus.PROCESSING)
+
+        observation = sm.status_observation("t1")
+        assert observation.status == TerminalStatus.PROCESSING
+        assert observation.output_generation == 2
+        sm._midburst_processing_probe("t1", provider)
+        assert sm.get_status("t1") == TerminalStatus.PROCESSING
+
+        # The same screen path must still notice a genuinely finished turn.
+        with sm._lock:
+            sm._feed_screen_locked(
+                "t1",
+                "\x1b[2J\x1b[H● Public answer\r\n✻ Cooked for 56s\r\n"
+                "────────────────────\r\n❯ \r\n────────────────────",
+            )
+            sm._output_generation["t1"] += 1
+        completed = sm.status_observation("t1")
+        assert completed.status == TerminalStatus.COMPLETED
+        assert completed.output_generation == 3
+
     @patch("cli_agent_orchestrator.backends.registry.get_backend")
     @patch("cli_agent_orchestrator.services.status_monitor.provider_manager")
     def test_ready_verdict_from_output_that_changed_during_the_read_is_not_applied(
