@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
+import { OutputContent } from './OutputContent'
 import { api } from '../api'
 import { X, RefreshCw, Copy, Check, FileText, Loader2 } from 'lucide-react'
 
@@ -26,7 +27,8 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
   const [copied, setCopied] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState(false)
-  const outputRef = useRef<HTMLPreElement>(null)
+  const [presentation, setPresentation] = useState<'readable' | 'raw'>('readable')
+  const outputRef = useRef<HTMLDivElement>(null)
   const requestGeneration = useRef(0)
 
   const fetchOutput = async (m: 'last' | 'full') => {
@@ -59,12 +61,13 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
     return () => { requestGeneration.current++ }
   }, [mode, terminalId])
 
-  // Auto-scroll to bottom on full output mode
+  // Full history opens at the newest turn; Last Response opens at its start.
   useEffect(() => {
-    if (mode === 'full' && outputRef.current) {
-      outputRef.current.scrollTop = outputRef.current.scrollHeight
+    if (outputRef.current) {
+      outputRef.current.scrollTop = mode === 'full' ? outputRef.current.scrollHeight : 0
+      outputRef.current.scrollLeft = 0
     }
-  }, [output, mode])
+  }, [output, mode, presentation, loading])
 
   // Close on Escape
   useEffect(() => {
@@ -90,7 +93,7 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
     fetchOutput(mode)
   }
 
-  const cleanOutput = stripAnsi(output)
+  const cleanOutput = useMemo(() => stripAnsi(output), [output])
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
@@ -98,13 +101,13 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
       {/* Modal */}
-      <div className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-[800px] mx-4 overflow-hidden animate-in fade-in zoom-in-95 flex flex-col" style={{ maxHeight: '80vh' }}>
+      <div role="dialog" aria-modal="true" aria-label="Terminal Output" className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-[1200px] mx-2 sm:mx-4 overflow-hidden flex flex-col" style={{ maxHeight: '90dvh' }}>
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700/30 shrink-0">
-          <div className="flex items-center gap-3">
-            <FileText size={16} className="text-emerald-400" />
+        <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-gray-700/30 shrink-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+            <FileText size={16} className="text-emerald-400 shrink-0" />
             <span className="text-sm font-semibold text-white">Terminal Output</span>
-            <span className="text-xs text-gray-500 font-mono bg-gray-800 px-2 py-0.5 rounded">{terminalId}</span>
+            <span className="text-xs text-gray-400 font-mono bg-gray-800 px-2 py-0.5 rounded">{terminalId}</span>
           </div>
           <div className="flex items-center gap-2">
             {/* Copy button */}
@@ -138,7 +141,7 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
         </div>
 
         {/* Tab Toggle */}
-        <div className="flex items-center gap-2 px-6 py-3 border-b border-gray-700/30 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 py-3 border-b border-gray-700/30 shrink-0">
           <button
             onClick={() => setMode('last')}
             className={`px-3 py-1.5 text-xs font-medium rounded-full transition-colors ${
@@ -159,25 +162,40 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
           >
             Full Output
           </button>
+          <div role="group" aria-label="Output format" className="flex items-center gap-1 sm:ml-auto rounded-lg bg-gray-950 p-1">
+            {(['readable', 'raw'] as const).map(format => (
+              <button
+                key={format}
+                aria-pressed={presentation === format}
+                onClick={() => setPresentation(format)}
+                className={`rounded px-3 py-1 text-xs transition-colors ${presentation === format ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white'}`}
+              >
+                {format === 'readable' ? 'Readable' : 'Raw text'}
+              </button>
+            ))}
+          </div>
         </div>
 
         {notice && <p role="status" className="px-6 pt-3 text-xs text-amber-300">{notice}</p>}
-        {/* Keep terminal/table columns intact without resizing the live session. */}
-        <div className="flex-1 min-w-0 overflow-hidden px-4 py-3" style={{ minHeight: 0 }}>
+        {/* Presentation changes never resize the live terminal. */}
+        <div className="flex-1 min-w-0 overflow-hidden px-2 sm:px-4 py-3" style={{ minHeight: 0 }}>
           {loading ? (
             <div className="flex items-center justify-center h-full min-h-[200px]">
               <Loader2 size={24} className="animate-spin text-gray-500" />
             </div>
           ) : cleanOutput ? (
-            <pre
+            <div
               ref={outputRef}
               aria-label="Terminal output text"
+              role="region"
               tabIndex={0}
-              className="bg-gray-950 rounded-lg p-4 font-mono text-sm text-gray-300 overflow-auto whitespace-pre"
-              style={{ maxHeight: 'calc(80vh - 160px)' }}
+              className="bg-gray-950 rounded-lg p-4 sm:p-6 text-sm text-gray-300 overflow-auto"
+              style={{ maxHeight: 'calc(90dvh - 230px)' }}
             >
-              {cleanOutput}
-            </pre>
+              {presentation === 'raw'
+                ? <pre className="font-mono whitespace-pre">{cleanOutput}</pre>
+                : <OutputContent text={cleanOutput} />}
+            </div>
           ) : (
             <div className="flex items-center justify-center h-full min-h-[200px]">
               <p role={error ? 'alert' : undefined} className="text-gray-500 text-sm">

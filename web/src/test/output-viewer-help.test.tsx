@@ -64,9 +64,66 @@ describe('OutputViewer', () => {
       fireEvent.click(screen.getByRole('button', { name: mode }))
       await waitFor(() => expect(screen.getByLabelText('Terminal output text').textContent).toBe(table))
       const output = screen.getByLabelText('Terminal output text')
-      expect(output).toHaveClass('whitespace-pre', 'overflow-auto')
-      expect(output).not.toHaveClass('whitespace-pre-wrap', 'break-words')
+      expect(output).toHaveClass('overflow-auto')
+      expect(output.querySelector('pre')).toHaveClass('output-terminal-table')
+      fireEvent.click(screen.getByRole('button', { name: 'Raw text' }))
+      expect(output.querySelector('pre')).toHaveClass('whitespace-pre')
+      expect(output.textContent).toBe(table)
+      fireEvent.click(screen.getByRole('button', { name: 'Readable' }))
     }
+  })
+
+  it('renders Markdown headings, emphasis and tables in both history modes while keeping raw copy', async () => {
+    const markdown = '### Pager 3\n\n**Heavy rain** near the coast.\n\n| Source | Coverage |\n| --- | --- |\n| BMKG | Indonesia |\n\n```text\n**literal**\n  column A    column B\n```'
+    vi.mocked(api.getTerminalDisplayOutput).mockResolvedValue({
+      output: markdown, mode: 'last', source: 'transcript', truncated: false,
+    })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
+    for (const mode of ['Last Response', 'Full Output']) {
+      fireEvent.click(screen.getByRole('button', { name: mode }))
+      expect(await screen.findByRole('heading', { level: 3, name: 'Pager 3' })).toBeInTheDocument()
+      expect(screen.getByText('Heavy rain').tagName).toBe('STRONG')
+      expect(screen.getByRole('columnheader', { name: 'Source' })).toBeInTheDocument()
+      expect(screen.getByRole('cell', { name: 'Indonesia' })).toBeInTheDocument()
+      const code = screen.getByText(/\*\*literal\*\*/)
+      expect(code.tagName).toBe('CODE')
+      expect(code.textContent).toContain('  column A    column B')
+      fireEvent.click(screen.getByRole('button', { name: 'Raw text' }))
+      expect(screen.getByLabelText('Terminal output text').textContent).toBe(markdown)
+      expect(screen.queryByRole('heading', { name: 'Pager 3' })).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Readable' }))
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }))
+    expect(writeText).toHaveBeenCalledWith(markdown)
+  })
+
+  it('keeps unformatted terminal spacing and box tables literal in readable mode', async () => {
+    const output = 'PID     CPU     COMMAND\n123     0.1     worker\n\n┌────────┬────────┐\n│ **A**  │ ### B  │\n└────────┴────────┘'
+    vi.mocked(api.getTerminalDisplayOutput).mockResolvedValue({
+      output, mode: 'last', source: 'recording', truncated: false,
+    })
+    render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
+    const content = await screen.findByLabelText('Terminal output text')
+    expect(content.querySelector('.output-plain')?.textContent).toContain('PID     CPU     COMMAND\n123     0.1     worker')
+    expect(screen.getByLabelText('Terminal table').textContent).toContain('│ **A**  │ ### B  │')
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Raw text' }))
+    expect(content.textContent).toBe(output)
+  })
+
+  it('does not execute HTML, activate unsafe links or fetch embedded images', async () => {
+    vi.mocked(api.getTerminalDisplayOutput).mockResolvedValue({
+      output: '### Safe\n\n<script>alert(1)</script>\n\n[unsafe](javascript:alert%281%29)\n\n![remote](https://example.invalid/tracker.png)\n\n[docs](https://example.com/docs)',
+      mode: 'last', source: 'transcript', truncated: false,
+    })
+    render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
+    const output = await screen.findByLabelText('Terminal output text')
+    expect(output.querySelector('script')).toBeNull()
+    expect(output.querySelector('img')).toBeNull()
+    expect(screen.queryByRole('link', { name: 'unsafe' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
   it('labels incomplete scrollback rather than claiming it is full history', async () => {
