@@ -9,8 +9,9 @@ def test_normalizes_session_weekly_and_model_limits():
             "seven_day_sonnet": {"utilization": 40},
             "limits": [
                 {
-                    "utilization": 10,
-                    "scope": {"model": {"display_name": "Opus"}},
+                    "kind": "weekly_scoped",
+                    "percent": 10,
+                    "scope": {"model": {"display_name": "Fable"}},
                 }
             ],
         }
@@ -19,7 +20,7 @@ def test_normalizes_session_weekly_and_model_limits():
         "Session (5h)",
         "Weekly (7d)",
         "Weekly sonnet (7d)",
-        "Weekly Opus (7d)",
+        "Weekly Fable (7d)",
     ]
     assert rows[0]["remaining"] == 80
     assert rows[1]["remaining"] == 25

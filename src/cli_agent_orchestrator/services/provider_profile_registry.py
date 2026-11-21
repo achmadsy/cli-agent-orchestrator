@@ -29,7 +29,7 @@ PROFILE_CAPABILITIES: Mapping[str, ProviderProfileCapabilities] = {
         "isolated_home", auth_lifecycle=True, quota=True, resume=True
     ),
     ProviderType.CODEX.value: ProviderProfileCapabilities(
-        "isolated_home", auth_lifecycle=True, quota=False
+        "isolated_home", auth_lifecycle=True, quota=True
     ),
     ProviderType.OPENCODE_CLI.value: ProviderProfileCapabilities(
         "isolated_home", auth_lifecycle=True, quota=False

@@ -790,6 +790,8 @@ def init_db() -> None:
     # Keep this in the startup registry; the store repeats it only as a guard for
     # isolated/repointed databases that intentionally do not call init_db().
     _migrate_provider_profiles()
+    from cli_agent_orchestrator.services.quota_reset_store import migrate as migrate_quota_resets
+    migrate_quota_resets()
 
 
 def _restrict_db_file_permissions() -> None:

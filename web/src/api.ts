@@ -357,12 +357,45 @@ export interface ProviderQuotaRow {
   reset_at?: string | null
 }
 
+export interface ResetAllowance {
+  status: string
+  remaining_count: number | null
+  can_reset: boolean
+  disabled_reason: string
+  observed_at?: string
+  cooldown_until?: string | null
+  weekly_resets_at?: string | null
+  clears?: string[]
+  details: { label: string; remaining_count?: number | null; total_count?: number | null; status?: string; expires_at?: string | null; starts_at?: string | null; granted_at?: string | null; clears?: string[]; usable_now?: boolean; disabled_reason?: string | null }[]
+}
+
+export interface QuotaResetPreview {
+  intent_id: string
+  expires_at: string
+  account_display: string
+  provider: string
+  allowance: ResetAllowance
+  effect: string
+  cost: number
+}
+
+export interface QuotaResetOperation {
+  operation_id: string
+  status: 'succeeded' | 'rejected' | 'submitted' | 'unknown' | 'preview'
+  reason?: string | null
+  quota_refresh: 'succeeded' | 'failed' | 'not_attempted'
+  quota?: ProviderQuota
+}
+
 export interface ProviderQuota {
   profile_id: string
   provider?: string
   status: string
   quotas: ProviderQuotaRow[]
   stale: boolean
+  reset_allowance?: ResetAllowance
+  can_manage_resets?: boolean
+  reset_operation_id?: string | null
 }
 
 export interface CodeGraphProject {
@@ -902,10 +935,18 @@ export const api = {
     fetchJSON<{ id: string; state: ProviderAuthState; detail?: string | null }>(`/agents/provider-profiles/${encodeURIComponent(id)}/auth/status`, { method: 'POST' }),
   logoutProviderProfile: (id: string) =>
     fetchJSON<{ id: string; state: ProviderAuthState; detail?: string | null }>(`/agents/provider-profiles/${encodeURIComponent(id)}/auth/logout`, { method: 'POST' }),
-  getProviderQuota: (id: string) =>
-    fetchJSON<ProviderQuota>(`/agents/provider-profiles/${encodeURIComponent(id)}/quota`),
-  getProviderQuotaOverview: () =>
-    fetchJSON<ProviderQuota[]>('/agents/provider-profiles/quota/overview'),
+  getProviderQuota: (id: string, force = false) =>
+    fetchJSON<ProviderQuota>(`/agents/provider-profiles/${encodeURIComponent(id)}/quota?force=${force}`),
+  getProviderQuotaOverview: (force = false) =>
+    fetchJSON<ProviderQuota[]>(`/agents/provider-profiles/quota/overview?force=${force}`),
+  getQuotaResetDetails: (id: string) =>
+    fetchJSON<ResetAllowance>(`/agents/provider-profiles/${encodeURIComponent(id)}/quota/reset`),
+  previewQuotaReset: (id: string) =>
+    fetchJSON<QuotaResetPreview>(`/agents/provider-profiles/${encodeURIComponent(id)}/quota/reset/preview`, { method: 'POST', timeoutMs: 90000 }),
+  confirmQuotaReset: (id: string, intentId: string) =>
+    fetchJSON<QuotaResetOperation>(`/agents/provider-profiles/${encodeURIComponent(id)}/quota/reset/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intent_id: intentId }), timeoutMs: 120000 }),
+  getQuotaResetOperation: (id: string, operationId: string) =>
+    fetchJSON<QuotaResetOperation>(`/agents/provider-profiles/${encodeURIComponent(id)}/quota/reset/operations/${encodeURIComponent(operationId)}`),
 
   // Settings
   getAgentDirs: () => fetchJSON<AgentDirsSettings>('/settings/agent-dirs'),

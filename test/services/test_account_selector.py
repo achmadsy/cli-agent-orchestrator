@@ -66,7 +66,7 @@ class TestSelectProviderProfile:
 
     def test_provider_without_quota_support_returns_none(self):
         with patch(LIST) as listing:
-            assert _run(select_provider_profile("codex")) is None
+            assert _run(select_provider_profile("opencode_cli")) is None
         listing.assert_not_called()
 
     def test_unknown_provider_returns_none(self):

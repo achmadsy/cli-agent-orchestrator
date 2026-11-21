@@ -10,6 +10,7 @@ interface ConfirmModalProps {
   cancelLabel?: string
   variant?: 'danger' | 'warning'
   loading?: boolean
+  loadingLabel?: string
   /**
    * Type-to-confirm gate. When set, an input is shown and the confirm button
    * stays disabled until the user types this exact string (e.g. the name of
@@ -30,29 +31,40 @@ export function ConfirmModal({
   cancelLabel = 'Cancel',
   variant = 'danger',
   loading = false,
+  loadingLabel = 'Closing...',
   confirmationText,
   onConfirm,
   onCancel,
 }: ConfirmModalProps) {
   const cancelRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
   const [typed, setTyped] = useState('')
 
   useEffect(() => {
     if (open) {
+      const previous = document.activeElement as HTMLElement | null
       cancelRef.current?.focus()
       // Reset per open so a previous confirmation never carries over.
       setTyped('')
+      return () => { if (previous?.isConnected) previous.focus() }
     }
   }, [open, confirmationText])
 
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
+      if (e.key === 'Escape' && !loading) onCancel()
+      if (e.key === 'Tab') {
+        const controls = dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]')
+        if (!controls?.length) { e.preventDefault(); return }
+        const first = controls[0], last = controls[controls.length - 1]
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [open, onCancel])
+  }, [open, onCancel, loading])
 
   if (!open) return null
 
@@ -63,10 +75,10 @@ export function ConfirmModal({
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { if (!loading) onCancel() }} />
 
       {/* Modal */}
-      <div className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden animate-in fade-in zoom-in-95">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={title} className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden animate-in fade-in zoom-in-95">
         {/* Header */}
         <div className="flex items-start gap-4 p-6 pb-4">
           <div className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center ${colors.icon}`}>
@@ -76,7 +88,7 @@ export function ConfirmModal({
             <h3 className="text-base font-semibold text-white">{title}</h3>
             <p className="text-sm text-gray-400 mt-1">{message}</p>
           </div>
-          <button onClick={onCancel} className="shrink-0 p-1 text-gray-500 hover:text-white rounded transition-colors">
+          <button onClick={onCancel} disabled={loading} aria-label="Close confirmation" className="shrink-0 p-1 text-gray-500 hover:text-white rounded transition-colors">
             <X size={16} />
           </button>
         </div>
@@ -128,7 +140,7 @@ export function ConfirmModal({
             className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition-all focus:outline-none focus:ring-2 disabled:opacity-60 flex items-center gap-2 ${colors.btn}`}
           >
             {loading && <Loader2 size={14} className="animate-spin" />}
-            {loading ? 'Closing...' : confirmLabel}
+            {loading ? loadingLabel : confirmLabel}
           </button>
         </div>
       </div>

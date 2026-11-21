@@ -3086,6 +3086,7 @@ async def create_provider_profile_endpoint(
 
 @app.get("/agents/provider-profiles/quota/overview")
 async def provider_profile_quota_overview_endpoint(
+    force: bool = False,
     _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> List[Dict[str, Any]]:
     from cli_agent_orchestrator.services.provider_profile_store import list_provider_profiles
@@ -3094,7 +3095,9 @@ async def provider_profile_quota_overview_endpoint(
     results = []
     for profile in list_provider_profiles():
         try:
-            results.append(await get_provider_quota(profile.id))
+            result = await get_provider_quota(profile.id, force=force)
+            result["can_manage_resets"] = SCOPE_WRITE in _scopes or SCOPE_ADMIN in _scopes
+            results.append(result)
         except ValueError:
             results.append(
                 {
@@ -3271,6 +3274,7 @@ async def provider_profile_logout_endpoint(
 @app.get("/agents/provider-profiles/{profile_id}/quota")
 async def provider_profile_quota_endpoint(
     profile_id: str,
+    force: bool = False,
     _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> Dict[str, Any]:
     from cli_agent_orchestrator.services.provider_profile_store import (
@@ -3281,11 +3285,78 @@ async def provider_profile_quota_endpoint(
     from cli_agent_orchestrator.services.provider_quota import get_provider_quota
 
     try:
-        return await get_provider_quota(profile_id)
+        result = await get_provider_quota(profile_id, force=force)
+        result["can_manage_resets"] = SCOPE_WRITE in _scopes or SCOPE_ADMIN in _scopes
+        return result
     except ProviderProfileNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except ProviderProfileError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+class QuotaResetConfirmBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    intent_id: str = Field(min_length=32, max_length=32, pattern=r"^[a-f0-9]{32}$")
+
+
+def _quota_reset_owner(request: Request) -> str:
+    import hashlib
+    from cli_agent_orchestrator.security.auth import is_auth_enabled
+    # Scope dependency validates the bearer first; store only its hash.
+    credential = request.headers.get("authorization", "") if is_auth_enabled() else "local-no-auth"
+    return hashlib.sha256(credential.encode()).hexdigest()
+
+
+@app.get("/agents/provider-profiles/{profile_id}/quota/reset")
+async def quota_reset_details_endpoint(
+    profile_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    from cli_agent_orchestrator.services.provider_quota_reset import details
+    try:
+        return await details(profile_id)
+    except Exception:
+        raise HTTPException(409, "Reset details unavailable; re-check login or refresh later") from None
+
+
+@app.post("/agents/provider-profiles/{profile_id}/quota/reset/preview")
+async def quota_reset_preview_endpoint(
+    profile_id: str, request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    from cli_agent_orchestrator.services.provider_quota_reset import preview
+    try:
+        return await preview(profile_id, _quota_reset_owner(request))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@app.post("/agents/provider-profiles/{profile_id}/quota/reset/confirm")
+async def quota_reset_confirm_endpoint(
+    profile_id: str, body: QuotaResetConfirmBody, request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+):
+    from cli_agent_orchestrator.services.provider_quota_reset import confirm
+    try:
+        result = await confirm(profile_id, _quota_reset_owner(request), body.intent_id)
+        code = 202 if result["status"] in ("submitted", "unknown") else 409 if result["status"] == "rejected" else 200
+        return JSONResponse(result, status_code=code)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except Exception:
+        raise HTTPException(503, "Reset status unavailable; do not retry. Check operation status.") from None
+
+
+@app.get("/agents/provider-profiles/{profile_id}/quota/reset/operations/{operation_id}")
+async def quota_reset_operation_endpoint(
+    profile_id: str, operation_id: str, request: Request,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict[str, Any]:
+    from cli_agent_orchestrator.services import quota_reset_store
+    try:
+        return quota_reset_store.public(quota_reset_store.read(operation_id, profile_id, _quota_reset_owner(request)))
+    except ValueError:
+        raise HTTPException(404, "Reset operation not found for this caller/profile") from None
 
 
 @app.get("/settings/agent-dirs")
