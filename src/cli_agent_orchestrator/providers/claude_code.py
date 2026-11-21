@@ -1317,6 +1317,20 @@ class ClaudeCodeProvider(BaseProvider):
     # Opt in to pyte rendered-screen detection (gated by CAO_PYTE_STATUS). The
     # detector below is tuned for a COMPOSITED viewport, not the raw stream.
     supports_screen_detection = True
+    supports_midburst_processing_probe = True
+
+    def probe_processing_from_screen(self, screen_lines: List[str]) -> bool:
+        """Observe live work without invoking dispatch-derived status fallbacks.
+
+        Continuous Ink redraws can prevent quiescence for longer than the
+        initial-delivery confirmation window. Only positive spinner/wait chrome
+        counts; a missing composer or an old response does not prove pickup.
+        """
+        bottom = [line.rstrip() for line in screen_lines if line.strip()][-25:]
+        return any(
+            NEW_TUI_BOX_SPINNER_PATTERN.search(line) or BACKGROUND_WAIT_PATTERN.search(line)
+            for line in bottom
+        )
 
     def get_status_from_screen(self, screen_lines: List[str]) -> TerminalStatus:
         """Detect status from a pyte-composited viewport (escape-free rows).
@@ -1408,6 +1422,11 @@ class ClaudeCodeProvider(BaseProvider):
             return TerminalStatus.IDLE
 
         return TerminalStatus.UNKNOWN
+
+    def get_display_output(self, mode: str) -> Optional[Dict[str, Any]]:
+        from cli_agent_orchestrator.providers.claude_transcript import read_display_output
+
+        return read_display_output(self.terminal_id, self._config_dir, mode)
 
     def get_error_message(self, buffer: str) -> Optional[str]:
         """Return Claude Code's own fatal error chrome for ``buffer``.

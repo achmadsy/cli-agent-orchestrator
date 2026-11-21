@@ -543,6 +543,16 @@ class OpenCodeCliProvider(BaseProvider):
             ValueError: If no user message or completion marker is found.
         """
         clean = re.sub(ANSI_CODE_PATTERN, "", script_output)
+        # The wide layout has an independent right sidebar. Locate its column
+        # from its own standalone headers, not from arbitrary whitespace (which
+        # could be an assistant table or indented code).
+        sidebar_columns = [
+            len(match.group(1))
+            for match in re.finditer(r"^( {20,})(?:Context|LSP)\s*$", clean, re.MULTILINE)
+        ]
+        if sidebar_columns:
+            sidebar_start = min(sidebar_columns)
+            clean = "\n".join(line[:sidebar_start].rstrip() for line in clean.split("\n"))
 
         # Find the last FULL completion marker to anchor the turn boundary.
         all_completions = list(re.finditer(COMPLETION_MARKER_PATTERN, clean))
@@ -559,12 +569,15 @@ class OpenCodeCliProvider(BaseProvider):
         # MULTILINE matches; this unanchored variant is correct for substring position-finding.
         # Searching only in the slice before the completion start avoids matching
         # the bottom input-box header (┃  <agent> · <model>) that follows the turn.
-        user_matches = list(re.finditer(r"┃\s{2}", clean[: last_completion.start()]))
+        user_matches = list(re.finditer(r"┃[ \t]{2}", clean[: last_completion.start()]))
         if user_matches:
             # Normal path: anchor on the last visible user message bar.
             # Alt-screen redraws each turn in place; earlier turns are not present in the
             # visible frame, so the last ┃  bar is unambiguously the current turn's.
-            response_start = user_matches[-1].end()  # after the ┃  bar
+            # Skip the complete user row, including inline reasoning/header
+            # chrome. Starting immediately after the bar publishes that row.
+            newline = clean.find("\n", user_matches[-1].end())
+            response_start = newline + 1 if newline >= 0 else last_completion.start()
         else:
             # Fallback: user message has scrolled off the top of the 41-line TUI viewport
             # (history_size ≈ 2; alt-screen rendering does not accumulate scrollback).
@@ -619,7 +632,7 @@ class OpenCodeCliProvider(BaseProvider):
 
         # Clean control chars and trailing whitespace
         result = "\n".join(dedented).strip()
-        result = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", result)
+        result = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", result)
         result = re.sub(r"[ \t]+$", "", result, flags=re.MULTILINE)
 
         if not result:

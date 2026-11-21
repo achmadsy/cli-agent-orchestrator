@@ -345,6 +345,14 @@ class TerminalBackend(ABC):
         """
         ...
 
+    def get_display_history(self, session_name: str, window_name: str) -> str:
+        """Logical history, retaining ANSI ownership evidence for provider extraction."""
+        return self.get_history(session_name, window_name, full_history=True, strip_escapes=False)
+
+    def get_dimensions(self, session_name: str, window_name: str) -> Optional[tuple[int, int]]:
+        """Current (columns, rows) for passive log replay, if the backend exposes it."""
+        return None
+
     @abstractmethod
     def get_pane_working_directory(self, session_name: str, window_name: str) -> Optional[str]:
         """Get the current working directory of a pane.

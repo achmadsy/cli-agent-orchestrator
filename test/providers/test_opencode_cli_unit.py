@@ -48,6 +48,23 @@ def make_provider(
     )
 
 
+def test_completed_fixture_excludes_sidebar_and_reasoning():
+    assert (
+        make_provider().extract_last_message_from_script(load_fixture("opencode_cli_completed.txt"))
+        == "Hello there, friend!"
+    )
+
+
+def test_multiline_table_and_code_keep_their_newlines():
+    table = "| Name | Value |\n| A | B |"
+    output = "  ┃  question\n\n     " + table.replace("\n", "\n     ")
+    output += "\n     ```python\n     print('ok')\n     ```\n     ▣  Build · Big Pickle · 7.2s"
+    result = make_provider().extract_last_message_from_script(output)
+    assert table in result
+    assert "```python\nprint('ok')\n```" in result
+    assert "question" not in result
+
+
 # ---------------------------------------------------------------------------
 # (g) Regex patterns individually match expected substrings
 # ---------------------------------------------------------------------------
@@ -577,9 +594,7 @@ class TestInitialize:
     ):
         mock_get_profile.return_value.provider.value = "opencode_cli"
         mock_profile_home.return_value = tmp_path / "opencode-work"
-        with patch(
-            "cli_agent_orchestrator.constants.CAO_HOME_DIR", tmp_path / "cao"
-        ):
+        with patch("cli_agent_orchestrator.constants.CAO_HOME_DIR", tmp_path / "cao"):
             provider = make_provider(provider_profile="opencode-work")
 
         command = provider._build_launch_command()
@@ -595,12 +610,8 @@ class TestInitialize:
     ):
         mock_get_profile.return_value.provider.value = "opencode_cli"
         mock_profile_home.return_value = tmp_path / "opencode-work"
-        with patch(
-            "cli_agent_orchestrator.constants.CAO_HOME_DIR", tmp_path / "cao"
-        ):
-            provider = make_provider(
-                provider_profile="opencode-work", provider_action="auth_login"
-            )
+        with patch("cli_agent_orchestrator.constants.CAO_HOME_DIR", tmp_path / "cao"):
+            provider = make_provider(provider_profile="opencode-work", provider_action="auth_login")
 
         command = provider._build_launch_command()
 

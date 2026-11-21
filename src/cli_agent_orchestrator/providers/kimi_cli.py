@@ -2978,6 +2978,56 @@ class KimiCliProvider(BaseProvider):
         # turn — so report UNKNOWN rather than a false PROCESSING.
         return TerminalStatus.UNKNOWN
 
+    def filter_display_history(self, history: str) -> str:
+        """Extract each public turn with the same ownership boundary as LAST."""
+        # Input is already rendered history, not a raw cursor stream. Carry
+        # effective SGR to each row so inherited reasoning styling survives
+        # segmentation and the existing ownership classifier can see it.
+        raw_lines = kt.normalize_activity_rows(history).split("\n")
+        clean_lines = [kt.strip_sgr(line) for line in raw_lines]
+        kinds = kt.classify_rows(raw_lines, clean_lines, self._spinner_semantics())
+        starts = [
+            index
+            for index, kind in enumerate(kinds)
+            if kind is kt.KimiLineKind.USER_INPUT
+            and (index == 0 or kinds[index - 1] is not kt.KimiLineKind.USER_INPUT)
+        ]
+        boundaries = sorted({0, *starts, len(raw_lines)})
+        turns = []
+        for start, end in zip(boundaries, boundaries[1:]):
+            user = "\n".join(
+                clean_lines[index]
+                for index in range(start, end)
+                if kinds[index] is kt.KimiLineKind.USER_INPUT
+            ).strip()
+            if user:
+                turns.append(user)
+            else:
+                # A later public marker does not retroactively grant ownership
+                # to an unanchored leading tail. Start at the first positively
+                # drawn answer, never at private/ambiguous text before it.
+                marker = next(
+                    (
+                        index
+                        for index in range(start, end)
+                        if kt.FINAL_ANSWER_BULLET_STYLE_RE.search(raw_lines[index])
+                    ),
+                    None,
+                )
+                if marker is None:
+                    continue
+                start = marker
+            try:
+                answer = self.extract_last_message_from_script("\n".join(raw_lines[start:end]))
+            except ValueError:
+                # Partial/private-only segments are not permission to dump the
+                # raw pane. In particular CODE continuation rows without their
+                # owning header need a positively styled answer marker.
+                continue
+            if answer:
+                turns.append(answer)
+        return "\n\n".join(turns)
+
     def extract_last_message_from_script(self, script_output: str) -> str:
         """Extract Kimi's final response from terminal output.
 

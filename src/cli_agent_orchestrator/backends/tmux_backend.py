@@ -191,6 +191,14 @@ class TmuxBackend(TerminalBackend):
             visible_only=visible_only,
         )
 
+    def get_display_history(self, session_name: str, window_name: str) -> str:
+        return self._client.get_history(
+            session_name, window_name, full_history=True, strip_escapes=False, join_wrapped=True
+        )
+
+    def get_dimensions(self, session_name: str, window_name: str) -> Optional[tuple[int, int]]:
+        return self._client.get_dimensions(session_name, window_name)
+
     def get_pane_working_directory(self, session_name: str, window_name: str) -> Optional[str]:
         return self._client.get_pane_working_directory(session_name, window_name)
 
@@ -217,7 +225,9 @@ class TmuxBackend(TerminalBackend):
         """Return exact owned tmux IDs for the optional workspace viewer."""
         return self._client.resolve_workspace_target(terminal_id, session_name)
 
-    def observe_terminal_exact(self, target: Dict[str, str], fifo_path: Optional[str] = None) -> str:
+    def observe_terminal_exact(
+        self, target: Dict[str, str], fifo_path: Optional[str] = None
+    ) -> str:
         return self._client.observe_terminal_exact(target, fifo_path)
 
     # --- Pipe-pane ---

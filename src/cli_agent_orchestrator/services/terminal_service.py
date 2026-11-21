@@ -3107,11 +3107,10 @@ def redeliver_dropped_message_with_boundary(
     When the gate is on and the provider is not probe-capable, the
     bare-Enter branch (which cannot duplicate a task) is still taken
     whenever the text is visible; otherwise nothing is sent and False is
-    returned, leaving the caller's own timeout to classify the outcome. The
-    deferred-init path keeps the default (off) because it waits on
-    ``_wait_for_post_dispatch_start`` for post-dispatch evidence before ever
-    reaching here, and that pre-existing behavior is unchanged by this helper's
-    extraction.
+    returned, leaving the caller's own timeout to classify the outcome. Both
+    deferred-init and synchronous step callers enable this gate: a confirmation
+    timeout is not evidence that the paste was dropped. The default is retained
+    only for callers that explicitly own another delivery-evidence contract.
 
     The full re-send goes through ``dispatch_input`` with ``redelivery=True``: it
     repeats the dispatch CAO is already waiting on, so the provider must treat
@@ -3313,6 +3312,7 @@ async def _confirm_worker_started_or_resubmit(
             message,
             attempt,
             provider,
+            full_resend_requires_probe=True,
             registry=registry,
             sender_id=sender_id,
             orchestration_type=orchestration_type,
@@ -4302,6 +4302,74 @@ def get_screen(terminal_id: str, ansi: bool = True, scrollback: bool = False) ->
     if len(screen) > _SCREEN_MAX_BYTES:
         screen = screen[-_SCREEN_MAX_BYTES:]
     return {"screen": screen, "ansi": ansi}
+
+
+def get_display_output(terminal_id: str, mode: OutputMode = OutputMode.LAST) -> dict:
+    """Read-only UI output, preferring original text over a resized TUI snapshot."""
+    metadata = get_terminal_metadata(terminal_id)
+    if not metadata:
+        raise ValueError(f"Terminal '{terminal_id}' not found")
+    provider = provider_manager.get_provider(terminal_id)
+    if isinstance(provider, BaseProvider):
+        result = provider.get_display_output(mode.value)
+        if result is not None:
+            return result
+
+    backend = get_backend()
+    session, window = metadata["tmux_session"], metadata["tmux_window"]
+    limited_reason = None
+    if mode == OutputMode.FULL:
+        from cli_agent_orchestrator.services.terminal_recording import (
+            ReplayLimitExceeded,
+            read_recording,
+        )
+
+        # The same append-only recording exists for every pipe-pane provider,
+        # including alternate-screen TUIs whose capture-pane has no scrollback.
+        _validate_key_part(terminal_id, "terminal_id")
+        dimensions = backend.get_dimensions(session, window)
+        columns, rows = dimensions if dimensions is not None else (220, 50)
+        try:
+            recorded = read_recording(
+                TERMINAL_LOG_DIR / f"{terminal_id}.log", columns=columns, rows=rows, ansi=True
+            )
+        except ReplayLimitExceeded:
+            recorded = None
+            limited_reason = "replay_budget"
+        if recorded is not None:
+            limited_reason = recorded.get("limited_reason", limited_reason)
+            if recorded["output"].strip():
+                output = recorded["output"]
+                if isinstance(provider, BaseProvider):
+                    output = provider.filter_display_history(output)
+                return {**recorded, "output": output, "mode": mode.value, "source": "recording"}
+
+    # Provider-neutral joined capture is deliberately separate from status and
+    # execution extraction: those parsers still receive their original rows.
+    history = backend.get_display_history(session, window)
+    if mode == OutputMode.LAST and isinstance(provider, BaseProvider):
+        try:
+            output = provider.extract_last_message_from_script(history)
+        except OutputExtractionRejected:
+            raise  # never publish private content through a raw fallback
+        except ValueError:
+            output = get_output(terminal_id, mode)
+        source = "rendered_response"
+    elif mode == OutputMode.LAST:
+        output = get_output(terminal_id, mode)
+        source = "rendered_response"
+    else:
+        output = (
+            provider.filter_display_history(history)
+            if isinstance(provider, BaseProvider)
+            else history
+        )
+        source = "scrollback"
+    max_chars = 1024 * 1024
+    result = {"output": output[-max_chars:], "mode": mode.value, "source": source, "truncated": True}
+    if limited_reason:
+        result["limited_reason"] = limited_reason
+    return result
 
 
 def get_output(terminal_id: str, mode: OutputMode = OutputMode.FULL) -> str:

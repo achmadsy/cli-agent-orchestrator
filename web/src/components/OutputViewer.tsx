@@ -24,28 +24,39 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
   const [output, setOutput] = useState('')
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState(false)
   const outputRef = useRef<HTMLPreElement>(null)
+  const requestGeneration = useRef(0)
 
   const fetchOutput = async (m: 'last' | 'full') => {
+    const generation = ++requestGeneration.current
     setLoading(true)
+    setError(false)
+    setNotice('')
     try {
-      if (m === 'full') {
-        // The raw output stream is full of TUI control sequences and cursor
-        // redraws, so Full Output shows the rendered scrollback instead.
-        const data = await api.getTerminalScrollback(terminalId)
-        setOutput(data.screen || '')
-      } else {
-        const data = await api.getTerminalOutput(terminalId, m)
-        setOutput(data.output || '')
-      }
+      const data = await api.getTerminalDisplayOutput(terminalId, m)
+      if (generation !== requestGeneration.current) return
+      setOutput(data.output || '')
+      setNotice(data.source === 'scrollback'
+        ? `Rendered scrollback only — this provider may not retain the complete conversation.${data.limited_reason === 'replay_budget' ? ' Recording replay exceeded the time limit; showing available scrollback instead.' : ''}`
+        : data.source === 'recording'
+          ? `Recorded terminal history — earlier screens are included when retained. Redraws, historical resizes, and text never emitted by the CLI may be incomplete.${data.truncated ? ' Earlier content was truncated.' : ''}${data.limited_reason === 'replay_budget' ? ' Replay time limit reached; showing a smaller recent recording tail.' : ''}`
+          : data.source === 'rendered_response'
+            ? 'Rendered terminal response — original text is unavailable for this provider.'
+            : data.truncated ? 'Showing the available transcript tail; earlier content was truncated.' : '')
     } catch {
+      if (generation !== requestGeneration.current) return
       setOutput('')
+      setError(true)
+    } finally {
+      if (generation === requestGeneration.current) setLoading(false)
     }
-    setLoading(false)
   }
 
   useEffect(() => {
     fetchOutput(mode)
+    return () => { requestGeneration.current++ }
   }, [mode, terminalId])
 
   // Auto-scroll to bottom on full output mode
@@ -150,8 +161,9 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
           </button>
         </div>
 
-        {/* Output Area */}
-        <div className="flex-1 overflow-hidden px-4 py-3" style={{ minHeight: 0 }}>
+        {notice && <p role="status" className="px-6 pt-3 text-xs text-amber-300">{notice}</p>}
+        {/* Keep terminal/table columns intact without resizing the live session. */}
+        <div className="flex-1 min-w-0 overflow-hidden px-4 py-3" style={{ minHeight: 0 }}>
           {loading ? (
             <div className="flex items-center justify-center h-full min-h-[200px]">
               <Loader2 size={24} className="animate-spin text-gray-500" />
@@ -159,14 +171,18 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
           ) : cleanOutput ? (
             <pre
               ref={outputRef}
-              className="bg-gray-950 rounded-lg p-4 font-mono text-sm text-gray-300 overflow-y-auto whitespace-pre-wrap break-words"
+              aria-label="Terminal output text"
+              tabIndex={0}
+              className="bg-gray-950 rounded-lg p-4 font-mono text-sm text-gray-300 overflow-auto whitespace-pre"
               style={{ maxHeight: 'calc(80vh - 160px)' }}
             >
               {cleanOutput}
             </pre>
           ) : (
             <div className="flex items-center justify-center h-full min-h-[200px]">
-              <p className="text-gray-500 text-sm">No output available</p>
+              <p role={error ? 'alert' : undefined} className="text-gray-500 text-sm">
+                {error ? 'Could not load output. Try refreshing.' : 'No output available'}
+              </p>
             </div>
           )}
         </div>

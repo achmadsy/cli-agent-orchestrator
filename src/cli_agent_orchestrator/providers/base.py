@@ -347,6 +347,23 @@ class BaseProvider(ABC):
         """
         return None
 
+    def get_display_output(self, mode: str) -> Optional[Dict[str, Any]]:
+        """Public conversation text for a read-only viewer, if supported.
+
+        None means the UI must label its fallback as rendered scrollback rather
+        than complete history. This does not change the execution/extraction API.
+        """
+        return None
+
+    def filter_display_history(self, history: str) -> str:
+        """Filter rendered FULL history before it reaches the read-only viewer.
+
+        ANSI ownership evidence is retained until this hook runs. Providers
+        with private terminal channels must exclude them here as well as in
+        last-response extraction. This is not an execution-output fallback.
+        """
+        return history
+
     @property
     def paste_submit_delay(self) -> float:
         """Seconds to wait after a bracketed paste before sending the Enter key.

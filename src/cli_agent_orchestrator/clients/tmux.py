@@ -1832,6 +1832,7 @@ class TmuxClient:
         strip_escapes: bool = False,
         full_history: bool = False,
         visible_only: bool = False,
+        join_wrapped: bool = False,
     ) -> str:
         """Get window history.
 
@@ -1878,12 +1879,31 @@ class TmuxClient:
                 flags = ["-p", "-S", f"-{lines}"]
             if not strip_escapes:
                 flags = ["-e"] + flags
+            if join_wrapped:
+                # tmux knows which newlines are terminal soft wraps. Joining
+                # those preserves wide table/code lines without a live resize.
+                flags = ["-J"] + flags
             result = pane.cmd("capture-pane", *flags)
             # Join all lines with newlines to get complete output
             return "\n".join(result.stdout) if result.stdout else ""
         except Exception as e:
             logger.error(f"Failed to get history from {session_name}:{window_name}: {e}")
             raise
+
+    def get_dimensions(self, session_name: str, window_name: str) -> Optional[tuple[int, int]]:
+        """Read geometry only; never resize the pane to retrieve output."""
+        session = self._find_session(session_name)
+        if session is None:
+            return None
+        pane = self._resolve_pane(session, session_name, window_name, first=True, required=True)
+        if pane is None:
+            return None
+        result = pane.cmd("display-message", "-p", "#{pane_width} #{pane_height}")
+        try:
+            columns, rows = map(int, " ".join(result.stdout).split())
+            return columns, rows
+        except (TypeError, ValueError):
+            return None
 
     def list_sessions(self) -> List[Dict[str, str]]:
         """List all tmux sessions.

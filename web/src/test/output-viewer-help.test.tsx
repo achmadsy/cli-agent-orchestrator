@@ -9,7 +9,7 @@ vi.mock('../api', async importOriginal => {
   const actual = await importOriginal<typeof import('../api')>()
   return {
     ...actual,
-    api: { ...actual.api, getTerminalOutput: vi.fn(), getTerminalScrollback: vi.fn() },
+    api: { ...actual.api, getTerminalDisplayOutput: vi.fn(), getTerminalOutput: vi.fn(), getTerminalScrollback: vi.fn() },
   }
 })
 
@@ -34,23 +34,81 @@ describe('stripAnsi', () => {
 
 describe('OutputViewer', () => {
   beforeEach(() => {
+    vi.mocked(api.getTerminalDisplayOutput).mockReset()
     vi.mocked(api.getTerminalOutput).mockReset()
     vi.mocked(api.getTerminalScrollback).mockReset()
   })
 
-  it('shows the rendered scrollback for Full Output, not the raw stream', async () => {
-    vi.mocked(api.getTerminalOutput).mockResolvedValue({ output: 'last answer', mode: 'last' })
-    vi.mocked(api.getTerminalScrollback).mockResolvedValue({ screen: 'hi3rdtest\n❯ test hi again!', ansi: false })
-
+  it('loads the original full conversation instead of the latest viewport or raw stream', async () => {
+    vi.mocked(api.getTerminalDisplayOutput).mockImplementation(async (_id, mode) => ({
+      output: mode === 'last' ? 'last answer' : 'User: first question\nAssistant: first answer\nUser: second question\nAssistant: last answer',
+      mode, source: 'transcript', truncated: false,
+    }))
     render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
     expect(await screen.findByText('last answer')).toBeInTheDocument()
-    expect(api.getTerminalOutput).toHaveBeenCalledWith('abcd1234', 'last')
-
     fireEvent.click(screen.getByRole('button', { name: 'Full Output' }))
+    expect(await screen.findByText(/first question/)).toHaveTextContent('last answer')
+    expect(api.getTerminalDisplayOutput).toHaveBeenCalledWith('abcd1234', 'full')
+    expect(api.getTerminalScrollback).not.toHaveBeenCalled()
+    expect(api.getTerminalOutput).not.toHaveBeenCalled()
+  })
 
-    await waitFor(() => expect(screen.getByText(/hi3rdtest/)).toBeInTheDocument())
-    expect(api.getTerminalScrollback).toHaveBeenCalledWith('abcd1234')
-    expect(api.getTerminalOutput).not.toHaveBeenCalledWith('abcd1234', 'full')
+  it('preserves wide table columns in both modes without resizing the terminal', async () => {
+    const table = '| Source | ' + 'Wide column '.repeat(40) + '|\n| BMKG | Free |'
+    vi.mocked(api.getTerminalDisplayOutput).mockResolvedValue({
+      output: table, mode: 'last', source: 'transcript', truncated: false,
+    })
+    render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
+    await screen.findByLabelText('Terminal output text')
+    for (const mode of ['Last Response', 'Full Output']) {
+      fireEvent.click(screen.getByRole('button', { name: mode }))
+      await waitFor(() => expect(screen.getByLabelText('Terminal output text').textContent).toBe(table))
+      const output = screen.getByLabelText('Terminal output text')
+      expect(output).toHaveClass('whitespace-pre', 'overflow-auto')
+      expect(output).not.toHaveClass('whitespace-pre-wrap', 'break-words')
+    }
+  })
+
+  it('labels incomplete scrollback rather than claiming it is full history', async () => {
+    vi.mocked(api.getTerminalDisplayOutput).mockResolvedValue({
+      output: 'current viewport', mode: 'full', source: 'scrollback', truncated: true,
+    })
+    render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
+    expect(await screen.findByRole('status')).toHaveTextContent('Rendered scrollback only')
+  })
+
+  it('labels recording and historical-resize limits explicitly', async () => {
+    vi.mocked(api.getTerminalDisplayOutput).mockResolvedValue({
+      output: 'earlier answer\nlatest answer', mode: 'full', source: 'recording', truncated: true,
+    })
+    render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
+    expect(await screen.findByRole('status')).toHaveTextContent('Recorded terminal history')
+    expect(screen.getByRole('status')).toHaveTextContent('historical resizes')
+    expect(screen.getByRole('status')).toHaveTextContent('Earlier content was truncated')
+  })
+
+  it.each(['recording', 'scrollback'] as const)('explains replay limits for %s instead of silently losing history', async source => {
+    vi.mocked(api.getTerminalDisplayOutput).mockResolvedValue({
+      output: 'latest answer', mode: 'full', source, truncated: true, limited_reason: 'replay_budget',
+    })
+    render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
+    const notice = await screen.findByRole('status')
+    expect(notice).toHaveTextContent(source === 'recording'
+      ? 'Replay time limit reached; showing a smaller recent recording tail.'
+      : 'Recording replay exceeded the time limit; showing available scrollback instead.')
+  })
+
+  it('does not let a slow Last Response overwrite Full Output', async () => {
+    let resolveLast!: (value: Awaited<ReturnType<typeof api.getTerminalDisplayOutput>>) => void
+    vi.mocked(api.getTerminalDisplayOutput).mockImplementation((_id, mode) => mode === 'last'
+      ? new Promise(resolve => { resolveLast = resolve })
+      : Promise.resolve({ output: 'full conversation', mode, source: 'transcript', truncated: false }))
+    render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Full Output' }))
+    expect(await screen.findByText('full conversation')).toBeInTheDocument()
+    await act(async () => { resolveLast({ output: 'stale response', mode: 'last', source: 'transcript', truncated: false }) })
+    expect(screen.getByText('full conversation')).toBeInTheDocument()
+    expect(screen.queryByText('stale response')).not.toBeInTheDocument()
   })
 })
 

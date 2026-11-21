@@ -147,6 +147,17 @@ class TestTmuxBackendDelegation:
         )
         assert result == "viewport text"
 
+    def test_display_history_preserves_logical_lines(self, backend, mock_client):
+        mock_client.get_history.return_value = "wide table"
+        assert backend.get_display_history("cao-test", "window-0") == "wide table"
+        mock_client.get_history.assert_called_once_with(
+            "cao-test", "window-0", full_history=True, strip_escapes=False, join_wrapped=True
+        )
+
+    def test_dimensions_delegate_without_resize(self, backend, mock_client):
+        mock_client.get_dimensions.return_value = (140, 45)
+        assert backend.get_dimensions("cao-test", "window-0") == (140, 45)
+
     def test_get_pane_working_directory_delegates(self, backend, mock_client):
         mock_client.get_pane_working_directory.return_value = "/home/user"
         result = backend.get_pane_working_directory("cao-test", "window-0")

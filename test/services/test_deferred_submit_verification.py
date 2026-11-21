@@ -202,8 +202,8 @@ class TestRedeliverDroppedMessageHelper:
         send.assert_not_called()
 
     def test_gate_off_default_keeps_deferred_init_behavior(self):
-        # Deferred-init path (default): non-probe provider + text absent →
-        # full re-send, exactly as before the helper was extracted.
+        # Legacy helper default: callers with a separate evidence contract may
+        # allow full re-send. Deferred-init now explicitly enables the gate.
         provider = MagicMock(supports_direct_status_probe=False)
         with (
             patch.object(ts, "_message_visible_in_box", return_value=False),
@@ -250,8 +250,10 @@ class TestConfirmWorkerStartedOrResubmit:
         send.assert_not_called()
 
     async def test_full_redeliver_when_box_empty(self):
-        # First confirm fails, box empty (paste dropped) → re-deliver full msg.
+        # Only a probe-capable provider can rule out already-accepted work.
+        provider = MagicMock(supports_direct_status_probe=True)
         with (
+            patch.object(ts, "_worker_is_started_direct", return_value=False),
             patch.object(
                 ts, "_wait_for_post_dispatch_start", new=AsyncMock(side_effect=[False, True])
             ),
@@ -260,13 +262,44 @@ class TestConfirmWorkerStartedOrResubmit:
             patch.object(ts, "dispatch_input") as send,
         ):
             ok = await ts._confirm_worker_started_or_resubmit(
-                "t1", "Analyze the logs", "reg", "sup", None
+                "t1", "Analyze the logs", "reg", "sup", None, provider=provider
             )
         assert ok is True
         key.assert_not_called()
         send.assert_called_once()
         assert send.call_args.args[0] == "t1"
         assert send.call_args.args[1] == "Analyze the logs"
+
+    @pytest.mark.parametrize("eventually_starts", [False, True])
+    async def test_unconfirmed_non_probe_provider_never_repeats_initial_prompt(
+        self, eventually_starts
+    ):
+        # A busy TUI can keep its cached status IDLE throughout a redraw burst.
+        # An empty/unknown composer is not proof that the first paste was lost.
+        from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
+
+        provider = ClaudeCodeProvider("t1", "s", "w")
+        confirmations = [False, False, True, True] if eventually_starts else [False] * 4
+        with (
+            patch.object(
+                ts, "_wait_for_post_dispatch_start", new=AsyncMock(side_effect=confirmations)
+            ),
+            patch.object(ts, "_message_visible_in_box", return_value=False),
+            patch.object(ts, "send_special_key") as key,
+            patch.object(ts, "dispatch_input") as send,
+        ):
+            ok = await ts._confirm_worker_started_or_resubmit(
+                "t1",
+                "Analyze the logs",
+                None,
+                "sup",
+                None,
+                provider=provider,
+                dispatch_generation=7,
+            )
+        assert ok is eventually_starts
+        key.assert_not_called()
+        send.assert_not_called()
 
     async def test_returns_false_when_worker_never_starts(self):
         # Every confirm fails through all resubmit attempts.
@@ -485,8 +518,9 @@ class TestConfirmBranchSelectionAndResubmitBoundary:
         # dispatch_input; the second wait must be measured against 12, so that a
         # status earned between 7 and 12 (or the resubmit's own paste echo) is
         # not accepted as this attempt's evidence.
-        provider = MagicMock(requires_execution_evidence=False, supports_direct_status_probe=False)
+        provider = MagicMock(requires_execution_evidence=False, supports_direct_status_probe=True)
         with (
+            patch.object(ts, "_worker_is_started_direct", return_value=False),
             patch.object(
                 ts, "_wait_for_post_dispatch_start", new=AsyncMock(side_effect=[False, True])
             ) as gate,

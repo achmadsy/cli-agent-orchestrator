@@ -1533,6 +1533,42 @@ class TestMidBurstProcessingProbe:
         assert provider.get_status_from_screen(fixture.splitlines()) == TerminalStatus.IDLE
         assert provider._awaiting_turn is True
 
+    def test_claude_spinner_confirms_start_during_continuous_redraw(self):
+        from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
+
+        provider = ClaudeCodeProvider("t1", "s", "w")
+        working = [
+            "✻ Thinking… (12s · esc to interrupt)",
+            "────────────────────────",
+            "❯ ",
+            "────────────────────────",
+        ]
+        sm = self._bursting_monitor(screen_lines=working)
+        sm._bursting["t1"] = True
+        with sm._lock:
+            sm._output_generation["t1"] = 8
+        before = dict(vars(provider))
+        sm._schedule_screen_detection("t1", provider)
+        assert sm._last_status["t1"] == TerminalStatus.PROCESSING
+        assert sm.status_observation("t1").output_generation == 8
+        assert vars(provider) == before
+
+    def test_claude_midburst_probe_ignores_previous_response_and_missing_composer(self):
+        from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
+
+        provider = ClaudeCodeProvider("t1", "s", "w")
+        for frame in (
+            ["● The previous task is done."],
+            ["✻ Thought for 12s", "────────────────────────", "❯", "────────────────────────"],
+            ["* Remember to check after deploying…"],
+        ):
+            sm = self._bursting_monitor(screen_lines=frame)
+            sm._bursting["t1"] = True
+            before = dict(vars(provider))
+            sm._schedule_screen_detection("t1", provider)
+            assert sm._last_status["t1"] == TerminalStatus.IDLE
+            assert vars(provider) == before
+
     def test_codex_spinner_frame_probes_processing_without_mutating(self):
         """The regression this fix exists for, through the real provider."""
         from cli_agent_orchestrator.providers.codex import CodexProvider
@@ -1959,9 +1995,7 @@ class TestRuntimeFailureClassification:
         sm = StatusMonitor()
         sm._process_chunk("t1", "raw API Error: 429 rate limit")
 
-        provider.get_runtime_failure.assert_called_once_with(
-            "raw API Error: 429 rate limit"
-        )
+        provider.get_runtime_failure.assert_called_once_with("raw API Error: 429 rate limit")
         mock_persist.assert_called_once()
         assert sm.get_runtime_failure("t1")["kind"] == "rate_limited"
         assert mock_bus.publish.call_args.args[1]["runtime_failure"]["kind"] == "rate_limited"

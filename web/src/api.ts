@@ -1048,6 +1048,10 @@ export const api = {
     ),
   getTerminalOutput: (id: string, mode: 'full' | 'last' = 'full') =>
     fetchJSON<{ output: string; mode: string }>(`/terminals/${id}/output?mode=${mode}`),
+  getTerminalDisplayOutput: (id: string, mode: 'full' | 'last') =>
+    fetchJSON<{ output: string; mode: string; source: 'transcript' | 'recording' | 'scrollback' | 'rendered_response'; truncated: boolean; limited_reason?: 'replay_budget' }>(
+      `/terminals/${id}/display-output?mode=${mode}`,
+    ),
   // Rendered plain-text scrollback (tmux capture-pane), not the raw byte stream.
   getTerminalScrollback: (id: string) =>
     fetchJSON<{ screen: string; ansi: boolean }>(`/terminals/${id}/screen?ansi=false&scrollback=true`),

@@ -626,6 +626,29 @@ class TestGetHistory:
 
         mock_pane.cmd.assert_called_once_with("capture-pane", "-e", "-p", "-S", "-50")
 
+    def test_display_history_joins_only_tmux_soft_wraps_without_resizing(self, tmux):
+        pane = MagicMock()
+        pane.cmd.return_value.stdout = ["| original wide table row |", "next logical line"]
+        with (
+            patch.object(tmux, "_find_session", return_value=MagicMock()),
+            patch.object(tmux, "_resolve_pane", return_value=pane),
+        ):
+            result = tmux.get_history(
+                "ses", "win", strip_escapes=True, full_history=True, join_wrapped=True
+            )
+        assert result == "| original wide table row |\nnext logical line"
+        pane.cmd.assert_called_once_with("capture-pane", "-J", "-p", "-S", "-")
+
+    def test_get_dimensions_reads_geometry_without_resize(self, tmux):
+        pane = MagicMock()
+        pane.cmd.return_value.stdout = ["140 45"]
+        with (
+            patch.object(tmux, "_find_session", return_value=MagicMock()),
+            patch.object(tmux, "_resolve_pane", return_value=pane),
+        ):
+            assert tmux.get_dimensions("ses", "win") == (140, 45)
+        pane.cmd.assert_called_once_with("display-message", "-p", "#{pane_width} #{pane_height}")
+
     def test_get_history_full_history(self, tmux):
         mock_pane = MagicMock()
         mock_result = MagicMock()

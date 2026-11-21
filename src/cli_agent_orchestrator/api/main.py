@@ -4968,6 +4968,30 @@ async def get_terminal_output(
         )
 
 
+@app.get("/terminals/{terminal_id}/display-output")
+async def get_terminal_display_output(
+    terminal_id: TerminalId,
+    mode: OutputMode = OutputMode.LAST,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    """Public text for the output viewer, independent of terminal size when supported.
+
+    Unlike /output (the orchestration buffer), full mode prefers a provider's
+    original conversation transcript. Scrollback fallbacks are explicitly labeled.
+    """
+    try:
+        return await asyncio.to_thread(terminal_service.get_display_output, terminal_id, mode)
+    except OutputExtractionError as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to read display output for %s", terminal_id)
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to read display output"
+        ) from exc
+
+
 @app.get("/terminals/{terminal_id}/screen")
 async def get_terminal_screen(
     terminal_id: TerminalId,
