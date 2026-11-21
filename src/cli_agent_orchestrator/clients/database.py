@@ -24,7 +24,7 @@ from sqlalchemy import (
     or_,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, declarative_base, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, declarative_base, deferred, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
 from cli_agent_orchestrator.constants import DATABASE_URL, DB_DIR, DEFAULT_PROVIDER
@@ -194,6 +194,9 @@ class TerminalModel(Base):
     # polling cannot invent or erase lifecycle truth. Sharing the
     # deferred_init_failure persistence shape keeps callers uniform (#runtime).
     runtime_failure_json = Column("runtime_failure", Text, nullable=True)
+    # Last observed display status survives cao-server restarts. Never reused
+    # as post-dispatch execution evidence; the monitor validates its lifetime.
+    status_checkpoint_json = deferred(Column("status_checkpoint", Text, nullable=True))
     # Server-owned reciprocal linkage for explicit successor-first account
     # switching. Kept outside consumer metadata so agents cannot forge or erase
     # lifecycle ownership.
@@ -2069,6 +2072,10 @@ def _migrate_terminals_schema() -> None:
             conn.execute("ALTER TABLE terminals ADD COLUMN runtime_failure TEXT")
             conn.commit()
             logger.info("Migration: added runtime_failure column to terminals table")
+        if "status_checkpoint" not in columns:
+            conn.execute("ALTER TABLE terminals ADD COLUMN status_checkpoint TEXT")
+            conn.commit()
+            logger.info("Migration: added status_checkpoint column to terminals table")
         if "switch_predecessor_id" not in columns:
             conn.execute("ALTER TABLE terminals ADD COLUMN switch_predecessor_id TEXT")
             conn.commit()

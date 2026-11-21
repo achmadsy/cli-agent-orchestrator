@@ -2339,6 +2339,7 @@ class TestGetTerminal:
             "last_active": datetime.now(),
         }
         mock_status_monitor.get_status.return_value = TerminalStatus.UNKNOWN
+        mock_status_monitor.display_status.return_value = TerminalStatus.UNKNOWN
 
         result = get_terminal("test1234")
 

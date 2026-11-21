@@ -291,8 +291,10 @@ def reported_status(terminal_id: str, status: TerminalStatus) -> TerminalStatus:
       change delivery decisions, not just reporting. This is a reporting-layer
       concern only, applied where a status crosses the API boundary.
     """
-    if status in _COMPLETABLE_STATUSES and initial_delivery_pending(terminal_id):
-        return TerminalStatus.UNKNOWN
+    if initial_delivery_pending(terminal_id):
+        return TerminalStatus.UNKNOWN if status in _COMPLETABLE_STATUSES else status
+    if status == TerminalStatus.UNKNOWN:
+        return status_monitor.display_status(terminal_id, status)
     return status
 
 
@@ -4169,6 +4171,7 @@ def dispatch_input(
         )
 
         update_last_active(terminal_id)
+        status_monitor.checkpoint_after_input(terminal_id)
         logger.info(f"Sent input to terminal: {terminal_id}")
         if registry is not None and sender_id is not None and orchestration_type is not None:
             # Telemetry (opt-in; no-ops without the [otel] extra or when the SDK
@@ -4234,6 +4237,7 @@ def send_special_key(terminal_id: str, key: str) -> bool:
         get_backend().send_special_key(metadata["tmux_session"], metadata["tmux_window"], key)
 
         update_last_active(terminal_id)
+        status_monitor.checkpoint_after_input(terminal_id)
         logger.info(f"Sent special key '{key}' to terminal: {terminal_id}")
         return True
 

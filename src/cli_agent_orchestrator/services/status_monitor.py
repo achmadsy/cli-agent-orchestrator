@@ -21,6 +21,7 @@ from cli_agent_orchestrator.models.terminal import ProviderRuntimeFailure, Termi
 from cli_agent_orchestrator.providers.manager import provider_manager
 from cli_agent_orchestrator.services.event_bus import bus
 from cli_agent_orchestrator.services.settings_service import get_server_settings
+from cli_agent_orchestrator.services import terminal_status_store
 from cli_agent_orchestrator.utils.event import terminal_id_from_topic
 
 # Runtime-failure plumbing imports live at module level (all imports safe,
@@ -245,11 +246,62 @@ class StatusMonitor:
         self.ready = asyncio.Event()
         self._monitoring: Dict[str, dict] = {}
         self._snapshot_candidate: Dict[str, tuple] = {}
+        # A durable display checkpoint is deliberately separate from applied
+        # status and output stamps used by delivery/completion waiters.
+        self._display_status: Dict[str, tuple] = {}
+        self._checkpointed: Dict[str, tuple] = {}
+
+    def _checkpoint(self, terminal_id: str, status: TerminalStatus, source: str) -> bool:
+        if self._checkpointed.get(terminal_id) == (status, source):
+            return True
+        try:
+            row = terminal_status_store.context(terminal_id)
+            # IDLE/COMPLETED may still be the prior turn repaint, including
+            # after restart. It must not settle a durable pre-send fence.
+            if (row and source == "live_output"
+                    and status in (TerminalStatus.IDLE, TerminalStatus.COMPLETED)
+                    and terminal_status_store.input_pending(row)):
+                return False
+            saved = bool(row and terminal_status_store.save(row, status, source))
+            if saved:
+                self._checkpointed[terminal_id] = (status, source)
+            return saved
+        except Exception as exc:
+            logger.warning("Could not persist display status for %s: %s", terminal_id, exc)
+            return False
+
+    def checkpoint_after_input(self, terminal_id: str) -> None:
+        """Re-stamp evidence earned during send_keys after last_active advances."""
+        with self._lock:
+            if (self._checkpointed.get(terminal_id)
+                    == (self._last_status.get(terminal_id), "live_output")):
+                self._checkpointed.pop(terminal_id, None)
+                self._checkpoint(terminal_id, self._last_status[terminal_id], "live_output")
+
+    def display_status(self, terminal_id: str, observed: TerminalStatus) -> TerminalStatus:
+        """API projection only; never called by execution/delivery waiters."""
+        with self._lock:
+            restored = self._display_status.get(terminal_id)
+            if observed != TerminalStatus.UNKNOWN or restored is None:
+                return observed
+            try:
+                row = terminal_status_store.context(terminal_id)
+                checkpoint = terminal_status_store.read(row) if row else None
+                if (row and terminal_status_store.identity(row) == restored[1]
+                        and terminal_status_store.recoverable(row)
+                        and not terminal_status_store.input_pending(row)
+                        and checkpoint and checkpoint["status"] == restored[0].value):
+                    return restored[0]
+            except Exception:
+                pass
+            self._display_status.pop(terminal_id, None)
+            return observed
 
     def set_monitoring(self, terminal_id: str, state: str, reason: str) -> None:
         """Content-free observation health; not an agent readiness verdict."""
         with self._lock:
             self._snapshot_candidate.pop(terminal_id, None)
+            self._display_status.pop(terminal_id, None)
             self._monitoring[terminal_id] = {"state": state, "reason": reason}
 
     def monitoring_diagnostic(self, terminal_id: str) -> dict:
@@ -269,8 +321,32 @@ class StatusMonitor:
                 return
             generation = self._capture_generation.get(terminal_id, 0)
             witness = self._monitoring.setdefault(terminal_id, {"state": "attached", "reason": "awaiting_output"})
+        try:
+            row = terminal_status_store.context(terminal_id)
+        except Exception:
+            row = None
+        checkpoint = terminal_status_store.read(row) if row else None
+        # Input was armed but not observed before a crash, or last_active
+        # advanced after the checkpoint. Do not resurrect an old ready frame.
+        blocked = bool(row and (
+            terminal_status_store.input_pending(row)
+            or (row["status_checkpoint"] and checkpoint is None)
+        ))
         provider = provider_manager.get_provider(terminal_id)
         if provider is None or not getattr(provider, "supports_screen_detection", False):
+            if row and checkpoint and not blocked and terminal_status_store.recoverable(row):
+                capture()  # Exact, live ownership must still be validated.
+                with self._lock:
+                    if (self._capture_generation.get(terminal_id, 0) == generation
+                            and self._monitoring.get(terminal_id) is witness):
+                        self._display_status[terminal_id] = (
+                            TerminalStatus(checkpoint["status"]), terminal_status_store.identity(row)
+                        )
+                        self._monitoring[terminal_id] = {
+                            "state": "attached", "reason": "checkpoint_only",
+                            "observed_status": checkpoint["status"], "source": "database",
+                        }
+                return
             self.set_monitoring(terminal_id, "attached", "awaiting_output")
             return
         lines = capture().splitlines()
@@ -289,6 +365,15 @@ class StatusMonitor:
                     "state": "attached", "reason": "snapshot_only",
                     "observed_status": detected.value, "source": "viewport",
                 }
+                self._display_status.pop(terminal_id, None)
+                if row and not blocked and terminal_status_store.recoverable(row):
+                    try:
+                        if terminal_status_store.save(row, detected, "viewport"):
+                            self._display_status[terminal_id] = (
+                                detected, terminal_status_store.identity(row)
+                            )
+                    except Exception as exc:
+                        logger.warning("Could not checkpoint snapshot for %s: %s", terminal_id, exc)
             else:
                 self._monitoring[terminal_id] = {"state": "attached", "reason": "awaiting_output"}
 
@@ -346,6 +431,7 @@ class StatusMonitor:
 
         with self._lock:
             self._snapshot_candidate.pop(terminal_id, None)
+            self._display_status.pop(terminal_id, None)
             self._monitoring[terminal_id] = {"state": "attached", "reason": "live_output", "source": "fifo"}
             buffer = self._buffers.get(terminal_id, "") + chunk
             recorder = getattr(provider, "record_status_chunk", None)
@@ -431,7 +517,9 @@ class StatusMonitor:
                 self._processing_generation[terminal_id] = self._capture_generation.get(
                     terminal_id, 0
                 )
-            changed = self._apply_detection_locked(terminal_id, detected)
+            changed = self._apply_detection_locked(
+                terminal_id, detected, persist=processing_evidence
+            )
             if (
                 not changed
                 and detected == TerminalStatus.PROCESSING
@@ -445,6 +533,12 @@ class StatusMonitor:
                 # turn's completion box and re-parses as the same COMPLETED, and
                 # that is exactly the stale reading a stamp must not refresh.
                 self._status_generation[terminal_id] = self._output_generation.get(terminal_id, 0)
+            if (not changed and processing_evidence
+                    and detected != TerminalStatus.UNKNOWN
+                    and self._last_status.get(terminal_id) == detected):
+                # Retry a failed write; unchanged PROCESSING also settles an
+                # optimistic latch without writing on every redraw.
+                self._checkpoint(terminal_id, detected, "live_output")
         if changed:
             # Publish outside the lock — subscribers must never be able to
             # re-enter StatusMonitor while the latch state is mid-update.
@@ -452,7 +546,9 @@ class StatusMonitor:
             logger.info(f"Terminal {terminal_id} status changed: {detected.value}")
         return True
 
-    def _apply_detection_locked(self, terminal_id: str, detected: TerminalStatus) -> bool:
+    def _apply_detection_locked(
+        self, terminal_id: str, detected: TerminalStatus, *, persist: bool = True
+    ) -> bool:
         """Sticky-latch core of _apply_detection. Caller MUST hold self._lock.
 
         Split out so callers that need to validate a precondition and apply in
@@ -508,6 +604,9 @@ class StatusMonitor:
             return False
 
         self._last_status[terminal_id] = detected
+        self._display_status.pop(terminal_id, None)
+        if persist and detected != TerminalStatus.UNKNOWN:
+            self._checkpoint(terminal_id, detected, "live_output")
         # Earned now, from whatever output has landed so far (see
         # ``status_observation``). Optimistic latches arrive here too
         # (notify_input_sent(assume_processing=True)); they are stamped with
@@ -1072,6 +1171,9 @@ class StatusMonitor:
             with self._lock:
                 self._snapshot_candidate.pop(terminal_id, None)
                 self._monitoring.pop(terminal_id, None)
+                self._display_status.pop(terminal_id, None)
+                self._checkpointed.pop(terminal_id, None)
+                self._checkpoint(terminal_id, TerminalStatus.UNKNOWN, "input_pending")
                 self._allow_processing_revert[terminal_id] = True
                 # A new turn invalidates every pane/runtime verdict sampled before
                 # this boundary, even when no new provider output has arrived.
@@ -1175,6 +1277,8 @@ class StatusMonitor:
         with self._lock:
             self._monitoring.pop(terminal_id, None)
             self._snapshot_candidate.pop(terminal_id, None)
+            self._display_status.pop(terminal_id, None)
+            self._checkpointed.pop(terminal_id, None)
             self._buffers.pop(terminal_id, None)
             self._buffer_epochs.pop(terminal_id, None)
             self._last_status.pop(terminal_id, None)
@@ -1214,6 +1318,9 @@ class StatusMonitor:
                 self._runtime_failures.pop(terminal_id, None)
                 self._monitoring.pop(terminal_id, None)
                 self._snapshot_candidate.pop(terminal_id, None)
+                self._display_status.pop(terminal_id, None)
+                self._checkpointed.pop(terminal_id, None)
+                self._checkpoint(terminal_id, TerminalStatus.UNKNOWN, "input_pending")
                 self._buffers[terminal_id] = ""
                 self._last_status.pop(terminal_id, None)
                 self._processing_generation.pop(terminal_id, None)
