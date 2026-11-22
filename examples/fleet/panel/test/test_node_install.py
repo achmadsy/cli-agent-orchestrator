@@ -77,6 +77,14 @@ def test_fresh_install_real_files_and_health_order(target, monkeypatch, capsys):
     assert "/tmp/tmux-fixture/default" in unit and "NoNewPrivileges=true" in unit
     backend = (home / ".config/systemd/user/cao-server.service").read_text()
     assert "terminal-workspace.env" in backend
+    # A healthy sidecar can still reject every viewer if systemd picks an older
+    # system tmux than the Homebrew client used by cao-server's live server.
+    example = (Path(__file__).resolve().parents[4] / "scripts/cao-terminal.service.example").read_text()
+    paths = [next(line for line in text.splitlines() if line.startswith("Environment=PATH="))
+             for text in (backend, unit, example)]
+    assert paths[0] == paths[1] == paths[2]
+    directories = paths[0].removeprefix("Environment=PATH=").split(":")
+    assert directories.index("/home/linuxbrew/.linuxbrew/bin") < directories.index("/usr/bin")
     uv = next(c for c in calls if c[:3] == ["uv", "tool", "install"])
     assert "--no-python-downloads" in uv and "--no-build" in uv and "--reinstall" not in uv
     assert "--only-binary" not in uv

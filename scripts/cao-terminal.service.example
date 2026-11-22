@@ -6,6 +6,9 @@ After=network.target
 
 [Service]
 Type=simple
+# Match cao-server's tmux resolution (Homebrew must precede the system client).
+# Adjust this PATH together with cao-server if tmux is installed elsewhere.
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=%h/.config/cao/terminal-workspace.env
 ExecStart=%h/.local/bin/cao-terminal --listen 127.0.0.1:9528 --socket /replace/with/cao/tmux/socket --config /replace/with/cao-config.example.json
 Restart=on-failure
