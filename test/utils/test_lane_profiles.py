@@ -88,6 +88,44 @@ def test_developer_handoff_carries_verification(name):
     assert "Include the Verification requirements" in _section(_raw(name), "Workflow")
 
 
+def test_probe_recovers_from_capability_gaps_without_silent_escalation():
+    recovery = _section(_raw("probe_supervisor"), "Capability Recovery")
+    for requirement in (
+        "find_profiles",
+        "planner cannot execute shell commands",
+        "not installed",
+        "not exposed",
+        "explicit approval",
+        "After approval",
+        "preserve the user's constraints",
+        "Do not default to asking the user to run commands",
+        "transport success",
+    ):
+        assert requirement in recovery
+    # Recovery must not silently grant execution or weaken the Probe boundary.
+    profile = parse_agent_profile_text(_raw("probe_supervisor"), "probe_supervisor")
+    assert profile.role == "supervisor"
+    assert profile.allowedTools is None
+    rules = _section(_raw("probe_supervisor"), "Critical Rules")
+    assert "unless the user explicitly confirmed an escalation" in rules
+
+
+def test_planner_keeps_read_only_policy_without_native_plan_mode():
+    profile = parse_agent_profile_text(_raw("planner"), "planner")
+    assert profile.permissionMode is None
+    assert set(profile.allowedTools) == {"fs_read", "fs_list", "@cao-mcp-server"}
+    recovery = _section(_raw("planner"), "Capability Boundaries")
+    for requirement in (
+        "Do not enter provider-native Plan Mode",
+        "execution-capable worker",
+        "not installed",
+        "not exposed",
+        "supervisor",
+        "approval",
+    ):
+        assert requirement in recovery
+
+
 def test_architect_planner_compares_approaches():
     workflow = _section(_raw("architect_supervisor"), "Workflow")
     assert "compare 2-3 distinct approaches" in workflow

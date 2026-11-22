@@ -113,6 +113,24 @@ permissionMode: auto
 You review code for quality and correctness.
 ```
 
+The bundled `planner` deliberately omits `permissionMode`: planning is its role,
+not a request to enter Claude Code's native Plan Mode. It uses CAO's default
+noninteractive bypass, while its `allowedTools` still produces explicit
+`--disallowedTools` flags for execution, file writes, and network tools. Bypass
+suppresses approval prompts; it does not restore those blocked tools. Explicit
+permission-mode overrides in operator-defined profiles remain supported.
+
+When a Probe task needs capabilities outside that read/search policy, the
+supervisor checks permitted alternatives and profile discovery first. It asks
+for a concrete, scoped escalation before using an execution-capable worker;
+it must not send shell-dependent work to another restricted planner. A tool
+that is unavailable to the profile is not evidence that a dependency is absent
+from the machine. Worker blockers should lead to a recovery proposal, not be
+reported as successful analysis merely because the handoff returned normally.
+These recovery rules are agent instructions, not an automatic installation or
+permission-grant mechanism. Existing sessions retain the profile prompt and
+launch flags they started with; this change applies on a new launch.
+
 ## Eager Inbox Delivery
 
 Claude Code's Ink TUI buffers pasted input even while the agent is processing. CAO exploits this to deliver queued inbox messages during PROCESSING and WAITING_USER_ANSWER states, eliminating inter-turn latency. Enable with `CAO_EAGER_INBOX_DELIVERY=true`.

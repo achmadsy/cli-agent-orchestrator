@@ -1760,6 +1760,47 @@ class TestClaudeCodeProviderClaudeConfig:
 
 class TestClaudeCodeProviderPermissionMode:
 
+    def test_bundled_planner_bypasses_approvals_but_still_blocks_execution(
+        self, tmp_path, monkeypatch
+    ):
+        """Exercise the shipped profile and real command builder, not a mock profile."""
+        from importlib import resources
+
+        from cli_agent_orchestrator.utils.agent_profiles import parse_agent_profile_text
+
+        source = resources.files("cli_agent_orchestrator.agent_store") / "planner.md"
+        profile = parse_agent_profile_text(source.read_text(), "planner")
+        monkeypatch.setattr("cli_agent_orchestrator.providers.claude_code.CAO_HOME_DIR", tmp_path)
+        monkeypatch.setattr("cli_agent_orchestrator.providers.claude_code.os.geteuid", lambda: 1000)
+        provider = ClaudeCodeProvider(
+            "test-planner",
+            "test-session",
+            "planner",
+            "planner",
+            allowed_tools=profile.allowedTools,
+        )
+        command = provider._build_claude_command(profile)
+        args = shlex.split(command)
+        assert "--dangerously-skip-permissions" in args
+        assert "--permission-mode" not in args
+        denied = {args[i + 1] for i, arg in enumerate(args) if arg == "--disallowedTools"}
+        assert {
+            "Bash",
+            "Agent",
+            "Task",
+            "Monitor",
+            "Edit",
+            "Write",
+            "NotebookEdit",
+            "WebFetch",
+            "WebSearch",
+        } <= denied
+        assert not {"Read", "Glob", "Grep"} & denied
+        assert not any("cao-mcp-server" in tool for tool in denied)
+        config = _extract_mcp_config(command)
+        assert set(config["mcpServers"]) == {"cao-mcp-server"}
+        assert config["mcpServers"]["cao-mcp-server"]["env"]["CAO_TERMINAL_ID"] == "test-planner"
+
     @patch("cli_agent_orchestrator.providers.claude_code.agent_profiles.load_agent_profile")
     def test_uses_permission_mode_when_set_and_not_yolo(self, mock_load):
         mock_profile = MagicMock()
