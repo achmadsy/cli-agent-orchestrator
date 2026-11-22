@@ -31,6 +31,17 @@ describe('API wrapper', () => {
     expect(mockFetch).toHaveBeenCalledWith('/sessions', expect.objectContaining({ signal: expect.any(AbortSignal) }))
   })
 
+  it('inbox history is an explicit read-only query option', async () => {
+    mockResponse([])
+    await api.getInboxMessages('new00000', 50, undefined, {
+      latest: true, includeSent: true, includeHistory: true,
+    })
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/terminals/new00000/inbox/messages?limit=50&latest=true&include_sent=true&include_history=true',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+  })
+
   it('listProfiles fetches /agents/profiles', async () => {
     const profiles = [{ name: 'dev', description: 'Developer', source: 'built-in' }]
     mockResponse(profiles)

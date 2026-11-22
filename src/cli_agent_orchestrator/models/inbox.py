@@ -45,6 +45,9 @@ class InboxMessage(BaseModel):
     status: MessageStatus = Field(..., description="Message status")
     created_at: datetime = Field(..., description="Creation timestamp (UTC)")
     channel: MessageChannel = Field(MessageChannel.QUEUED, description="Delivery channel")
+    history_terminal_id: str | None = Field(
+        None, description="Original lineage terminal for a historical row; display only"
+    )
 
     @field_validator("created_at")
     @classmethod

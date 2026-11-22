@@ -304,6 +304,19 @@ class InboxModel(Base):
     )
 
 
+class InboxHistoryLinkModel(Base):
+    """Operator-established read-only lineage; never used by message delivery.
+
+    No foreign keys: history must survive predecessor registry cleanup. Links
+    are immutable and are not derived from consumer-editable terminal metadata.
+    """
+
+    __tablename__ = "inbox_history_links"
+
+    terminal_id = Column(String, primary_key=True)
+    predecessor_id = Column(String, nullable=False)
+
+
 class MemoryMetadataModel(Base):
     """SQLAlchemy model for memory metadata (Phase 2 U1).
 
@@ -3159,6 +3172,46 @@ def get_pending_messages(receiver_id: str, limit: int = 1) -> List[InboxMessage]
     )
 
 
+def _inbox_history_ids(db, terminal_id: str) -> List[str]:
+    """Resolve only explicit server-owned links, with corrupt-cycle protection."""
+    ids = [terminal_id]
+    while True:
+        link = db.get(InboxHistoryLinkModel, ids[-1])
+        if link is None:
+            return ids
+        if link.predecessor_id in ids:
+            raise ValueError("Inbox history cycle detected")
+        if len(ids) >= 100:
+            raise ValueError("Inbox history chain exceeds 100 terminals")
+        ids.append(link.predecessor_id)
+
+
+def link_inbox_history(terminal_id: str, predecessor_id: str) -> None:
+    """Explicit operator repair after verified recovery, not a public tool/API.
+
+    Preserve original message identities/statuses. This authorizes a historical
+    read only: pending delivery continues to query the exact current receiver.
+    """
+    with SessionLocal() as db:
+        # Serialize cycle-check + insertion across local operator processes.
+        db.execute(text("BEGIN IMMEDIATE"))
+        for value in (terminal_id, predecessor_id):
+            if not db.query(TerminalModel.id).filter(TerminalModel.id == value).first():
+                raise ValueError(f"Terminal '{value}' not found")
+        existing = db.get(InboxHistoryLinkModel, terminal_id)
+        if existing is not None:
+            if existing.predecessor_id == predecessor_id:
+                return
+            raise ValueError("Terminal already has an inbox history predecessor")
+        ancestors = _inbox_history_ids(db, predecessor_id)
+        if terminal_id in ancestors:
+            raise ValueError("Inbox history link would create a cycle")
+        if len(ancestors) >= 100:
+            raise ValueError("Inbox history chain exceeds 100 terminals")
+        db.add(InboxHistoryLinkModel(terminal_id=terminal_id, predecessor_id=predecessor_id))
+        db.commit()
+
+
 def _to_inbox_message(msg: "InboxModel") -> InboxMessage:
     return InboxMessage(
         id=msg.id,
@@ -3179,6 +3232,7 @@ def get_inbox_messages(
     channel: Optional[MessageChannel] = None,
     latest: bool = False,
     include_sent: bool = False,
+    include_history: bool = False,
 ) -> List[InboxMessage]:
     """Get inbox messages ordered by created_at ASC (oldest first).
 
@@ -3191,17 +3245,20 @@ def get_inbox_messages(
             oldest. The result is still ordered oldest first. Delivery code must
             keep the default, because it drains the oldest message first.
         include_sent: Also include messages this terminal SENT to others.
+        include_history: Read explicit predecessor history. Display-only opt-in;
+            delivery callers must keep False, even when showing pending history.
 
     Returns:
         List of inbox messages ordered by creation time (oldest first)
     """
     with SessionLocal() as db:
+        ids = _inbox_history_ids(db, receiver_id) if include_history else [receiver_id]
         if include_sent:
             query = db.query(InboxModel).filter(
-                or_(InboxModel.receiver_id == receiver_id, InboxModel.sender_id == receiver_id)
+                or_(InboxModel.receiver_id.in_(ids), InboxModel.sender_id.in_(ids))
             )
         else:
-            query = db.query(InboxModel).filter(InboxModel.receiver_id == receiver_id)
+            query = db.query(InboxModel).filter(InboxModel.receiver_id.in_(ids))
 
         if status is not None:
             query = query.filter(InboxModel.status == status.value)
@@ -3218,7 +3275,17 @@ def get_inbox_messages(
         else:
             messages = query.order_by(InboxModel.created_at.asc()).limit(limit).all()
 
-        return [_to_inbox_message(msg) for msg in messages]
+        result = []
+        for msg in messages:
+            item = _to_inbox_message(msg)
+            if receiver_id not in (msg.receiver_id, msg.sender_id):
+                # Preserve true sender/receiver IDs. Give the viewer the lineage
+                # identity needed to classify historical incoming vs outgoing.
+                item.history_terminal_id = next(
+                    value for value in ids if value in (msg.receiver_id, msg.sender_id)
+                )
+            result.append(item)
+        return result
 
 
 def record_direct_message(

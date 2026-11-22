@@ -77,6 +77,7 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
       const data = await api.getInboxMessages(terminalId, 50, status, {
         latest: true,
         includeSent: true,
+        includeHistory: true,
       })
       setMessages(data)
     } catch {
@@ -130,7 +131,8 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
     }
   }
 
-  const isReceiver = (msg: InboxMessage) => msg.receiver_id === terminalId
+  const isReceiver = (msg: InboxMessage) =>
+    msg.receiver_id === terminalId || msg.receiver_id === msg.history_terminal_id
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
@@ -212,6 +214,11 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
                       <MessageChannelBadge channel={msg.channel} />
                       <MessageStatusBadge status={msg.status} />
                     </div>
+                    {msg.history_terminal_id && (
+                      <p className="text-[10px] text-gray-500 mb-1">
+                        History from {msg.history_terminal_id} (not requeued)
+                      </p>
+                    )}
                     <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{msg.message}</p>
                     {msg.created_at && (
                       <p className="text-[10px] text-gray-600 mt-1">{formatRelativeTime(msg.created_at)}</p>

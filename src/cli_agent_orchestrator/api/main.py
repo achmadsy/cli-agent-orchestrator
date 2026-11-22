@@ -8476,6 +8476,10 @@ async def get_inbox_messages_endpoint(
         default=False,
         description="Also include messages this terminal sent to others",
     ),
+    include_history: bool = Query(
+        default=False,
+        description="Include explicitly linked predecessor history (read only)",
+    ),
     _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
 ) -> List[Dict]:
     """Get inbox messages for a terminal.
@@ -8486,6 +8490,8 @@ async def get_inbox_messages_endpoint(
         status_param: Optional filter by message status ('pending', 'delivered', 'failed')
         latest: Return the newest ``limit`` rows instead of the oldest
         include_sent: Include rows where this terminal is the sender
+        include_history: Include explicit operator-linked predecessor history;
+            does not transfer queued messages or authorize redelivery
 
     Returns:
         List of inbox messages with sender_id, message, created_at, status, channel
@@ -8509,6 +8515,7 @@ async def get_inbox_messages_endpoint(
             status=status_filter,
             latest=latest,
             include_sent=include_sent,
+            **({"include_history": True} if include_history else {}),
         )
 
         # Convert to response format
@@ -8523,6 +8530,11 @@ async def get_inbox_messages_endpoint(
                     "status": msg.status.value,
                     "channel": msg.channel.value,
                     "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                    **(
+                        {"history_terminal_id": msg.history_terminal_id}
+                        if msg.history_terminal_id is not None
+                        else {}
+                    ),
                 }
             )
 

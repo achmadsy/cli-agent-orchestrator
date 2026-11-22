@@ -128,6 +128,49 @@ class TestGetInboxMessagesEndpoint:
                 "abcdef12", limit=50, status=None, latest=True, include_sent=True
             )
 
+    def test_history_is_opt_in_and_original_ids_are_preserved(self, client):
+        row = InboxMessage(
+            id=1,
+            sender_id="ui",
+            receiver_id="old00000",
+            message="retained input",
+            status=MessageStatus.DELIVERED,
+            channel=MessageChannel.DIRECT,
+            history_terminal_id="old00000",
+            created_at=datetime(2025, 12, 6, 12, 0, 0),
+        )
+        with patch("cli_agent_orchestrator.api.main.get_inbox_messages", return_value=[row]) as get:
+            response = client.get(
+                "/terminals/abcdef12/inbox/messages?include_history=true&include_sent=true"
+            )
+        assert response.status_code == 200
+        assert response.json()[0]["receiver_id"] == "old00000"
+        assert response.json()[0]["history_terminal_id"] == "old00000"
+        get.assert_called_once_with(
+            "abcdef12",
+            limit=10,
+            status=None,
+            latest=False,
+            include_sent=True,
+            include_history=True,
+        )
+
+    def test_linked_history_endpoint_uses_durable_rows(self, client, isolated_memory_db):
+        from cli_agent_orchestrator.clients import database as db
+
+        for tid in ("old00000", "abcdef12", "peer0000"):
+            db.create_terminal(tid, "cao-" + tid, "agent", "claude_code")
+        incoming = db.record_direct_message("ui", "old00000", "retained", MessageStatus.DELIVERED)
+        outgoing = db.create_inbox_message("old00000", "peer0000", "outgoing").id
+        db.link_inbox_history("abcdef12", "old00000")
+        assert client.get("/terminals/abcdef12/inbox/messages").json() == []
+        rows = client.get(
+            "/terminals/abcdef12/inbox/messages?include_history=true&include_sent=true"
+        ).json()
+        assert [row["id"] for row in rows] == [incoming, outgoing]
+        assert all(row["history_terminal_id"] == "old00000" for row in rows)
+        assert db.get_pending_messages("abcdef12") == []
+
     def test_response_includes_channel(self, client):
         """Each row reports how it reached the receiver: queued or direct."""
         rows = [

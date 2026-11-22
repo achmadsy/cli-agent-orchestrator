@@ -298,6 +298,8 @@ export interface InboxMessage {
   // queued: waited in the inbox for an idle agent. direct: typed straight into the terminal.
   // Optional so responses from an older server still parse.
   channel?: 'queued' | 'direct'
+  // Original identity in an explicitly linked recovery history; never a send target.
+  history_terminal_id?: string
   created_at: string | null
 }
 
@@ -1081,9 +1083,9 @@ export const api = {
     terminalId: string,
     limit?: number,
     status?: string,
-    opts: { latest?: boolean; includeSent?: boolean } = {},
+    opts: { latest?: boolean; includeSent?: boolean; includeHistory?: boolean } = {},
   ) =>
-    fetchJSON<InboxMessage[]>(`/terminals/${terminalId}/inbox/messages?limit=${limit || 50}${status ? `&status=${status}` : ''}${opts.latest ? '&latest=true' : ''}${opts.includeSent ? '&include_sent=true' : ''}`),
+    fetchJSON<InboxMessage[]>(`/terminals/${terminalId}/inbox/messages?limit=${limit || 50}${status ? `&status=${status}` : ''}${opts.latest ? '&latest=true' : ''}${opts.includeSent ? '&include_sent=true' : ''}${opts.includeHistory ? '&include_history=true' : ''}`),
   sendInboxMessage: (receiverId: string, senderId: string, message: string) =>
     fetchJSON<{ success: boolean }>(`/terminals/${receiverId}/inbox/messages?sender_id=${senderId}&message=${encodeURIComponent(message)}`, { method: 'POST' }),
 

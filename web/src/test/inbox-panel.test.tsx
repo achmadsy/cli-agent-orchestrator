@@ -57,6 +57,7 @@ describe('InboxPanel', () => {
     expect(api.getInboxMessages).toHaveBeenCalledWith('worker99', 50, undefined, {
       latest: true,
       includeSent: true,
+      includeHistory: true,
     })
   })
 
@@ -70,6 +71,21 @@ describe('InboxPanel', () => {
     expect(screen.getByText('reply from this agent')).toBeInTheDocument()
     expect(screen.getAllByText('Direct')).toHaveLength(1)
     expect(screen.getAllByText('Queued')).toHaveLength(2)
+  })
+
+  it('shows original identities and correct direction for recovered history', async () => {
+    vi.mocked(api.getInboxMessages).mockResolvedValue(rows.map(row => ({
+      ...row,
+      history_terminal_id: 'worker99',
+    })))
+    render(<InboxPanel terminalId="new00000" onClose={() => {}} />)
+    await screen.findByText('typed from quick-send')
+
+    expect(screen.getByText('from ui')).toBeInTheDocument()
+    expect(screen.getByText('from sup12345')).toBeInTheDocument()
+    expect(screen.getByText('to sup12345')).toBeInTheDocument()
+    expect(screen.getAllByText('History from worker99 (not requeued)')).toHaveLength(3)
+    expect(api.sendInboxMessage).not.toHaveBeenCalled()
   })
 
   it('labels the send box as a queue', async () => {
