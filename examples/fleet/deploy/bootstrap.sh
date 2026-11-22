@@ -160,6 +160,9 @@ Environment=CAO_MCP_APPS_ENABLED=true
 ExecStart=${CAO_BIN} --host ${BIND_HOST} --port ${CAO_PORT}
 Restart=on-failure
 RestartSec=3
+# tmux and agents inherit this cgroup even after daemonizing. Stop/restart only
+# the API process; sessions remain alive and require explicit session cleanup.
+KillMode=process
 
 [Install]
 WantedBy=$([ "$scope" = "system" ] && echo multi-user.target || echo default.target)

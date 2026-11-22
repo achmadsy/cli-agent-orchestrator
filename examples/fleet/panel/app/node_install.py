@@ -204,7 +204,10 @@ def install(python):
         write(home / ".local/bin/cao-terminal", blobs[manifest["sidecars"][release_arch()]["file"]], 0o755)
         unitdir = home / ".config/systemd/user"
         common = "[Service]\nType=simple\nEnvironment=PATH=/home/linuxbrew/.linuxbrew/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin\nEnvironmentFile=%h/.config/cao/terminal-workspace.env\nRestart=on-failure\nRestartSec=3\nUMask=0077\n"
-        backend = "[Unit]\nDescription=CLI Agent Orchestrator server\nAfter=network-online.target\n\n" + common + "EnvironmentFile=%h/.config/cao/cao-server.env\nExecStart=%h/.local/bin/cao-server --host " + env["CAO_BIND_HOST"] + " --port 9889\n\n[Install]\nWantedBy=default.target\n"
+        # tmux daemonization does not escape the service cgroup. Keep agent
+        # sessions alive on API stop/restart; use explicit session cleanup.
+        # Scope this exception to the backend, not the terminal sidecar.
+        backend = "[Unit]\nDescription=CLI Agent Orchestrator server\nAfter=network-online.target\n\n" + common + "# Preserve agent sessions; use explicit session cleanup.\nKillMode=process\nEnvironmentFile=%h/.config/cao/cao-server.env\nExecStart=%h/.local/bin/cao-server --host " + env["CAO_BIND_HOST"] + " --port 9889\n\n[Install]\nWantedBy=default.target\n"
         sidecar = "[Unit]\nDescription=CAO restricted terminal workspace\nAfter=network.target\n\n" + common + 'NoNewPrivileges=true\nExecStart=%h/.local/bin/cao-terminal --listen 127.0.0.1:9528 --socket "' + str(socket).replace("%", "%%") + '" --config %h/.config/cao/cao-terminal-ui.json\n\n[Install]\nWantedBy=default.target\n'
         write(unitdir / units[0], backend.encode())
         write(unitdir / units[1], sidecar.encode())

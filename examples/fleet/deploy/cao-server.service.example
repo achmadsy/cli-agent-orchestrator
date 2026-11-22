@@ -37,6 +37,9 @@ Environment=CAO_MCP_APPS_ENABLED=true
 ExecStart=/home/YOUR_USER/.local/bin/cao-server --host YOUR_BIND_HOST --port 9889
 Restart=on-failure
 RestartSec=3
+# tmux and agents inherit this cgroup even after daemonizing. Stop/restart only
+# the API process; sessions remain alive and require explicit session cleanup.
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target

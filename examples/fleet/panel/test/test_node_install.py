@@ -77,6 +77,10 @@ def test_fresh_install_real_files_and_health_order(target, monkeypatch, capsys):
     assert "/tmp/tmux-fixture/default" in unit and "NoNewPrivileges=true" in unit
     backend = (home / ".config/systemd/user/cao-server.service").read_text()
     assert "terminal-workspace.env" in backend
+    # A fresh tmux server inherits cao-server's cgroup despite daemonizing.
+    # API restarts must signal only the main process, not live agent panes.
+    assert "\nKillMode=process\n" in backend
+    assert "KillMode=process" not in unit
     # A healthy sidecar can still reject every viewer if systemd picks an older
     # system tmux than the Homebrew client used by cao-server's live server.
     example = (Path(__file__).resolve().parents[4] / "scripts/cao-terminal.service.example").read_text()
@@ -172,6 +176,16 @@ def test_existing_adapter_restored_on_later_health_failure(target, monkeypatch):
     assert stat.S_IMODE(target_file.stat().st_mode) == 0o640
     assert config.read_bytes() == b'{"provider":{"keep":true}}'
     assert not (home / ".config/cao/opencode-cbm-v2.json").exists()
+
+
+@pytest.mark.parametrize("relative", [
+    "examples/fleet/deploy/cao-server.service.example",
+    "examples/fleet/deploy/bootstrap.sh",
+])
+def test_manual_server_units_preserve_agent_processes(relative):
+    source = (Path(__file__).resolve().parents[4] / relative).read_text()
+    assert "\nKillMode=process\n" in source
+    assert "explicit session cleanup" in source
 
 
 def test_fresh_installer_user_service_policy(target, monkeypatch):
