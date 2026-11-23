@@ -5,6 +5,37 @@ import { OutputContent, outputSections } from '../components/OutputContent'
 afterEach(cleanup)
 
 describe('OutputContent', () => {
+  it('bolds only conversation role labels while preserving plain text and spacing', () => {
+    const text = 'User: first question\n  indented line\n\nAssistant: first answer\nUser:\nnext question'
+    const { container } = render(<OutputContent text={text} boldRoleLabels />)
+    expect(Array.from(container.querySelectorAll('strong'), node => node.textContent)).toEqual(['User:', 'Assistant:', 'User:'])
+    expect(container.querySelector('.output-plain')?.textContent).toBe(text)
+  })
+
+  it('bolds role labels alongside Markdown without changing code or table contents', () => {
+    const text = 'User: explain this\n\nAssistant: **answer**\n\n### Details\n\n```text\nUser: literal\nAssistant: literal\n```\n\n    User: indented code\n\n| Name | Value |\n| --- | --- |\n| User: | Assistant: |\n\n┌──────────┐\n│ User:   │\n└──────────┘'
+    const { container } = render(<OutputContent text={text} boldRoleLabels />)
+    expect(Array.from(container.querySelectorAll('strong'), node => node.textContent)).toEqual(['User:', 'Assistant:', 'answer'])
+    expect(screen.getByRole('heading', { name: 'Details' })).toBeInTheDocument()
+    expect(container.querySelector('pre code')?.textContent).toBe('User: literal\nAssistant: literal\n')
+    expect(screen.getByLabelText('Terminal table').querySelector('strong')).toBeNull()
+    expect(screen.getByRole('cell', { name: 'User:' }).querySelector('strong')).toBeNull()
+  })
+
+  it('does not bold inline mentions, inline code, or role-like prefixes', () => {
+    const text = 'Mention User: inline\nUser:config\n`Assistant: code` User: still inline\n\nAssistant: actual label'
+    const { container } = render(<OutputContent text={text} boldRoleLabels />)
+    expect(Array.from(container.querySelectorAll('strong'), node => node.textContent)).toEqual(['Assistant:'])
+    expect(screen.getByText('Assistant: code').tagName).toBe('CODE')
+  })
+
+  it('leaves role labels unchanged when conversation formatting is not enabled', () => {
+    const text = 'User: question\nAssistant: answer'
+    const { container } = render(<OutputContent text={text} />)
+    expect(container.querySelector('strong')).toBeNull()
+    expect(container.querySelector('.output-plain')?.textContent).toBe(text)
+  })
+
   it.each([
     '| Name | Value |\n| --- | --- |\n| **Radar** | 42 |',
     'Name | Value\n--- | ---\n**Radar** | 42',

@@ -194,7 +194,7 @@ export function OutputViewer({ terminalId, onClose }: OutputViewerProps) {
             >
               {presentation === 'raw'
                 ? <pre className="font-mono whitespace-pre">{cleanOutput}</pre>
-                : <OutputContent text={cleanOutput} />}
+                : <OutputContent text={cleanOutput} boldRoleLabels={mode === 'full'} />}
             </div>
           ) : (
             <div className="flex items-center justify-center h-full min-h-[200px]">

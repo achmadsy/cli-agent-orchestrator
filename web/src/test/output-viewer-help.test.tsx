@@ -53,6 +53,31 @@ describe('OutputViewer', () => {
     expect(api.getTerminalOutput).not.toHaveBeenCalled()
   })
 
+  it('bolds Full Output role labels only in Readable mode and keeps raw copy unchanged', async () => {
+    const transcript = 'User: first question\nAssistant: **first answer**\n\nUser: second question\nAssistant: last answer'
+    vi.mocked(api.getTerminalDisplayOutput).mockImplementation(async (_id, mode) => ({
+      output: mode === 'full' ? transcript : 'Assistant: last answer',
+      mode, source: 'transcript', truncated: false,
+    }))
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    render(<OutputViewer terminalId="abcd1234" onClose={() => {}} />)
+    const lastOutput = await screen.findByLabelText('Terminal output text')
+    expect(lastOutput.querySelector('strong')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Full Output' }))
+    const output = await screen.findByLabelText('Terminal output text')
+    expect(Array.from(output.querySelectorAll('strong'), node => node.textContent)).toEqual([
+      'User:', 'Assistant:', 'first answer', 'User:', 'Assistant:',
+    ])
+    fireEvent.click(screen.getByRole('button', { name: 'Raw text' }))
+    expect(output.querySelector('strong')).toBeNull()
+    expect(output.textContent).toBe(transcript)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(transcript))
+    fireEvent.click(screen.getByRole('button', { name: 'Readable' }))
+    expect(output.querySelectorAll('strong')).toHaveLength(5)
+  })
+
   it('preserves wide table columns in both modes without resizing the terminal', async () => {
     const table = '| Source | ' + 'Wide column '.repeat(40) + '|\n| BMKG | Free |'
     vi.mocked(api.getTerminalDisplayOutput).mockResolvedValue({

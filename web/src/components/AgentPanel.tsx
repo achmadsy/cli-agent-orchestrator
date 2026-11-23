@@ -988,14 +988,18 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
               )}
 
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Session Name <span className="text-gray-600">(optional)</span></label>
+                <label htmlFor="spawn-session-name" className="block text-xs text-gray-500 mb-1">Session Name <span className="text-gray-600">(optional)</span></label>
                 <div className="relative">
                   <Tag size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
                   <input
+                    id="spawn-session-name"
                     type="text"
                     value={sessionName}
-                    onChange={e => setSessionName(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleCreate()}
+                    onChange={e => setSessionName(e.target.value.replace(/\s/g, ''))}
+                    onKeyDown={e => {
+                      if (e.key === ' ') e.preventDefault()
+                      else if (e.key === 'Enter') handleCreate()
+                    }}
                     placeholder="my-session (or a random id like cao-a1b2c3d4)"
                     className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg pl-9 pr-3 py-2.5 focus:border-emerald-500 focus:outline-none"
                   />

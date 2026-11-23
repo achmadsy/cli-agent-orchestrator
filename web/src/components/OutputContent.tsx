@@ -4,6 +4,38 @@ import remarkGfm from 'remark-gfm'
 import './OutputContent.css'
 
 const remarkPlugins = [remarkGfm]
+const conversationPlugins = [remarkGfm, remarkRoleLabels]
+
+interface OutputNode {
+  type: string
+  value?: string
+  children?: OutputNode[]
+}
+
+function roleLabelNodes(text: string, atLineStart = true): OutputNode[] {
+  const parts = text.split(/(^(?:User|Assistant):(?=\s|$))/m)
+  return parts.map((value, index) => index % 2 === 1 && (atLineStart || index > 1 || parts[0] !== '')
+    ? { type: 'strong', children: [{ type: 'text', value }] }
+    : { type: 'text', value })
+}
+
+// Format parsed prose, not the Markdown source: code blocks, inline code,
+// links and table cells must keep their original literal contents.
+function remarkRoleLabels() {
+  return (tree: OutputNode) => {
+    const visit = (node: OutputNode) => {
+      if (node.type === 'paragraph') {
+        node.children = node.children?.flatMap((child, index) => child.type === 'text' && child.value
+          ? roleLabelNodes(child.value, index === 0)
+          : [child])
+        return
+      }
+      node.children?.forEach(visit)
+    }
+    visit(tree)
+  }
+}
+
 const hasMarkdown = (text: string) => /(^ {0,3}(?:#{1,6}\s|`{3,}|~{3,}|[-*+]\s|\d+[.)]\s|>\s)|\*\*|__|`[^`\n]+`|\[[^\]\n]+\]\(|\|[^\n]*\n\s*\|?\s*:?-{3,})/m.test(text)
 
 // Terminal-drawn tables are already laid out, unlike Markdown pipe tables.
@@ -57,16 +89,20 @@ export function outputSections(text: string): { text: string; terminal: boolean 
   return sections
 }
 
-export const OutputContent = memo(function OutputContent({ text }: { text: string }) {
+export const OutputContent = memo(function OutputContent({ text, boldRoleLabels = false }: { text: string; boldRoleLabels?: boolean }) {
   return (
     <div className="output-readable">
       {outputSections(text).map((section, index) => section.terminal
         ? <pre key={index} className="output-terminal-table" aria-label="Terminal table" tabIndex={0}>{section.text}</pre>
         : !hasMarkdown(section.text)
-          ? <pre key={index} className="output-plain">{section.text}</pre>
+          ? <pre key={index} className="output-plain">{boldRoleLabels
+            ? roleLabelNodes(section.text).map((node, part) => node.type === 'strong'
+              ? <strong key={part}>{node.children?.[0].value}</strong>
+              : node.value)
+            : section.text}</pre>
           : <ReactMarkdown
             key={index}
-            remarkPlugins={remarkPlugins}
+            remarkPlugins={boldRoleLabels ? conversationPlugins : remarkPlugins}
             skipHtml
             components={{
               // No raw HTML, embedded media, or automatic external requests.

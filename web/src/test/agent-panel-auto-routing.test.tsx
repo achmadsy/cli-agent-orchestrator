@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentPanel, AUTO_PROFILE } from '../components/AgentPanel'
 import { api } from '../api'
@@ -64,6 +64,87 @@ beforeEach(() => {
 })
 
 afterEach(cleanup)
+
+describe('AgentPanel session name input', () => {
+  async function openSessionName() {
+    vi.mocked(api.getAutoRoutingStatus).mockResolvedValue({ enabled: false, router_model: 'm' })
+    await openProfileMenu()
+    await act(async () => {
+      fireEvent.click(within(await screen.findByTestId('custom-select-menu')).getByText('developer'))
+    })
+    return screen.getByRole('textbox', { name: /Session Name/ }) as HTMLInputElement
+  }
+
+  it('ignores Space without replacing selected text or moving the caret', async () => {
+    const input = await openSessionName()
+    fireEvent.change(input, { target: { value: 'my-session' } })
+    input.focus()
+    input.setSelectionRange(2, 5)
+
+    expect(fireEvent.keyDown(input, { key: ' ', code: 'Space' })).toBe(false)
+    expect(input).toHaveValue('my-session')
+    expect(input.selectionStart).toBe(2)
+    expect(input.selectionEnd).toBe(5)
+  })
+
+  it.each([
+    ['my session', 'mysession'],
+    ['  my  session  ', 'mysession'],
+    ['my\t\nsession\r name', 'mysessionname'],
+    ['my session name', 'mysessionname'],
+    ['my-session_123', 'my-session_123'],
+    [' \t  ', ''],
+  ])('filters whitespace from inserted text %j', async (value, expected) => {
+    const input = await openSessionName()
+    // Change covers the resulting value from typing, paste, or mobile input.
+    fireEvent.change(input, { target: { value } })
+    expect(input).toHaveValue(expected)
+  })
+
+  it('keeps navigation and editing keys available', async () => {
+    const input = await openSessionName()
+    for (const key of ['ArrowLeft', 'ArrowRight', 'Backspace', 'Delete', 'Tab']) {
+      expect(fireEvent.keyDown(input, { key })).toBe(true)
+    }
+    expect(mocks.createSession).not.toHaveBeenCalled()
+  })
+
+  it('submits the filtered name with Enter on a manual launch', async () => {
+    const input = await openSessionName()
+    fireEvent.change(input, { target: { value: 'my session' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1))
+    expect(mocks.createSession.mock.calls[0][3]).toBe('mysession')
+    expect(mocks.createAutoSession).not.toHaveBeenCalled()
+  })
+
+  it('keeps a whitespace-only name optional', async () => {
+    const input = await openSessionName()
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.click(spawnButton())
+
+    await waitFor(() => expect(mocks.createSession).toHaveBeenCalledTimes(1))
+    expect(mocks.createSession.mock.calls[0][3]).toBeUndefined()
+  })
+
+  it('submits the filtered name on an Auto launch without filtering the prompt', async () => {
+    vi.mocked(api.getAutoRoutingStatus).mockResolvedValue({ enabled: true, router_model: 'm' })
+    mocks.createAutoSession.mockResolvedValue({ terminal: { id: 'abcd1234' } })
+    await openProfileMenu()
+    fireEvent.click(await screen.findByText('Auto (Jev)'))
+    fireEvent.change(await screen.findByLabelText('First prompt'), { target: { value: 'fix the typo' } })
+    const input = screen.getByRole('textbox', { name: /Session Name/ })
+    fireEvent.change(input, { target: { value: 'my auto session' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(mocks.createAutoSession).toHaveBeenCalledTimes(1))
+    expect(mocks.createAutoSession.mock.calls[0][0]).toMatchObject({
+      initial_message: 'fix the typo', session_name: 'myautosession',
+    })
+    expect(mocks.createSession).not.toHaveBeenCalled()
+  })
+})
 
 describe('AgentPanel Auto (Jev) option', () => {
   it('is hidden when auto routing is disabled', async () => {
