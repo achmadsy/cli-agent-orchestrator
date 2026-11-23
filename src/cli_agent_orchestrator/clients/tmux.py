@@ -2327,6 +2327,76 @@ class TmuxClient:
         tmux("pipe-pane", "-t", pane_id, self._pipe_pane_command(fifo_path))
         return ""
 
+    def question_pane_witness(self, target: Dict[str, str]) -> str:
+        """Read process/topology evidence; never attach, resize, or send input."""
+        if self.resolve_workspace_target(target["terminal"], target["session"]) != target:
+            raise ValueError("Terminal ownership changed")
+        result = subprocess.run(
+            [
+                "tmux",
+                "-S",
+                target["socket"],
+                "display-message",
+                "-p",
+                "-t",
+                target["pane_id"],
+                "#{pid}|#{pane_pid}|#{pane_dead}|#{pane_width}|#{pane_height}|#{pane_current_command}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        fields = result.split("|")
+        if len(fields) != 6 or fields[2] != "0":
+            raise ValueError("Question pane is not live")
+        processes = [psutil.Process(int(pid)) for pid in fields[:2]]
+        processes += processes[1].children(recursive=True)
+        if any(
+            not process.is_running() or process.status() == psutil.STATUS_ZOMBIE
+            for process in processes
+        ):
+            raise ValueError("Question process is not live")
+        native = [
+            process
+            for process in processes[1:]
+            if process.name() == "claude"
+            and process.environ().get("CAO_TERMINAL_ID") == target["terminal"]
+        ]
+        if len(native) != 1:
+            raise ValueError("Native question process is unverified")
+        return (
+            result
+            + "|"
+            + "|".join(
+                f"{process.pid}:{process.create_time()}"
+                for process in sorted(processes, key=lambda p: p.pid)
+            )
+        )
+
+    def send_question_input_exact(
+        self,
+        target: Dict[str, str],
+        witness: str,
+        *,
+        key: Optional[str] = None,
+        text: Optional[str] = None,
+    ) -> None:
+        """Send only a validated menu key or literal text to a pinned live pane."""
+        if (key is None) == (text is None) or (
+            key is not None and key not in {"Up", "Down", "Enter"}
+        ):
+            raise ValueError("Invalid question input")
+        if self.question_pane_witness(target) != witness:
+            raise ValueError("Question pane changed")
+        args = ["tmux", "-S", target["socket"], "send-keys", "-t", target["pane_id"]]
+        if text is not None:
+            # One bracketed paste, not individual shortcut digits or terminal controls.
+            args += ["-l", "--", "\x1b[200~" + text + "\x1b[201~"]
+        else:
+            args += [key]
+        subprocess.run(args, check=True, capture_output=True, text=True, timeout=5)
+
     def cleanup_terminal_exact(
         self,
         terminal_id: str,

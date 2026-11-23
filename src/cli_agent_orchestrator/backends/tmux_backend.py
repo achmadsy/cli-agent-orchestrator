@@ -230,6 +230,19 @@ class TmuxBackend(TerminalBackend):
     ) -> str:
         return self._client.observe_terminal_exact(target, fifo_path)
 
+    def question_pane_witness(self, target: Dict[str, str]) -> str:
+        return self._client.question_pane_witness(target)
+
+    def send_question_input_exact(
+        self,
+        target: Dict[str, str],
+        witness: str,
+        *,
+        key: Optional[str] = None,
+        text: Optional[str] = None,
+    ) -> None:
+        self._client.send_question_input_exact(target, witness, key=key, text=text)
+
     # --- Pipe-pane ---
 
     def pipe_pane(self, session_name: str, window_name: str, file_path: str) -> None:

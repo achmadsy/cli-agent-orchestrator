@@ -102,6 +102,19 @@ async function fetchJSON<T>(url: string, opts?: RequestInit & { timeoutMs?: numb
   }
 }
 
+export interface NativeQuestion {
+  revision: string
+  header: string
+  text: string
+  options: { number: number; label: string; description: string }[]
+  allows_text: boolean
+}
+
+export interface NativeQuestionResponse {
+  question: NativeQuestion | null
+  fallback: string | null
+}
+
 export interface Session {
   id: string
   name: string
@@ -1038,6 +1051,12 @@ export const api = {
   getTerminalStatus: (id: string) =>
     fetchJSON<Terminal>(`/terminals/${id}`).then(t => t.status),
   getTerminal: (id: string) => fetchJSON<Terminal>(`/terminals/${id}`),
+  getNativeQuestion: (id: string) => fetchJSON<NativeQuestionResponse>(`/terminals/${id}/question`),
+  answerNativeQuestion: (id: string, answer: { revision: string; option?: number; text?: string }) =>
+    fetchJSON<{ success: boolean; message: string }>(`/terminals/${id}/question/answer`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(answer), timeoutMs: 30000,
+    }),
   switchProviderProfile: (id: string, providerProfile: string, continuationNote?: string) =>
     fetchJSON<{ predecessor_id: string; successor_id: string; status: string }>(
       `/terminals/${id}/switch-provider-profile`,

@@ -14,6 +14,7 @@ import { OutputViewer } from './OutputViewer'
 import type { TerminalLink } from '../terminalLink'
 import { encodeAttachments, validateAttachments } from '../attachments'
 import { PromptAttachments } from './PromptAttachments'
+import { NativeQuestionCard } from './NativeQuestionCard'
 
 export const FALLBACK_PROVIDERS = ['kiro_cli', 'claude_code', 'q_cli', 'codex', 'gemini_cli', 'hermes', 'kimi_cli', 'copilot_cli', 'opencode_cli', 'cursor_cli', 'grok_cli']
 
@@ -705,7 +706,9 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
                   </div>
                 )}
                 {/* Quick Send Input */}
-                {!sendInputOpen[t.id] ? (
+                {terminalStatuses[t.id]?.toUpperCase() === 'WAITING_USER_ANSWER' ? (
+                  <NativeQuestionCard key={t.id} terminalId={t.id} />
+                ) : !sendInputOpen[t.id] ? (
                   <button
                     onClick={() => setSendInputOpen(prev => ({ ...prev, [t.id]: true }))}
                     className="text-xs text-gray-500 hover:text-gray-300 transition-colors"

@@ -192,6 +192,7 @@ from cli_agent_orchestrator.services.profile_search import (
 )
 from cli_agent_orchestrator.services.status_monitor import status_monitor
 from cli_agent_orchestrator.services.step_output_store import _validate_key_part
+from cli_agent_orchestrator.services import user_question
 from cli_agent_orchestrator.services.terminal_service import (
     TERMINAL_RANGE_MAX_LENGTH,
     IdempotencyKeyConflict,
@@ -4652,6 +4653,47 @@ async def get_terminal(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get terminal: {str(e)}",
+        )
+
+
+class UserQuestionAnswer(BaseModel):
+    revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    option: Optional[int] = Field(default=None, ge=1, le=4, strict=True)
+    text: Optional[str] = Field(default=None, max_length=2000)
+
+
+@app.get("/terminals/{terminal_id}/question")
+async def get_user_question(
+    terminal_id: TerminalId,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+) -> dict:
+    try:
+        return await asyncio.to_thread(user_question.get_question, terminal_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Terminal not found")
+
+
+@app.post("/terminals/{terminal_id}/question/answer")
+async def answer_user_question(
+    terminal_id: TerminalId,
+    body: UserQuestionAnswer,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> dict:
+    try:
+        return await asyncio.to_thread(
+            user_question.answer_question, terminal_id, body.revision, body.option, body.text
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Terminal not found")
+    except user_question.QuestionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception:
+        logger.exception("Native question answer failed for %s", terminal_id)
+        raise HTTPException(
+            status_code=409,
+            detail="Answer could not be confirmed. Check Open Terminal before retrying.",
         )
 
 
