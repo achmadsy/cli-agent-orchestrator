@@ -56,6 +56,130 @@ def test_live_status_persisted_and_recovered_by_a_new_monitor(terminal):
         assert second.status_observation("t").output_generation == 0
 
 
+@pytest.fixture
+def output_provider():
+    provider = MagicMock(supports_screen_detection=True)
+    provider.get_status.return_value = Status.UNKNOWN
+    provider.get_status_from_screen.return_value = Status.UNKNOWN
+    with patch(
+        "cli_agent_orchestrator.services.status_monitor.provider_manager.get_provider",
+        return_value=provider,
+    ):
+        yield provider
+
+
+@pytest.mark.parametrize("screen_detection", [False, True], ids=["raw", "screen"])
+@pytest.mark.parametrize(
+    "saved_status",
+    [Status.IDLE, Status.COMPLETED, Status.PROCESSING, Status.WAITING_USER_ANSWER, Status.ERROR],
+)
+def test_unknown_output_keeps_recovered_display_without_execution_evidence(
+    terminal, output_provider, screen_detection, saved_status
+):
+    first = StatusMonitor()
+    first._apply_detection("t", saved_status)
+    restarted = StatusMonitor()
+    snapshot(restarted, saved_status)
+    checkpoint = store.context("t")["status_checkpoint"]
+    output_provider.supports_screen_detection = screen_detection
+
+    with (
+        patch("cli_agent_orchestrator.services.status_monitor.CAO_PYTE_STATUS", True),
+        patch("cli_agent_orchestrator.services.status_monitor.bus.publish") as publish,
+        patch("cli_agent_orchestrator.backends.registry.get_backend") as backend,
+        patch.object(store, "save", wraps=store.save) as save,
+    ):
+        backend.return_value.supports_event_inbox.return_value = False
+        for chunk in ("\x1b[?25h", "unclassified output", "\x1b[0m"):
+            restarted._process_chunk("t", chunk)
+            applied = restarted.get_status("t")
+            assert applied == Status.UNKNOWN
+            assert restarted.display_status("t", applied) == saved_status
+            assert restarted.status_observation("t").status == Status.UNKNOWN
+            assert restarted.status_observation("t").output_generation == 1
+        assert restarted.output_generation("t") == 3
+        assert "t" not in restarted._processing_generation
+        assert all(call.args[1]["status"] == "unknown" for call in publish.call_args_list)
+        save.assert_not_called()
+    assert store.context("t")["status_checkpoint"] == checkpoint
+
+
+@pytest.mark.parametrize(
+    "new_status",
+    [Status.PROCESSING, Status.WAITING_USER_ANSWER, Status.ERROR, Status.IDLE, Status.COMPLETED],
+)
+def test_fresh_known_output_replaces_recovered_display(terminal, output_provider, new_status):
+    restarted = StatusMonitor()
+    snapshot(restarted)
+    with patch("cli_agent_orchestrator.services.status_monitor.CAO_PYTE_STATUS", True):
+        restarted._process_chunk("t", "\x1b[?25h")
+        assert restarted.display_status("t", Status.UNKNOWN) == Status.COMPLETED
+        output_provider.get_status_from_screen.return_value = new_status
+        restarted._process_chunk("t", "fresh status frame")
+    assert "t" not in restarted._display_status
+    assert restarted.display_status("t", new_status) == new_status
+    assert store.read(store.context("t"))["status"] == new_status.value
+
+
+@pytest.mark.parametrize("invalidate", ["input", "reset", "delete", "unavailable"])
+def test_recovered_display_still_invalidates_after_unknown_output(
+    terminal, output_provider, invalidate
+):
+    restarted = StatusMonitor()
+    snapshot(restarted)
+    restarted._process_chunk("t", "\x1b[?25h")
+    assert restarted.display_status("t", Status.UNKNOWN) == Status.COMPLETED
+    if invalidate == "input":
+        restarted.notify_input_sent("t")
+    elif invalidate == "reset":
+        restarted.reset_buffer("t")
+    elif invalidate == "delete":
+        restarted.clear_terminal("t")
+    else:
+        restarted.set_monitoring("t", "unavailable", "observation_unavailable")
+    assert restarted.display_status("t", Status.UNKNOWN) == Status.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("session_incarnation_id", "replacement"),
+        ("provider", "codex"),
+        ("tmux_window", "replacement-window"),
+        ("last_active", datetime.now(timezone.utc) + timedelta(days=1)),
+        ("initial_delivery_json", '{"state":"pending"}'),
+        ("initial_delivery_json", '{"state":"failed"}'),
+        ("deferred_init_failure_json", '{"kind":"task_not_started"}'),
+        ("deferred_init_external_owner", True),
+        ("deferred_init_runtime_reclaimed", True),
+        ("status_checkpoint_json", "not valid JSON"),
+    ],
+)
+def test_recovered_display_revalidates_durable_context_after_unknown_output(
+    terminal, output_provider, field, value
+):
+    restarted = StatusMonitor()
+    snapshot(restarted)
+    restarted._process_chunk("t", "\x1b[?25h")
+    assert restarted.display_status("t", Status.UNKNOWN) == Status.COMPLETED
+    with database.SessionLocal() as db:
+        setattr(db.get(database.TerminalModel, "t"), field, value)
+        db.commit()
+    assert restarted.display_status("t", Status.UNKNOWN) == Status.UNKNOWN
+    assert "t" not in restarted._display_status
+
+
+def test_recovered_display_is_not_resurrected_after_new_input_unknown_output(
+    terminal, output_provider
+):
+    restarted = StatusMonitor()
+    snapshot(restarted)
+    restarted.notify_input_sent("t")
+    restarted._process_chunk("t", "\x1b[?25h")
+    assert store.input_pending(store.context("t"))
+    assert restarted.display_status("t", Status.UNKNOWN) == Status.UNKNOWN
+
+
 def test_existing_precheckpoint_session_bootstraps_from_two_guarded_snapshots(terminal):
     monitor = StatusMonitor()
     assert store.read(store.context("t")) is None
@@ -197,11 +321,14 @@ def test_checkpoint_does_not_write_again_for_unchanged_processing(terminal):
         assert save.call_count == 1
 
 
-def test_reported_status_uses_checkpoint_but_pending_delivery_stays_unknown(terminal):
+def test_reported_status_uses_checkpoint_but_pending_delivery_stays_unknown(
+    terminal, output_provider
+):
     from cli_agent_orchestrator.services import terminal_service as service
 
     monitor = StatusMonitor()
     snapshot(monitor)
+    monitor._process_chunk("t", "\x1b[?25h")
     with patch.object(service, "status_monitor", monitor):
         assert service.reported_status("t", Status.UNKNOWN) == Status.COMPLETED
         with patch.object(service, "initial_delivery_pending", return_value=True):
@@ -246,6 +373,7 @@ from sqlalchemy.orm import sessionmaker
 from cli_agent_orchestrator.clients import database
 from cli_agent_orchestrator.models.terminal import TerminalStatus as Status
 from cli_agent_orchestrator.services.status_monitor import StatusMonitor
+from cli_agent_orchestrator.services import terminal_status_store as store
 engine = create_engine(sys.argv[1])
 database.SessionLocal = sessionmaker(bind=engine)
 monitor = StatusMonitor()
@@ -268,12 +396,23 @@ monitor = StatusMonitor()
     )
     read_code = """
 provider = MagicMock(supports_screen_detection=False)
+provider.get_status.return_value = Status.UNKNOWN
 with patch('cli_agent_orchestrator.services.status_monitor.provider_manager.get_provider', return_value=provider):
     monitor.observe_snapshot('t', lambda: 'exact-owned live pane')
-assert monitor.display_status('t', Status.UNKNOWN) == Status.COMPLETED
-assert monitor.output_generation('t') == 0
-assert 't' not in monitor._last_status
-print('recovered completed from SQLite after process exit; no execution evidence')
+    assert monitor.display_status('t', Status.UNKNOWN) == Status.COMPLETED
+    assert monitor.output_generation('t') == 0
+    assert 't' not in monitor._last_status
+    with patch('cli_agent_orchestrator.services.status_monitor.bus.publish'):
+        monitor._process_chunk('t', '\\x1b[?25h')
+    with patch('cli_agent_orchestrator.backends.registry.get_backend') as backend:
+        backend.return_value.supports_event_inbox.return_value = False
+        applied = monitor.get_status('t')
+        assert applied == Status.UNKNOWN
+        assert monitor.display_status('t', applied) == Status.COMPLETED
+        assert monitor.status_observation('t').status == Status.UNKNOWN
+        assert monitor.output_generation('t') == 1
+assert store.read(store.context('t'))['status'] == 'completed'
+print('recovered completed from SQLite after process exit and unknown output; no execution evidence')
 """
     result = subprocess.run(
         [sys.executable, "-I", "-c", env_code + read_code, str(isolated_memory_db.url)],

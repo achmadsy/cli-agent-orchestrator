@@ -431,7 +431,9 @@ class StatusMonitor:
 
         with self._lock:
             self._snapshot_candidate.pop(terminal_id, None)
-            self._display_status.pop(terminal_id, None)
+            # Bytes alone are not a new status: control-only/unclassified output
+            # must not erase a recovered display checkpoint. Known detections
+            # and explicit input/lifecycle boundaries invalidate it instead.
             self._monitoring[terminal_id] = {"state": "attached", "reason": "live_output", "source": "fifo"}
             buffer = self._buffers.get(terminal_id, "") + chunk
             recorder = getattr(provider, "record_status_chunk", None)
@@ -604,9 +606,10 @@ class StatusMonitor:
             return False
 
         self._last_status[terminal_id] = detected
-        self._display_status.pop(terminal_id, None)
-        if persist and detected != TerminalStatus.UNKNOWN:
-            self._checkpoint(terminal_id, detected, "live_output")
+        if detected != TerminalStatus.UNKNOWN:
+            self._display_status.pop(terminal_id, None)
+            if persist:
+                self._checkpoint(terminal_id, detected, "live_output")
         # Earned now, from whatever output has landed so far (see
         # ``status_observation``). Optimistic latches arrive here too
         # (notify_input_sent(assume_processing=True)); they are stamped with
