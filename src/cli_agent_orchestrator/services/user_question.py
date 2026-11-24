@@ -66,6 +66,14 @@ def _capture(terminal_id):
     return backend, row, target, witness, question, revision
 
 
+def has_active_question(terminal_id: str) -> bool:
+    """Read-only ready-state blocker using the same ownership/input fences as UI."""
+    try:
+        return _capture(terminal_id) is not None
+    except Exception:
+        return False
+
+
 def get_question(terminal_id: str) -> dict:
     """Read-only. Unsupported dialogs intentionally expose no answer controls."""
     try:

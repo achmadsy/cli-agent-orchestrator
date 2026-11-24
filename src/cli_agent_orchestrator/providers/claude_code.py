@@ -1322,6 +1322,14 @@ class ClaudeCodeProvider(BaseProvider):
     # Incremental redraw bytes can parse IDLE while the live screen is busy;
     # applying that verdict would latch-block the turn's subsequent spinners.
     status_recheck_uses_screen = True
+    supports_native_question_probe = True
+
+    def has_active_native_question(self) -> bool:
+        # Lazy import: user_question shares the status monitor and terminal
+        # lifecycle service. A snapshot can block readiness, never prove work.
+        from cli_agent_orchestrator.services.user_question import has_active_question
+
+        return has_active_question(self.terminal_id)
 
     def probe_processing_from_screen(self, screen_lines: List[str]) -> bool:
         """Observe live work without invoking dispatch-derived status fallbacks.

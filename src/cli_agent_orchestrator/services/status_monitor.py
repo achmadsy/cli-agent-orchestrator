@@ -97,6 +97,9 @@ STALE_PROCESSING_BUFFER_QUIET_S = 3.0
 # two-read confirm exists to prevent.
 STALE_PROCESSING_CONFIRM_TTL_S = 2 * STALE_PROCESSING_CAPTURE_INTERVAL_S
 
+# Exact-owned question probes fork tmux; bound both positive and negative reads.
+NATIVE_QUESTION_PROBE_INTERVAL_S = 3.0
+
 
 class StatusMonitor:
     """Accumulates terminal output into rolling buffers and detects status changes."""
@@ -250,6 +253,9 @@ class StatusMonitor:
         # status and output stamps used by delivery/completion waiters.
         self._display_status: Dict[str, tuple] = {}
         self._checkpointed: Dict[str, tuple] = {}
+        # Separate from applied status/checkpoints: a live question may block a
+        # stale ready latch, but a passive viewport cannot certify task pickup.
+        self._native_question_checks: Dict[str, Tuple[int, float, Optional[bool]]] = {}
 
     def _checkpoint(self, terminal_id: str, status: TerminalStatus, source: str) -> bool:
         if self._checkpointed.get(terminal_id) == (status, source):
@@ -1160,6 +1166,13 @@ class StatusMonitor:
             return StatusObservation(status, None)
         with self._lock:
             applied = self._last_status.get(terminal_id, TerminalStatus.UNKNOWN)
+            if (
+                status in (TerminalStatus.WAITING_USER_ANSWER, TerminalStatus.UNKNOWN)
+                and applied != status
+            ):
+                # The passive question veto must not expose the underlying stale
+                # COMPLETED to waiters, or manufacture post-dispatch evidence.
+                return StatusObservation(status, None)
             return StatusObservation(applied, self._status_generation.get(terminal_id, 0))
 
     def notify_input_sent(self, terminal_id: str, *, assume_processing: bool = False) -> None:
@@ -1176,6 +1189,7 @@ class StatusMonitor:
                 self._monitoring.pop(terminal_id, None)
                 self._display_status.pop(terminal_id, None)
                 self._checkpointed.pop(terminal_id, None)
+                self._native_question_checks.pop(terminal_id, None)
                 self._checkpoint(terminal_id, TerminalStatus.UNKNOWN, "input_pending")
                 self._allow_processing_revert[terminal_id] = True
                 # A new turn invalidates every pane/runtime verdict sampled before
@@ -1282,6 +1296,7 @@ class StatusMonitor:
             self._snapshot_candidate.pop(terminal_id, None)
             self._display_status.pop(terminal_id, None)
             self._checkpointed.pop(terminal_id, None)
+            self._native_question_checks.pop(terminal_id, None)
             self._buffers.pop(terminal_id, None)
             self._buffer_epochs.pop(terminal_id, None)
             self._last_status.pop(terminal_id, None)
@@ -1323,6 +1338,7 @@ class StatusMonitor:
                 self._snapshot_candidate.pop(terminal_id, None)
                 self._display_status.pop(terminal_id, None)
                 self._checkpointed.pop(terminal_id, None)
+                self._native_question_checks.pop(terminal_id, None)
                 self._checkpoint(terminal_id, TerminalStatus.UNKNOWN, "input_pending")
                 self._buffers[terminal_id] = ""
                 self._last_status.pop(terminal_id, None)
@@ -1352,6 +1368,59 @@ class StatusMonitor:
             except Exception as exc:  # noqa: BLE001 - clear is best-effort
                 logger.warning(f"Failed to clear runtime failure for {terminal_id}: {exc}")
         self._cancel_quiesce_handle(handle)
+
+    def _native_question_blocker(
+        self, terminal_id: str, cached: TerminalStatus
+    ) -> Optional[TerminalStatus]:
+        """Fresh owned question evidence can veto readiness, never certify work.
+
+        Native peer messages can wake a completed worker without CAO input.
+        Fixed-size composition may miss its question; consult the exact current
+        pane through a provider opt-in, rate-limited and fenced against new input,
+        output, reset, deletion and concurrent probes. Never persist this verdict
+        or apply it to the execution/status generation.
+        """
+        if cached not in (TerminalStatus.IDLE, TerminalStatus.COMPLETED):
+            return None
+        provider = provider_manager.get_provider(terminal_id)
+        if getattr(provider, "supports_native_question_probe", False) is not True:
+            return None
+        now = time.monotonic()
+        with self._lock:
+            if self._last_status.get(terminal_id, TerminalStatus.UNKNOWN) != cached:
+                return None
+            generation = self._capture_generation.get(terminal_id, 0)
+            previous = self._native_question_checks.get(terminal_id)
+            if previous and now - previous[1] < NATIVE_QUESTION_PROBE_INTERVAL_S:
+                # New output invalidates the answer, not the fork-rate limit.
+                if previous[0] != generation:
+                    return TerminalStatus.UNKNOWN
+                if previous[2] is None:
+                    return TerminalStatus.UNKNOWN  # Do not leak ready mid-probe.
+                return TerminalStatus.WAITING_USER_ANSWER if previous[2] else None
+            # Entry identity plus generation fences reset/deletion and their
+            # generation-zero reuse while this unlocked pane read is in flight.
+            entry = (generation, now, None)
+            self._native_question_checks[terminal_id] = entry
+        try:
+            active = provider.has_active_native_question() is True
+        except Exception:
+            logger.debug("Could not probe native question for %s", terminal_id, exc_info=True)
+            active = False
+        with self._lock:
+            if (
+                self._native_question_checks.get(terminal_id) is not entry
+                or self._capture_generation.get(terminal_id, 0) != generation
+                or self._last_status.get(terminal_id) != cached
+            ):
+                current = self._last_status.get(terminal_id, TerminalStatus.UNKNOWN)
+                return (
+                    TerminalStatus.UNKNOWN
+                    if current in (TerminalStatus.IDLE, TerminalStatus.COMPLETED)
+                    else current
+                )
+            self._native_question_checks[terminal_id] = (generation, now, active)
+            return TerminalStatus.WAITING_USER_ANSWER if active else None
 
     def get_status(self, terminal_id: str) -> TerminalStatus:
         """Get current terminal status — the single source of truth for both backends.
@@ -1526,7 +1595,11 @@ class StatusMonitor:
                         # stale.
                         if current_last_status is not None:
                             return current_last_status
-        return cached
+        blocker = self._native_question_blocker(terminal_id, cached)
+        if blocker is not None:
+            return blocker
+        with self._lock:
+            return self._last_status.get(terminal_id, TerminalStatus.UNKNOWN)
 
     def _fresh_capture_pane_status(
         self, terminal_id: str, generation: int

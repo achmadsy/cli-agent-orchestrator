@@ -287,6 +287,14 @@ class BaseProvider(ABC):
     # rendered viewport without being safe as delivery evidence.
     supports_stale_processing_capture: bool = False
 
+    # Conservative ready-state blocker only, never execution/delivery evidence.
+    # Providers opt in only with an exact-owned, read-only live question probe.
+    supports_native_question_probe: bool = False
+
+    def has_active_native_question(self) -> bool:
+        """Observe a live question without input or provider state mutations."""
+        return False
+
     # Opt-in for the mid-burst PROCESSING probe (StatusMonitor._midburst_processing_probe).
     # Set True ONLY alongside a probe_processing_from_screen() override that is
     # side-effect free. The probe runs on a HALF-DRAWN frame, off the two edges

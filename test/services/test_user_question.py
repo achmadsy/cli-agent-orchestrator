@@ -154,6 +154,85 @@ def test_get_is_passive(rig):
     state["history"].assert_not_called()
 
 
+def test_real_claude_probe_and_monitor_expose_question_on_completed_worker(rig, monkeypatch):
+    from cli_agent_orchestrator.models.terminal import TerminalStatus
+    from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
+    from cli_agent_orchestrator.services.status_monitor import StatusMonitor
+    from cli_agent_orchestrator.services import status_monitor as monitor_module
+
+    state, backend, _ = rig
+    backend.supports_event_inbox.return_value = False
+    monkeypatch.setattr("cli_agent_orchestrator.backends.registry.get_backend", lambda: backend)
+    provider = ClaudeCodeProvider("e5f6a0a6", "cao-test", "worker")
+    monkeypatch.setattr(monitor_module.provider_manager, "get_provider", lambda tid: provider)
+    monitor = StatusMonitor()
+    monitor._last_status["e5f6a0a6"] = TerminalStatus.COMPLETED
+    monitor._checkpoint = Mock()
+    monkeypatch.setattr(service, "status_monitor", monitor)
+    assert monitor.get_status("e5f6a0a6") == TerminalStatus.WAITING_USER_ANSWER
+    assert service.get_question("e5f6a0a6")["question"]["header"] == "File APK"
+    assert monitor.status_observation("e5f6a0a6").output_generation is None
+    backend.send_question_input_exact.assert_not_called()
+    state["history"].assert_not_called()
+    monitor._checkpoint.assert_not_called()
+
+
+def test_completed_worker_api_reports_waiting_and_question_without_input(
+    rig, isolated_memory_db, monkeypatch
+):
+    from fastapi.testclient import TestClient
+
+    from cli_agent_orchestrator.api.main import app
+    from cli_agent_orchestrator.clients import database
+    from cli_agent_orchestrator.models.terminal import TerminalStatus
+    from cli_agent_orchestrator.providers.claude_code import ClaudeCodeProvider
+    from cli_agent_orchestrator.services import status_monitor as monitor_module
+    from cli_agent_orchestrator.services.status_monitor import StatusMonitor
+
+    state, backend, _ = rig
+    database.create_terminal("e5f6a0a6", "cao-test", "worker", "claude_code")
+    backend.supports_event_inbox.return_value = False
+    monkeypatch.setattr("cli_agent_orchestrator.backends.registry.get_backend", lambda: backend)
+    provider = ClaudeCodeProvider("e5f6a0a6", "cao-test", "worker")
+    monkeypatch.setattr(monitor_module.provider_manager, "get_provider", lambda tid: provider)
+    monitor = StatusMonitor()
+    monitor._last_status["e5f6a0a6"] = TerminalStatus.COMPLETED
+    monitor._checkpoint = Mock()
+    monkeypatch.setattr(service, "status_monitor", monitor)
+    monkeypatch.setattr(service.terminal_service, "status_monitor", monitor)
+    client = TestClient(app, base_url="http://localhost")
+    terminal = client.get("/terminals/e5f6a0a6")
+    assert terminal.status_code == 200
+    assert terminal.json()["status"] == "waiting_user_answer"
+    question = client.get("/terminals/e5f6a0a6/question")
+    assert question.status_code == 200
+    assert question.json()["question"]["header"] == "File APK"
+    assert monitor._last_status["e5f6a0a6"] == TerminalStatus.COMPLETED
+    monitor._checkpoint.assert_not_called()
+    backend.send_question_input_exact.assert_not_called()
+    assert database.get_inbox_messages("e5f6a0a6") == []
+
+
+@pytest.mark.parametrize("blocked", ["fenced", "shell", "provider", "identity", "populated"])
+def test_active_question_probe_requires_live_owned_unedited_question(rig, blocked):
+    state, backend, monitor = rig
+    if blocked == "fenced":
+        state["pending"] = True
+    elif blocked == "shell":
+        backend.question_pane_witness.side_effect = ValueError("no live native CLI")
+    elif blocked == "provider":
+        state["row"]["provider"] = "codex"
+    elif blocked == "identity":
+        backend.question_pane_witness.side_effect = ["old", "new"]
+    else:
+        state["selected"] = 5
+        state["text"] = "draft from another client"
+    assert service.has_active_question("e5f6a0a6") is False
+    backend.send_question_input_exact.assert_not_called()
+    monitor.notify_input_sent.assert_not_called()
+    state["history"].assert_not_called()
+
+
 @pytest.mark.parametrize("option", [1, 2, 3, 4])
 def test_answer_selects_exact_option_and_fences_duplicate(rig, option):
     state, backend, monitor = rig
