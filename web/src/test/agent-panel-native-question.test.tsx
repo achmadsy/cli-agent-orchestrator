@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { AgentPanel } from '../components/AgentPanel'
 
@@ -19,7 +19,11 @@ vi.mock('../api', async original => {
 afterEach(cleanup)
 it('shows the question for uppercase store status instead of normal task input', async () => {
   render(<AgentPanel />)
-  expect(await screen.findByText('Which package?')).toBeInTheDocument()
+  const toggle = screen.getByRole('button', { name: /Answer needed/ })
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+  fireEvent.click(toggle)
+  expect(await screen.findByText('Which package?')).toBeVisible()
   expect(screen.queryByText('Message agent...')).not.toBeInTheDocument()
   expect(screen.getByRole('button', {name:'Send answer'})).toBeDisabled()
 })

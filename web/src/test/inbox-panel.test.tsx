@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InboxPanel } from '../components/InboxPanel'
 import { api, type InboxMessage } from '../api'
@@ -50,6 +50,33 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('InboxPanel', () => {
+  it('opens for reading without focusing the message box', async () => {
+    render(<InboxPanel terminalId="worker99" onClose={() => {}} />)
+    const input = screen.getByPlaceholderText('Queue a message (delivered when the agent is idle)...')
+    expect(screen.getByRole('dialog', { name: 'Agent Inbox' })).toHaveFocus()
+    expect(input).not.toHaveFocus()
+    await screen.findByText('typed from quick-send')
+    expect(input).not.toHaveFocus()
+    expect(api.sendInboxMessage).not.toHaveBeenCalled()
+    input.focus()
+    fireEvent.change(input, { target: { value: 'Intentional draft' } })
+    expect(input).toHaveFocus()
+    expect(input).toHaveValue('Intentional draft')
+  })
+
+  it('does not steal focus during message polling or filtering', async () => {
+    vi.useFakeTimers()
+    try {
+      render(<InboxPanel terminalId="worker99" onClose={() => {}} />)
+      await act(async () => {})
+      const filter = screen.getByRole('button', { name: 'Pending' })
+      filter.focus()
+      fireEvent.click(filter)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(filter).toHaveFocus()
+      expect(screen.getByPlaceholderText('Queue a message (delivered when the agent is idle)...')).not.toHaveFocus()
+    } finally { vi.useRealTimers() }
+  })
   it('requests the latest history including sent messages', async () => {
     render(<InboxPanel terminalId="worker99" onClose={() => {}} />)
     await screen.findByText('typed from quick-send')

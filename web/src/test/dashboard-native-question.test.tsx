@@ -26,7 +26,11 @@ afterEach(() => { cleanup(); useStore.setState({ sessions: [], terminalStatuses:
 
 it('shows the question on default Home cards using the real uppercase-normalizing store', async () => {
   render(<DashboardHome onNavigate={vi.fn()} />)
-  expect(await screen.findByText('Which APK should be checked?')).toBeInTheDocument()
+  const toggle = await screen.findByRole('button', { name: /Answer needed/ })
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+  fireEvent.click(toggle)
+  expect(await screen.findByText('Which APK should be checked?')).toBeVisible()
   expect(screen.getByRole('button', { name: /^Terminal$/ })).toBeInTheDocument()
   expect(screen.getAllByText('probe_supervisor').length).toBeGreaterThan(0)
   expect(screen.getByText('e5f6a0a6')).toBeInTheDocument()
@@ -43,7 +47,8 @@ it('shows the question on default Home cards using the real uppercase-normalizin
 it('retains terminal fallback instead of generic message input for unsupported waiting dialogs', async () => {
   vi.mocked(api.getNativeQuestion).mockResolvedValue({ question: null, fallback: 'Open Terminal' })
   render(<DashboardHome onNavigate={vi.fn()} />)
-  expect(await screen.findByText(/This dialog cannot be answered here safely/)).toBeInTheDocument()
+  fireEvent.click(await screen.findByRole('button', { name: /Answer needed/ }))
+  expect(await screen.findByText(/This dialog cannot be answered here safely/)).toBeVisible()
   expect(screen.queryByText('Message agent...')).not.toBeInTheDocument()
   expect(screen.queryByRole('radio')).not.toBeInTheDocument()
 })

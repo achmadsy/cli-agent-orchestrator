@@ -69,7 +69,7 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
   const [sendText, setSendText] = useState('')
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
 
   const fetchMessages = async () => {
     try {
@@ -107,7 +107,9 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
   }, [onClose])
 
   useEffect(() => {
-    inputRef.current?.focus()
+    // Open for reading, not composing: keep focus inside the panel without
+    // showing a text caret or bringing up the mobile keyboard.
+    panelRef.current?.focus({ preventScroll: true })
   }, [])
 
   const handleSend = async () => {
@@ -140,7 +142,7 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
       {/* Modal */}
-      <div className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-[600px] mx-4 flex flex-col" style={{ maxHeight: 'calc(100vh - 80px)' }}>
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label="Agent Inbox" tabIndex={-1} className="relative bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl w-full max-w-[600px] mx-4 flex flex-col focus:outline-none" style={{ maxHeight: 'calc(100vh - 80px)' }}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700/50 shrink-0">
           <div className="flex items-center gap-3">
@@ -235,7 +237,6 @@ export function InboxPanel({ terminalId, onClose }: InboxPanelProps) {
         <div className="px-5 py-4 border-t border-gray-700/50 shrink-0">
           <div className="flex gap-2">
             <input
-              ref={inputRef}
               type="text"
               value={sendText}
               onChange={e => setSendText(e.target.value)}

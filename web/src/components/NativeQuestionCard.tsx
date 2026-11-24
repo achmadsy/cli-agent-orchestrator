@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { api, ApiError, NativeQuestion } from '../api'
 
 export function NativeQuestionCard({ terminalId }: { terminalId: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const contentId = useId()
   const [question, setQuestion] = useState<NativeQuestion | null>(null)
   const [loading, setLoading] = useState(true)
   const [choice, setChoice] = useState('')
@@ -21,6 +24,7 @@ export function NativeQuestionCard({ terminalId }: { terminalId: string }) {
     epoch.current += 1
     held.current = false
     revision.current = null
+    setExpanded(false)
     setQuestion(null)
     setChoice('')
     setText('')
@@ -90,10 +94,22 @@ export function NativeQuestionCard({ terminalId }: { terminalId: string }) {
   }
 
   return (
-    <section aria-label="Agent question" className="mt-3 border-l-2 border-amber-400 bg-gray-900/60 rounded-r-lg p-3 sm:p-4">
-      <div className="text-sm font-medium text-amber-300">Answer needed</div>
+    <section aria-label="Agent question" className="mt-3 border-l-2 border-amber-400 bg-gray-900/60 rounded-r-lg p-2.5 sm:p-3">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={contentId}
+        onClick={() => setExpanded(value => !value)}
+        className="flex w-full items-center gap-2 rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"
+      >
+        {expanded ? <ChevronDown size={16} className="shrink-0 text-amber-300" aria-hidden="true" /> : <ChevronRight size={16} className="shrink-0 text-amber-300" aria-hidden="true" />}
+        <span className="text-sm font-medium text-amber-300 shrink-0">Answer needed</span>
+        {question?.header && <span className="min-w-0 truncate text-xs text-gray-400">{question.header}</span>}
+        <span className="ml-auto shrink-0 text-xs text-gray-400">{expanded ? 'Hide' : 'Show'}</span>
+      </button>
       {notice && <p role="status" className="mt-2 text-sm text-emerald-300">{notice}</p>}
       {error && <p role="alert" className="mt-2 text-sm text-red-300">{error}</p>}
+      <div id={contentId} hidden={!expanded}>
       {loading ? <p role="status" className="mt-2 text-sm text-gray-400">Reading the active question…</p> : question ? (
         <form onSubmit={e => { e.preventDefault(); void send() }}>
           <fieldset disabled={sending} className="mt-2 min-w-0">
@@ -118,6 +134,7 @@ export function NativeQuestionCard({ terminalId }: { terminalId: string }) {
         </form>
       ) : <p className="mt-2 text-sm text-gray-400">{notice ? 'Waiting for the agent to continue.' : 'Open Terminal to answer this prompt. This dialog cannot be answered here safely.'}</p>}
       {!question && !loading && <button type="button" disabled={sending} onClick={() => { held.current = false; setNotice(''); void refresh.current() }} className="mt-2 text-xs text-gray-300 underline underline-offset-2 focus-visible:outline focus-visible:outline-emerald-400">Refresh question</button>}
+      </div>
     </section>
   )
 }

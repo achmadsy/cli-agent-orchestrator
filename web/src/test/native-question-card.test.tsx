@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, NativeQuestion } from '../api'
 import { NativeQuestionCard } from '../components/NativeQuestionCard'
@@ -16,8 +16,40 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('NativeQuestionCard', () => {
+  it('starts collapsed and keeps each agent independent', async () => {
+    render(<><NativeQuestionCard terminalId="first-agent" /><NativeQuestionCard terminalId="second-agent" /></>)
+    await waitFor(() => expect(api.getNativeQuestion).toHaveBeenCalledTimes(2))
+    const cards = screen.getAllByRole('region', { name: 'Agent question' })
+    const first = within(cards[0])
+    const second = within(cards[1])
+    expect(first.getByRole('button', { name: /Answer needed/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(second.getByRole('button', { name: /Answer needed/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    fireEvent.click(first.getByRole('button', { name: /Answer needed/ }))
+    expect(first.getAllByRole('radio')).toHaveLength(3)
+    expect(second.queryByRole('radio')).not.toBeInTheDocument()
+    expect(api.answerNativeQuestion).not.toHaveBeenCalled()
+  })
+  it('preserves a draft while collapsed without reopening on polls', async () => {
+    vi.useFakeTimers()
+    render(<NativeQuestionCard terminalId="e5f6a0a6" />)
+    await act(async () => {})
+    const toggle = screen.getByRole('button', { name: /Answer needed/ })
+    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole('radio', { name: 'Write an answer' }))
+    fireEvent.change(screen.getByLabelText('Your answer'), { target: { value: 'Magisk v29.0' } })
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(screen.getByLabelText('Your answer')).toHaveValue('Magisk v29.0')
+    expect(screen.getByRole('radio', { name: 'Write an answer' })).toBeChecked()
+    expect(api.answerNativeQuestion).not.toHaveBeenCalled()
+  })
   it('shows the question and descriptions with no default choice or automatic answer', async () => {
     render(<NativeQuestionCard terminalId="e5f6a0a6" />)
+    fireEvent.click(screen.getByRole('button', { name: /Answer needed/ }))
     await screen.findByText(question.text)
     expect(screen.getByText(question.options[0].description)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeDisabled()
@@ -28,6 +60,7 @@ describe('NativeQuestionCard', () => {
     let finish!: () => void
     vi.mocked(api.answerNativeQuestion).mockImplementation(() => new Promise(resolve => { finish = () => resolve({ success: true, message: 'Sent' }) }))
     render(<NativeQuestionCard terminalId="e5f6a0a6" />)
+    fireEvent.click(screen.getByRole('button', { name: /Answer needed/ }))
     fireEvent.click(await screen.findByRole('radio', { name: /Magisk/ }))
     const button = screen.getByRole('button', { name: 'Send answer' })
     fireEvent.click(button)
@@ -39,6 +72,7 @@ describe('NativeQuestionCard', () => {
   })
   it('sends custom text only after selection and explicit submit', async () => {
     render(<NativeQuestionCard terminalId="e5f6a0a6" />)
+    fireEvent.click(screen.getByRole('button', { name: /Answer needed/ }))
     fireEvent.click(await screen.findByRole('radio', { name: 'Write an answer' }))
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeDisabled()
     fireEvent.change(screen.getByLabelText('Your answer'), { target: { value: 'Magisk v29.0' } })
@@ -49,6 +83,7 @@ describe('NativeQuestionCard', () => {
   it('clears selection when a newer question arrives', async () => {
     vi.useFakeTimers()
     render(<NativeQuestionCard terminalId="e5f6a0a6" />)
+    fireEvent.click(screen.getByRole('button', { name: /Answer needed/ }))
     await act(async () => {})
     fireEvent.click(screen.getByRole('radio', { name: /Magisk/ }))
     vi.mocked(api.getNativeQuestion).mockResolvedValue({ question: { ...question, revision: 'b'.repeat(64), text: 'New question?' }, fallback: null })
@@ -59,6 +94,7 @@ describe('NativeQuestionCard', () => {
   it('shows conflicts and never retries an answer automatically', async () => {
     vi.mocked(api.answerNativeQuestion).mockRejectedValue(Object.assign(new Error('409'), { detail: 'The question changed. Refresh before answering.' }))
     render(<NativeQuestionCard terminalId="e5f6a0a6" />)
+    fireEvent.click(screen.getByRole('button', { name: /Answer needed/ }))
     fireEvent.click(await screen.findByRole('radio', { name: /Magisk/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('The question changed.')
@@ -68,6 +104,7 @@ describe('NativeQuestionCard', () => {
   it('provides terminal fallback for unsupported dialogs and read errors', async () => {
     vi.mocked(api.getNativeQuestion).mockResolvedValue({ question: null, fallback: 'Open Terminal' })
     render(<NativeQuestionCard terminalId="e5f6a0a6" />)
+    fireEvent.click(screen.getByRole('button', { name: /Answer needed/ }))
     expect(await screen.findByText(/This dialog cannot be answered here safely/)).toBeInTheDocument()
     expect(screen.queryByRole('radio')).not.toBeInTheDocument()
   })
