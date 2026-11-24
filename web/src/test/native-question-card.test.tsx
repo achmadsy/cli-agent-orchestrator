@@ -101,6 +101,17 @@ describe('NativeQuestionCard', () => {
     expect(api.answerNativeQuestion).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('button', { name: 'Send answer' })).not.toBeInTheDocument()
   })
+  it('warns when the answer was sent but Inbox recording failed without resending it', async () => {
+    vi.mocked(api.answerNativeQuestion).mockResolvedValue({ success: true, message: 'Answer sent.', inbox_recorded: false })
+    render(<NativeQuestionCard terminalId="e5f6a0a6" />)
+    fireEvent.click(screen.getByRole('button', { name: /Answer needed/ }))
+    fireEvent.click(await screen.findByRole('radio', { name: /Magisk/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not be saved to Inbox history. Do not send it again.')
+    expect(screen.getByText('Answer sent to the terminal.')).toBeInTheDocument()
+    expect(api.answerNativeQuestion).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Send answer' })).not.toBeInTheDocument()
+  })
   it('provides terminal fallback for unsupported dialogs and read errors', async () => {
     vi.mocked(api.getNativeQuestion).mockResolvedValue({ question: null, fallback: 'Open Terminal' })
     render(<NativeQuestionCard terminalId="e5f6a0a6" />)

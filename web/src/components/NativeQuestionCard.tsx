@@ -74,11 +74,14 @@ export function NativeQuestionCard({ terminalId }: { terminalId: string }) {
     setError('')
     setNotice('')
     try {
-      await api.answerNativeQuestion(terminalId, {
+      const result = await api.answerNativeQuestion(terminalId, {
         revision: current.revision,
         ...(choice === 'text' ? { text } : { option: Number(choice) }),
       })
       setNotice('Answer sent to the terminal.')
+      if (result.inbox_recorded === false) {
+        setError('The answer was sent, but could not be saved to Inbox history. Do not send it again.')
+      }
     } catch (err) {
       const failure = err as ApiError
       setError(failure.detail ?? 'Answer could not be confirmed. Check Open Terminal before retrying.')

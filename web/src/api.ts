@@ -1053,7 +1053,7 @@ export const api = {
   getTerminal: (id: string) => fetchJSON<Terminal>(`/terminals/${id}`),
   getNativeQuestion: (id: string) => fetchJSON<NativeQuestionResponse>(`/terminals/${id}/question`),
   answerNativeQuestion: (id: string, answer: { revision: string; option?: number; text?: string }) =>
-    fetchJSON<{ success: boolean; message: string }>(`/terminals/${id}/question/answer`, {
+    fetchJSON<{ success: boolean; message: string; inbox_recorded?: boolean }>(`/terminals/${id}/question/answer`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(answer), timeoutMs: 30000,
     }),

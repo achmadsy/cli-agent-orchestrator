@@ -16,7 +16,9 @@ from dataclasses import asdict
 from cli_agent_orchestrator.backends.registry import get_backend
 from cli_agent_orchestrator.backends.tmux_backend import TmuxBackend
 from cli_agent_orchestrator.clients.database import get_terminal_metadata, update_last_active
+from cli_agent_orchestrator.models.inbox import MessageStatus
 from cli_agent_orchestrator.providers.claude_question import parse_question
+from cli_agent_orchestrator.services import terminal_service
 from cli_agent_orchestrator.services import terminal_status_store as store
 from cli_agent_orchestrator.services.session_lock import session_lifecycle_lock
 from cli_agent_orchestrator.services.status_monitor import status_monitor
@@ -109,6 +111,14 @@ def answer_question(terminal_id: str, revision: str, option: int | None, text: s
         destination = option if option is not None else question.custom_number
         if option is not None and option not in {o.number for o in question.options}:
             raise ValueError("Choose one of the displayed options.")
+        if option is not None:
+            selected_option = next(o for o in question.options if o.number == option)
+            answer_text = f"{selected_option.number}. {selected_option.label}"
+            if selected_option.description:
+                answer_text += f"\n{selected_option.description}"
+        else:
+            answer_text = text
+        history_message = f"Question: {question.question}\n\nAnswer: {answer_text}"
         expected_selected = question.selected
         expected_text = ""
 
@@ -169,7 +179,22 @@ def answer_question(terminal_id: str, revision: str, option: int | None, text: s
                 wait_for(expected_selected, expected_text)
             check()
             backend.send_question_input_exact(target, witness, key="Enter")
+        except Exception:
+            # Final direct-history rows are never queued for delivery. A failed
+            # or uncertain menu interaction must not be labelled delivered.
+            terminal_service.record_direct_input(
+                terminal_id, "ui", history_message, MessageStatus.FAILED
+            )
+            raise
+        else:
+            inbox_row_id = terminal_service.record_direct_input(
+                terminal_id, "ui", history_message, MessageStatus.DELIVERED
+            )
         finally:
             update_last_active(terminal_id)
             status_monitor.checkpoint_after_input(terminal_id)
-    return {"success": True, "message": "Answer sent to the terminal."}
+    return {
+        "success": True,
+        "message": "Answer sent to the terminal.",
+        "inbox_recorded": inbox_row_id is not None,
+    }

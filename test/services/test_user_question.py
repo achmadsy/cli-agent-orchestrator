@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from cli_agent_orchestrator.backends.tmux_backend import TmuxBackend
+from cli_agent_orchestrator.models.inbox import MessageChannel, MessageStatus
 from cli_agent_orchestrator.providers.claude_question import parse_question
 from cli_agent_orchestrator.services import user_question as service
 
@@ -127,16 +128,20 @@ def rig(monkeypatch):
     monitor = Mock()
     monitor.notify_input_sent.side_effect = lambda tid: state.update(pending=True)
     monkeypatch.setattr(service, "status_monitor", monitor)
+    state["record_history"] = service.terminal_service.record_direct_input
+    state["history"] = Mock(return_value=42)
+    monkeypatch.setattr(service.terminal_service, "record_direct_input", state["history"])
     return state, backend, monitor
 
 
 def test_failed_durable_fence_sends_nothing(rig):
-    _, backend, monitor = rig
+    state, backend, monitor = rig
     revision = service.get_question("e5f6a0a6")["question"]["revision"]
     monitor.notify_input_sent.side_effect = None
     with pytest.raises(service.QuestionConflict, match="input boundary"):
         service.answer_question("e5f6a0a6", revision, 1, None)
     backend.send_question_input_exact.assert_not_called()
+    state["history"].assert_not_called()
 
 
 def test_get_is_passive(rig):
@@ -146,13 +151,23 @@ def test_get_is_passive(rig):
     assert response["question"]["options"][1]["label"] == "Nova Launcher"
     backend.send_question_input_exact.assert_not_called()
     monitor.notify_input_sent.assert_not_called()
+    state["history"].assert_not_called()
 
 
 @pytest.mark.parametrize("option", [1, 2, 3, 4])
 def test_answer_selects_exact_option_and_fences_duplicate(rig, option):
     state, backend, monitor = rig
     revision = service.get_question("e5f6a0a6")["question"]["revision"]
-    assert service.answer_question("e5f6a0a6", revision, option, None)["success"]
+    response = service.answer_question("e5f6a0a6", revision, option, None)
+    assert response["success"] and response["inbox_recorded"]
+    question = parse_question(SCREEN)
+    selected = question.options[option - 1]
+    state["history"].assert_called_once_with(
+        "e5f6a0a6",
+        "ui",
+        f"Question: {question.question}\n\nAnswer: {option}. {selected.label}\n{selected.description}",
+        MessageStatus.DELIVERED,
+    )
     assert state["selected"] == option
     keys = [call.kwargs.get("key") for call in backend.send_question_input_exact.call_args_list]
     assert keys == ["Down"] * (option - 1) + ["Enter"]
@@ -160,6 +175,7 @@ def test_answer_selects_exact_option_and_fences_duplicate(rig, option):
     with pytest.raises(service.QuestionConflict):
         service.answer_question("e5f6a0a6", revision, option, None)
     assert backend.send_question_input_exact.call_count == option
+    state["history"].assert_called_once()
 
 
 def test_navigate_from_nonfirst_selection(rig):
@@ -181,6 +197,12 @@ def test_custom_answer_is_literal_not_task_delivery(rig):
     calls = backend.send_question_input_exact.call_args_list
     assert [c.kwargs.get("key") for c in calls] == ["Down"] * 4 + [None, "Enter"]
     assert calls[-2].kwargs["text"] == "Magisk v29.0"
+    state["history"].assert_called_once_with(
+        "e5f6a0a6",
+        "ui",
+        f"Question: {parse_question(SCREEN).question}\n\nAnswer: Magisk v29.0",
+        MessageStatus.DELIVERED,
+    )
 
 
 @pytest.mark.parametrize(
@@ -210,6 +232,7 @@ def test_stale_revision_never_sends(rig, change):
         service.answer_question("e5f6a0a6", revision, 2, None)
     backend.send_question_input_exact.assert_not_called()
     monitor.notify_input_sent.assert_not_called()
+    state["history"].assert_not_called()
 
 
 def test_changed_question_mid_navigation_never_submits(rig):
@@ -225,6 +248,79 @@ def test_changed_question_mid_navigation_never_submits(rig):
     assert backend.send_question_input_exact.call_count == 1
     assert backend.send_question_input_exact.call_args.kwargs == {"key": "Down"}
     assert state["pending"]
+    assert state["history"].call_args.args[-1] == MessageStatus.FAILED
+    state["history"].assert_called_once()
+
+
+def test_uncertain_enter_is_recorded_failed_without_retry(rig):
+    state, backend, _ = rig
+    revision = service.get_question("e5f6a0a6")["question"]["revision"]
+    backend.send_question_input_exact.side_effect = TimeoutError("unknown delivery")
+    with pytest.raises(TimeoutError):
+        service.answer_question("e5f6a0a6", revision, 1, None)
+    backend.send_question_input_exact.assert_called_once()
+    state["history"].assert_called_once()
+    assert state["history"].call_args.args[-1] == MessageStatus.FAILED
+
+
+@pytest.mark.parametrize(
+    "answer", [{"option": 2, "text": None}, {"option": None, "text": "Magisk v29.0"}]
+)
+def test_answer_is_visible_in_real_inbox_without_being_queued(
+    rig, isolated_memory_db, monkeypatch, answer
+):
+    from cli_agent_orchestrator.clients import database
+
+    state, _, _ = rig
+    database.create_terminal("e5f6a0a6", "cao-test", "worker", "claude_code")
+    monkeypatch.setattr(service.terminal_service, "record_direct_input", state["record_history"])
+    revision = service.get_question("e5f6a0a6")["question"]["revision"]
+    result = service.answer_question("e5f6a0a6", revision, **answer)
+    assert result["inbox_recorded"]
+    (message,) = database.get_inbox_messages("e5f6a0a6", latest=True, include_sent=True)
+    assert message.sender_id == "ui" and message.receiver_id == "e5f6a0a6"
+    assert message.channel == MessageChannel.DIRECT and message.status == MessageStatus.DELIVERED
+    assert message.message.startswith(f"Question: {parse_question(SCREEN).question}\n\nAnswer: ")
+    assert (answer["text"] or "2. Nova Launcher\nNovaLauncher_8.0.18.apk") in message.message
+    assert database.get_pending_messages("e5f6a0a6", limit=10) == []
+    with pytest.raises(service.QuestionConflict):
+        service.answer_question("e5f6a0a6", revision, **answer)
+    assert len(database.get_inbox_messages("e5f6a0a6")) == 1
+
+
+def test_uncertain_answer_is_failed_in_real_inbox_without_being_queued(
+    rig, isolated_memory_db, monkeypatch
+):
+    from cli_agent_orchestrator.clients import database
+
+    state, backend, _ = rig
+    database.create_terminal("e5f6a0a6", "cao-test", "worker", "claude_code")
+    monkeypatch.setattr(service.terminal_service, "record_direct_input", state["record_history"])
+    revision = service.get_question("e5f6a0a6")["question"]["revision"]
+    backend.send_question_input_exact.side_effect = TimeoutError("unknown delivery")
+    with pytest.raises(TimeoutError):
+        service.answer_question("e5f6a0a6", revision, 1, None)
+    (message,) = database.get_inbox_messages("e5f6a0a6")
+    assert message.channel == MessageChannel.DIRECT and message.status == MessageStatus.FAILED
+    assert database.get_pending_messages("e5f6a0a6", limit=10) == []
+    with pytest.raises(service.QuestionConflict):
+        service.answer_question("e5f6a0a6", revision, 1, None)
+    backend.send_question_input_exact.assert_called_once()
+    assert len(database.get_inbox_messages("e5f6a0a6")) == 1
+
+
+def test_history_failure_does_not_turn_delivered_answer_into_retry(rig):
+    state, backend, _ = rig
+    state["history"].return_value = None
+    revision = service.get_question("e5f6a0a6")["question"]["revision"]
+    result = service.answer_question("e5f6a0a6", revision, 1, None)
+    assert result == {
+        "success": True,
+        "message": "Answer sent to the terminal.",
+        "inbox_recorded": False,
+    }
+    backend.send_question_input_exact.assert_called_once()
+    state["history"].assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -240,8 +336,9 @@ def test_changed_question_mid_navigation_never_submits(rig):
     ],
 )
 def test_invalid_answers_send_nothing(rig, option, text):
-    _, backend, _ = rig
+    state, backend, _ = rig
     revision = service.get_question("e5f6a0a6")["question"]["revision"]
     with pytest.raises(ValueError):
         service.answer_question("e5f6a0a6", revision, option, text)
     backend.send_question_input_exact.assert_not_called()
+    state["history"].assert_not_called()
