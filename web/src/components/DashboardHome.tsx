@@ -8,6 +8,7 @@ import { InboxPanel } from './InboxPanel'
 import { StatusBadge, STATUS_CONFIG } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
 import { parseServerTime } from '../time'
+import { NativeQuestionCard } from './NativeQuestionCard'
 
 const STATUS_ORDER = ['PROCESSING', 'IDLE', 'WAITING_USER_ANSWER', 'ERROR', 'COMPLETED', 'UNKNOWN']
 
@@ -458,7 +459,9 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
                                   {showActive && <span title={fmtAbs(t.last_active) || ''}>↻ {relActive}</span>}
                                 </div>
                                 {/* Quick Send */}
-                                {!sendInputOpen[t.id] ? (
+                                {terminalStatuses[t.id]?.toUpperCase() === 'WAITING_USER_ANSWER' ? (
+                                  <NativeQuestionCard key={t.id} terminalId={t.id} />
+                                ) : !sendInputOpen[t.id] ? (
                                   <button onClick={() => setSendInputOpen(prev => ({ ...prev, [t.id]: true }))} className="text-[10px] text-gray-600 hover:text-gray-300 transition-colors">Message agent...</button>
                                 ) : (
                                   <div className="flex items-center gap-1.5">
