@@ -58,8 +58,12 @@ def test_archive_survives_registry_delete(history_db, tmp_path, provider):
     assert private["runtime"]["session"] == "cao-history"
 
 
-@pytest.mark.parametrize("provider", ["claude_code", "codex", "kiro_cli", "gemini_cli", "opencode_cli"])
-def test_live_collection_captures_filtered_output_and_inbox(history_db, tmp_path, monkeypatch, provider):
+@pytest.mark.parametrize(
+    "provider", ["claude_code", "codex", "kiro_cli", "gemini_cli", "opencode_cli"]
+)
+def test_live_collection_captures_filtered_output_and_inbox(
+    history_db, tmp_path, monkeypatch, provider
+):
     from cli_agent_orchestrator.services import terminal_service
     from cli_agent_orchestrator.services.status_monitor import status_monitor
     from cli_agent_orchestrator.models.terminal import TerminalStatus
@@ -69,7 +73,13 @@ def test_live_collection_captures_filtered_output_and_inbox(history_db, tmp_path
     monkeypatch.setattr(service, "presence", lambda *_: "live")
     monkeypatch.setattr(service, "config_root", Mock(side_effect=ValueError("No native fixture")))
     monkeypatch.setattr(status_monitor, "get_status", lambda _: TerminalStatus.PROCESSING)
-    display = Mock(return_value={"output": "filtered capture", "source": "native_transcript", "truncated": False})
+    display = Mock(
+        return_value={
+            "output": "filtered capture",
+            "source": "native_transcript",
+            "truncated": False,
+        }
+    )
     monkeypatch.setattr(terminal_service, "get_display_output", display)
     service.collect_one(tid)
     public, _, _ = store.local_record(tid)
@@ -82,6 +92,7 @@ def test_live_collection_captures_filtered_output_and_inbox(history_db, tmp_path
 def test_absent_collection_retains_status_only_as_history(history_db, tmp_path, monkeypatch):
     from cli_agent_orchestrator.services import terminal_service
     from cli_agent_orchestrator.providers.manager import provider_manager
+
     tid = terminal(tmp_path)
     mutate(tid, public={"status": "processing", "output": "previous safe capture"})
     monkeypatch.setattr(service, "presence", lambda *_: "disconnected")
@@ -100,7 +111,11 @@ def test_multibyte_snapshot_fits_wire_limit(history_db, tmp_path):
     tid = terminal(tmp_path)
     with database.SessionLocal() as db:
         for i in range(100):
-            db.add(database.InboxModel(sender_id="human", receiver_id=tid, message="😀" * 4096, status="pending"))
+            db.add(
+                database.InboxModel(
+                    sender_id="human", receiver_id=tid, message="😀" * 4096, status="pending"
+                )
+            )
         db.flush()
         store.retain_terminal(db, db.get(database.TerminalModel, tid))
         db.commit()
@@ -307,6 +322,21 @@ def test_multi_agent_sync_drains_snapshot_and_replays_new_destination(
     destination[0] = "b" * 32
     service.sync_once()
     assert len(sent) == 16
+
+
+def test_history_connection_does_not_change_shared_mcp_connection(tmp_path, monkeypatch):
+    from cli_agent_orchestrator.mcp_server.shared_client import Connection
+
+    dedicated, shared = tmp_path / "history-client.json", tmp_path / "mcp-client.json"
+    loader = Mock(return_value="loaded")
+    monkeypatch.setattr(Connection, "load", loader)
+    monkeypatch.setenv("CAO_SHARED_CONNECTION_FILE", str(shared))
+    monkeypatch.setenv("CAO_HISTORY_CONNECTION_FILE", str(dedicated))
+    assert service.connection() == "loaded"
+    loader.assert_called_once_with(dedicated)
+    monkeypatch.delenv("CAO_HISTORY_CONNECTION_FILE")
+    service.connection()
+    assert loader.call_args.args == (shared,)
 
 
 def test_account_default_change_is_rejected(monkeypatch):

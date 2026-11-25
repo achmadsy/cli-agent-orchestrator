@@ -37,12 +37,30 @@ On a sending node:
 ```ini
 CAO_FLEET_NODE_ID=workstation
 CAO_HISTORY_SYNC_ENABLED=true
-CAO_SHARED_CONNECTION_FILE=/absolute/private/path/mcp-client.json
+CAO_HISTORY_CONNECTION_FILE=/absolute/private/path/history-client.json
 ```
 
 Use the existing strict version-1 `Connection` configuration (owner-only file,
 private IP endpoints, separate local/central bearer credentials). Do not copy
-credentials into history or public installer artifacts.
+credentials into history or public installer artifacts. `CAO_HISTORY_CONNECTION_FILE`
+is history-only and takes precedence; the existing `CAO_SHARED_CONNECTION_FILE`
+remains a compatible fallback without changing MCP configuration.
+
+For least privilege, generate a distinct random ingest bearer per sending node.
+On the coordinator set `CAO_HISTORY_CREDENTIALS_FILE` to an owner-only JSON file:
+
+```json
+{"version":1,"nodes":{"workstation":"<sha256-of-dedicated-ingest-bearer>"}}
+```
+
+Put only that dedicated bearer in the history Connection's `central_token`, never
+the coordinator's admin bearer. This credential only permits the two replication
+endpoints, is tied to its node name and direct IP, and cannot read history, resume
+agents, or call ordinary APIs. The receiver stores only its SHA-256 hash. Use a
+private owned regular file (0600, no symlinks or unsafe ancestors), generate the
+bearer with a cryptographic RNG, and never print or commit it. Rotating/removing a
+node's hash revokes its credential. Existing write/admin API bearers continue to
+work for operator-controlled replication; read-only bearers remain forbidden.
 
 On the coordinator, enable normal API bearer authentication and bind each node
 name to its **direct** tailnet peer address:

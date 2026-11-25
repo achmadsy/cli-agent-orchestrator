@@ -1,9 +1,13 @@
 """Authenticated history-only API; replicas cannot become execution targets."""
 
 import asyncio
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
+import re
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -14,6 +18,7 @@ from cli_agent_orchestrator.security.auth import (
     SCOPE_WRITE,
     is_auth_enabled,
     require_any_scope,
+    get_current_scopes,
 )
 from cli_agent_orchestrator.services import agent_history as service
 from cli_agent_orchestrator.services import agent_history_store as store
@@ -56,6 +61,60 @@ def bound_source(peer, source):
             raise ValueError()
     except (ValueError, TypeError):
         raise HTTPException(403, "History source is not bound to this peer")
+
+
+async def replication_auth(request: Request):
+    """A per-node ingest token grants no access to ordinary API routes.
+
+    Receiver stores hashes, not raw credentials, in an owner-only file. General
+    API write/admin bearers remain compatible; dedicated tokens are bound again
+    to the body source and direct peer before accepting a snapshot.
+    """
+    peer = private_peer(request)
+    header = request.headers.get("authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token or len(token) > 4096 or not token.isascii():
+        raise HTTPException(401, "History bearer required")
+    path = os.getenv("CAO_HISTORY_CREDENTIALS_FILE")
+    if path:
+        from cli_agent_orchestrator.mcp_server.shared_client import private_file, unique_object
+
+        try:
+            config = json.loads(private_file(Path(path)), object_pairs_hook=unique_object)
+            if (
+                not isinstance(config, dict)
+                or set(config) != {"version", "nodes"}
+                or config["version"] != 1
+            ):
+                raise ValueError()
+            nodes = config["nodes"]
+            if not isinstance(nodes, dict) or len(nodes) > 256:
+                raise ValueError()
+            digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+            matches = []
+            for source, expected in nodes.items():
+                if (
+                    not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", source)
+                    or not isinstance(expected, str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", expected)
+                ):
+                    raise ValueError()
+                if hmac.compare_digest(digest, expected):
+                    matches.append(source)
+            if matches:
+                if len(matches) != 1:
+                    raise ValueError()
+                bound_source(peer, matches[0])
+                return matches[0]
+        except HTTPException:
+            raise
+        except (OSError, ValueError, TypeError):
+            raise HTTPException(503, "History credential configuration unavailable") from None
+    # Do not register the dedicated credential with the global auth layer.
+    scopes = await get_current_scopes(authorization=header)
+    if not any(scope in scopes for scope in (SCOPE_WRITE, SCOPE_ADMIN)):
+        raise HTTPException(403, "History replication requires write scope")
+    return None
 
 
 @router.get("/agent-history")
@@ -112,14 +171,14 @@ async def resume(
 
 
 @router.get("/internal/agent-history/identity")
-async def identity(request: Request, response: Response, _scopes=Depends(write_scope)):
+async def identity(request: Request, response: Response, _source=Depends(replication_auth)):
     private_peer(request)
     response.headers["Cache-Control"] = "no-store"
     return {"origin": await asyncio.to_thread(store.origin)}
 
 
 @router.post("/internal/agent-history/sync")
-async def sync(request: Request, response: Response, _scopes=Depends(write_scope)):
+async def sync(request: Request, response: Response, _source=Depends(replication_auth)):
     peer = private_peer(request)
     response.headers["Cache-Control"] = "no-store"
     # Stream bound BEFORE JSON/Pydantic allocation, including chunked requests.
@@ -134,5 +193,7 @@ async def sync(request: Request, response: Response, _scopes=Depends(write_scope
         batch = HistoryBatch.model_validate_json(raw)
     except ValidationError as exc:
         raise HTTPException(422, "Invalid history batch") from exc
+    if _source is not None and _source != batch.source_node:
+        raise HTTPException(403, "History credential does not own this source")
     bound_source(peer, batch.source_node)
     return await asyncio.to_thread(store.accept, batch.source_node, batch)

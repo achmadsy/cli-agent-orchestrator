@@ -96,8 +96,91 @@ def test_sync_requires_auth_and_bounds_body(history_client, monkeypatch):
     assert history_client.get("/internal/agent-history/identity").status_code == 503
     monkeypatch.setattr(routes, "is_auth_enabled", lambda: True)
     monkeypatch.setattr(routes, "MAX_BODY", 32)
-    assert history_client.post("/internal/agent-history/sync", content=b" " * 33).status_code == 413
-    assert history_client.post("/internal/agent-history/sync", content=b"{}").status_code == 422
+    headers = {"Authorization": "Bearer fixture-api-token"}
+    assert (
+        history_client.post(
+            "/internal/agent-history/sync", content=b" " * 33, headers=headers
+        ).status_code
+        == 413
+    )
+    assert (
+        history_client.post(
+            "/internal/agent-history/sync", content=b"{}", headers=headers
+        ).status_code
+        == 422
+    )
+
+
+@pytest.fixture
+def ingest_token(tmp_path, monkeypatch):
+    import hashlib
+    import json
+
+    token = "fixture-history-ingest-token-123456789"
+    path = tmp_path / "history-credentials.json"
+    path.write_text(
+        json.dumps({"version": 1, "nodes": {"fixture": hashlib.sha256(token.encode()).hexdigest()}})
+    )
+    path.chmod(0o600)
+    monkeypatch.setenv("CAO_AUTH_LOCAL_TOKEN", "fixture-admin-token-987654321")
+    monkeypatch.setenv("CAO_HISTORY_CREDENTIALS_FILE", str(path))
+    monkeypatch.setenv("CAO_HISTORY_PEERS", '{"fixture":"100.64.0.2","other":"100.64.0.2"}')
+    return token, path
+
+
+def test_ingest_token_is_source_bound_and_not_general_api(history_client, ingest_token):
+    token, _ = ingest_token
+    headers = {"Authorization": "Bearer " + token}
+    database.create_terminal("old", "cao-fixture", "developer", "codex")
+    batch = {**store.export(), "source_node": "fixture"}
+    assert (
+        history_client.get("/internal/agent-history/identity", headers=headers).status_code == 200
+    )
+    assert (
+        history_client.post("/internal/agent-history/sync", json=batch, headers=headers).status_code
+        == 200
+    )
+    batch["source_node"] = "other"  # Same IP, different logical identity still forbidden.
+    assert (
+        history_client.post("/internal/agent-history/sync", json=batch, headers=headers).status_code
+        == 403
+    )
+    assert history_client.get("/agent-history", headers=headers).status_code == 401
+    assert (
+        history_client.post(
+            "/agent-history/old/resume",
+            json={"expected_version": 1, "confirm_no_task_replay": True},
+            headers=headers,
+        ).status_code
+        == 401
+    )
+    assert (
+        history_client.get(
+            "/internal/agent-history/identity", headers={**headers, "x-forwarded-for": "100.64.0.2"}
+        ).status_code
+        == 403
+    )
+    assert (
+        history_client.get(
+            "/internal/agent-history/identity",
+            headers={"Authorization": "Bearer wrong-history-token"},
+        ).status_code
+        == 401
+    )
+
+
+def test_ingest_token_file_fail_closed(history_client, ingest_token, monkeypatch):
+    token, path = ingest_token
+    headers = {"Authorization": "Bearer " + token}
+    path.chmod(0o644)
+    assert (
+        history_client.get("/internal/agent-history/identity", headers=headers).status_code == 503
+    )
+    path.chmod(0o600)
+    monkeypatch.setenv("CAO_HISTORY_PEERS", '{"fixture":"100.64.0.3"}')
+    assert (
+        history_client.get("/internal/agent-history/identity", headers=headers).status_code == 403
+    )
 
 
 def test_resume_requires_explicit_confirmation(history_client):

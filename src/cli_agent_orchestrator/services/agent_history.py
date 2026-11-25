@@ -262,7 +262,11 @@ def connection():
     from cli_agent_orchestrator.mcp_server.shared_client import Connection
 
     return Connection.load(
-        Path(os.getenv("CAO_SHARED_CONNECTION_FILE") or Path.home() / ".config/cao/mcp-client.json")
+        Path(
+            os.getenv("CAO_HISTORY_CONNECTION_FILE")
+            or os.getenv("CAO_SHARED_CONNECTION_FILE")
+            or Path.home() / ".config/cao/mcp-client.json"
+        )
     )
 
 
