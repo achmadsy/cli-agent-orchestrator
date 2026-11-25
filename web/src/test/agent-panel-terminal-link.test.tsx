@@ -8,7 +8,7 @@ import type { TerminalLink } from '../terminalLink'
 const mocks = vi.hoisted(() => ({ selectSession: vi.fn().mockResolvedValue(undefined), terminal: vi.fn() }))
 vi.mock('../api', async importOriginal => {
   const actual = await importOriginal<typeof import('../api')>()
-  return { ...actual, api: { ...actual.api,
+  return { ...actual, agentHistoryApi: { ...actual.agentHistoryApi, list: vi.fn().mockResolvedValue({ records: [], total: 0, offset: 0 }) }, api: { ...actual.api,
     listProviders: vi.fn().mockResolvedValue([]), listProviderProfiles: vi.fn().mockResolvedValue([]),
     listProfiles: vi.fn().mockResolvedValue([]), getSession: vi.fn(),
   } }

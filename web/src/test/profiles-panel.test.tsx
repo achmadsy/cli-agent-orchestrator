@@ -67,6 +67,7 @@ function routedFetch(overrides: Record<string, (url: string) => any> = {}) {
     if (/\/agents\/profiles\/[^/?]+$/.test(url)) return okJson(DETAIL)
     if (url.includes('/agents/profiles')) return okJson(CATALOG)
     if (url.includes('/memory/status')) return okJson({ enabled: false })
+    if (url.includes('/agent-history')) return okJson({ records: [], total: 0, offset: 0 })
     if (url.includes('/sessions')) return okJson([])
     return okJson([])
   })

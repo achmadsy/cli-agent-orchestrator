@@ -332,7 +332,9 @@ def test_rediscovery_preserves_real_worktree_until_exact_runtime_absence(
     cleanup_provider.assert_not_called()
     assert database.get_terminal_metadata("tid-1")["deferred_init_runtime_reclaimed"] is False
     assert service._pending_tombstone_runtime_cleanup == {"tid-1"}
-    assert backend.cleanup_calls == [("tid-1", "cao-x", "coder-3", False)]
+    # History adds an independent read-only exact-presence probe. Neither may
+    # request close while ownership/absence remains unverified.
+    assert backend.cleanup_calls == [("tid-1", "cao-x", "coder-3", False)] * 2
 
     # Once exact identity proof establishes absence, the same retry may reclaim
     # resources and mark completion, while preserving the durable failure row.

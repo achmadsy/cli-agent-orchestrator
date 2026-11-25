@@ -53,6 +53,20 @@ from cli_agent_orchestrator.clients.database import (
 from cli_agent_orchestrator.models.inbox import MessageStatus
 
 
+@pytest.fixture(autouse=True)
+def _history_with_real_sessions_only():
+    """Keep call-count unit mocks focused; real SQLite tests exercise archiving."""
+    from cli_agent_orchestrator.services import agent_history_store
+
+    original = agent_history_store.retain_terminal
+    def retain(db, *args, **kwargs):
+        if isinstance(db, MagicMock):
+            return
+        return original(db, *args, **kwargs)
+    with patch.object(agent_history_store, "retain_terminal", side_effect=retain):
+        yield
+
+
 @pytest.fixture
 def test_db():
     """Create an in-memory test database."""

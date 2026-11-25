@@ -326,6 +326,7 @@ def _payload(machine, peer, user, host, token, arch="amd64"):
             f"CAO_AUTH_LOCAL_TOKEN={token}",
             f"CAO_HOME_DIR={remote_home}/.local/share/cao",
             f"CAO_SHARED_CONNECTION_FILE={remote_home}/.config/cao/mcp-client.json",
+            "CAO_HISTORY_SYNC_ENABLED=true",
             f"CAO_BIND_HOST={host}",
             f"CAO_API_HOST={host}",
             "CAO_API_PORT=9889",

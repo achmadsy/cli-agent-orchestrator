@@ -15,6 +15,7 @@ import type { TerminalLink } from '../terminalLink'
 import { encodeAttachments, validateAttachments } from '../attachments'
 import { PromptAttachments } from './PromptAttachments'
 import { NativeQuestionCard } from './NativeQuestionCard'
+import { AgentHistoryPanel } from './AgentHistoryPanel'
 
 export const FALLBACK_PROVIDERS = ['kiro_cli', 'claude_code', 'q_cli', 'codex', 'gemini_cli', 'hermes', 'kimi_cli', 'copilot_cli', 'opencode_cli', 'cursor_cli', 'grok_cli']
 
@@ -457,6 +458,7 @@ export function AgentPanel({ terminalLink = null, onTerminalLinkConsumed }: {
         </div>
       )}
       {terminalLinkError && <div role="alert" className="text-sm text-red-300">{terminalLinkError}</div>}
+      <AgentHistoryPanel />
       {/* Sessions List */}
       <div className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-5">
         <div className="flex items-center justify-between mb-1">

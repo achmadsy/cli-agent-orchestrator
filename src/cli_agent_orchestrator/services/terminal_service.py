@@ -4696,6 +4696,14 @@ def capture_terminal_snapshot(terminal_id: str) -> Optional[Dict]:
         logger.warning(f"Failed to read working directory for {terminal_id}: {e}")
     metadata["live_working_directory"] = live_working_directory
 
+    # Preserve provider-filtered history while exact native ownership still exists.
+    try:
+        from cli_agent_orchestrator.services.agent_history import collect_one
+
+        collect_one(terminal_id)
+    except Exception as exc:
+        logger.warning("History snapshot deferred for %s (%s)", terminal_id, type(exc).__name__)
+
     # Snapshot scrollback + metadata before killing (for debugging/restore)
     try:
         # Capture plain text full scrollback (no -e, no line cap)

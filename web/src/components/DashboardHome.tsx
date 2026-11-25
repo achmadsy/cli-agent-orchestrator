@@ -9,6 +9,7 @@ import { StatusBadge, STATUS_CONFIG } from './StatusBadge'
 import { OutputViewer } from './OutputViewer'
 import { parseServerTime } from '../time'
 import { NativeQuestionCard } from './NativeQuestionCard'
+import { AgentHistoryPanel } from './AgentHistoryPanel'
 
 const STATUS_ORDER = ['PROCESSING', 'IDLE', 'WAITING_USER_ANSWER', 'ERROR', 'COMPLETED', 'UNKNOWN']
 
@@ -294,6 +295,8 @@ export function DashboardHome({ onNavigate }: { onNavigate: (tab: string) => voi
           <Zap size={16} /> Manage Flows
         </button>
       </div>
+
+      <AgentHistoryPanel />
 
       {/* Header with sort toggle */}
       <div className="mb-1">

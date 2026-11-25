@@ -1472,6 +1472,10 @@ async def lifespan(app: FastAPI):
     from cli_agent_orchestrator.services.observation_recovery import recover_observation
 
     observation_recovery_task = asyncio.create_task(recover_observation())
+    from cli_agent_orchestrator.services import agent_history
+
+    history_stop = asyncio.Event()
+    history_task = asyncio.create_task(agent_history.run(history_stop))
 
     # Start ApprovalBridge when AG-UI surface is enabled
     approval_bridge_task: Optional[asyncio.Task] = None
@@ -1526,6 +1530,9 @@ async def lifespan(app: FastAPI):
         logger.info("Herdr inbox service started")
 
     yield
+
+    history_stop.set()
+    await history_task
 
     if code_graph_task is not None:
         code_graph_task.cancel()
@@ -10014,6 +10021,9 @@ async def list_outcomes_endpoint(
 from cli_agent_orchestrator.api.terminal_workspace import router as _terminal_workspace_router
 
 app.include_router(_terminal_workspace_router)
+from cli_agent_orchestrator.api.agent_history import router as _agent_history_router
+
+app.include_router(_agent_history_router)
 
 # Static file serving for built web UI.
 # Anchored to the package via importlib.resources so it works for both

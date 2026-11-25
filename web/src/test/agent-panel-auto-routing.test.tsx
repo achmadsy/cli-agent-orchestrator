@@ -12,6 +12,7 @@ vi.mock('../api', async importOriginal => {
   const actual = await importOriginal<typeof import('../api')>()
   return {
     ...actual,
+    agentHistoryApi: { ...actual.agentHistoryApi, list: vi.fn().mockResolvedValue({ records: [], total: 0, offset: 0 }) },
     api: {
       ...actual.api,
       listProviders: vi.fn().mockResolvedValue([{ name: 'claude_code', binary: 'claude', installed: true }]),

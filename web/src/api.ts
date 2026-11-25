@@ -102,6 +102,53 @@ async function fetchJSON<T>(url: string, opts?: RequestInit & { timeoutMs?: numb
   }
 }
 
+export interface AgentHistoryMessage {
+  id: number
+  sender_id: string
+  receiver_id: string
+  message: string
+  status: string
+  channel: string
+  created_at: string
+}
+
+export interface AgentHistoryRecord {
+  terminal_id: string
+  session_name: string
+  name: string
+  provider: string
+  source_node: string
+  origin: string
+  version: number
+  replica: boolean
+  synced_at: string | null
+  last_active: string | null
+  recorded_at: string
+  runtime_state: 'live' | 'disconnected' | 'unverified' | 'offline_snapshot'
+  last_known_status: string | null
+  resume_available: boolean
+  resume_state: string | null
+}
+
+export interface AgentHistoryDetail {
+  version: number
+  output: string
+  output_source: string
+  output_truncated: boolean
+  inbox: AgentHistoryMessage[]
+  inbox_truncated: boolean
+}
+
+export const agentHistoryApi = {
+  list: (offset = 0) => fetchJSON<{ records: AgentHistoryRecord[]; total: number; offset: number }>(`/agent-history?offset=${offset}&limit=50`),
+  detail: (record: AgentHistoryRecord) => fetchJSON<AgentHistoryDetail>(`/agent-history/${encodeURIComponent(record.source_node)}/${record.origin}/${encodeURIComponent(record.terminal_id)}`),
+  resume: (record: AgentHistoryRecord) => fetchJSON<{ terminal_id: string; session_name: string; task_replayed: boolean }>(`/agent-history/${encodeURIComponent(record.terminal_id)}/resume`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_version: record.version, confirm_no_task_replay: true }),
+    timeoutMs: 180000,
+  }),
+}
+
 export interface NativeQuestion {
   revision: string
   header: string

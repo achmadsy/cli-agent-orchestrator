@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 def cleanup_old_data():
     """Clean up terminals, inbox messages, and log files older than RETENTION_DAYS."""
     try:
+        # Backfill before deleting registry rows, Inbox entries or recordings.
+        # Archive tables have separate indefinite retention, never swept here.
+        from cli_agent_orchestrator.services.agent_history import collect
+
+        collect()
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
         logger.info(
             f"Starting cleanup of data older than {RETENTION_DAYS} days (before {cutoff_date})"
@@ -87,8 +92,14 @@ def cleanup_old_data():
 
         logger.info(f"Deleted {deleted_terminals} old terminals from database")
 
-        # Clean up old inbox messages
+        # Clean up old inbox messages only after their final historical states
+        # have been retained, including agents whose registry rows are gone.
         with SessionLocal() as db:
+            from sqlalchemy import text
+            from cli_agent_orchestrator.services.agent_history_store import retain_orphan_inboxes
+
+            db.execute(text("BEGIN IMMEDIATE"))
+            retain_orphan_inboxes(db)
             deleted_messages = (
                 db.query(InboxModel).filter(InboxModel.created_at < cutoff_date).delete()
             )

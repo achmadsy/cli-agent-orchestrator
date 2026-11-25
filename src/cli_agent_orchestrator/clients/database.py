@@ -759,7 +759,7 @@ def init_db() -> None:
     _migrate_project_aliases_schema()
     # Import optional feature models before create_all so their tables share the
     # canonical CAO database without repository-local registry files.
-    from cli_agent_orchestrator.services import code_graph_registry  # noqa: F401
+    from cli_agent_orchestrator.services import code_graph_registry, agent_history_store  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _migrate_code_graph_metadata()
@@ -2288,6 +2288,9 @@ def create_terminal(
                     request_fingerprint=request_fingerprint or "",
                 )
             )
+        db.flush()
+        from cli_agent_orchestrator.services.agent_history_store import retain_terminal
+        retain_terminal(db, terminal)
         db.commit()
         return {
             "id": terminal.id,
@@ -3093,6 +3096,11 @@ def list_pending_receiver_ids_older_than(min_age_seconds: int) -> List[str]:
 def delete_terminal(terminal_id: str) -> bool:
     """Delete terminal metadata."""
     with SessionLocal() as db:
+        db.execute(text("BEGIN IMMEDIATE"))
+        from cli_agent_orchestrator.services.agent_history_store import retain_terminal
+        row = db.get(TerminalModel, terminal_id)
+        if row is not None:
+            retain_terminal(db, row, ended=True)
         deleted = db.query(TerminalModel).filter(TerminalModel.id == terminal_id).delete()
         db.commit()
         return deleted > 0
@@ -3101,6 +3109,10 @@ def delete_terminal(terminal_id: str) -> bool:
 def delete_terminals_by_session(tmux_session: str) -> int:
     """Delete all terminals in a session."""
     with SessionLocal() as db:
+        db.execute(text("BEGIN IMMEDIATE"))
+        from cli_agent_orchestrator.services.agent_history_store import retain_terminal
+        for row in db.query(TerminalModel).filter(TerminalModel.tmux_session == tmux_session).all():
+            retain_terminal(db, row, ended=True)
         deleted = (
             db.query(TerminalModel).filter(TerminalModel.tmux_session == tmux_session).delete()
         )
@@ -3120,6 +3132,10 @@ def delete_terminals_by_ids(terminal_ids: List[str]) -> int:
     if not terminal_ids:
         return 0
     with SessionLocal() as db:
+        db.execute(text("BEGIN IMMEDIATE"))
+        from cli_agent_orchestrator.services.agent_history_store import retain_terminal
+        for row in db.query(TerminalModel).filter(TerminalModel.id.in_(terminal_ids)).all():
+            retain_terminal(db, row, ended=True)
         deleted = (
             db.query(TerminalModel)
             .filter(TerminalModel.id.in_(terminal_ids))
