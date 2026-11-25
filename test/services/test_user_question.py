@@ -233,6 +233,32 @@ def test_active_question_probe_requires_live_owned_unedited_question(rig, blocke
     state["history"].assert_not_called()
 
 
+@pytest.mark.parametrize("screen,expected", [(SCREEN, True), ("Ready for input", False)])
+def test_probe_distinguishes_verified_absence_from_unavailable(rig, screen, expected):
+    state, backend, monitor = rig
+    state["screen"] = screen
+    assert service.probe_active_question("e5f6a0a6") is expected
+    backend.send_question_input_exact.assert_not_called()
+    monitor.notify_input_sent.assert_not_called()
+
+
+@pytest.mark.parametrize("blocked", ["shell", "identity", "fenced", "provider"])
+def test_unverified_probe_cannot_refresh_display_grace(rig, blocked):
+    state, backend, monitor = rig
+    if blocked == "shell":
+        backend.question_pane_witness.side_effect = ValueError("no live Claude process")
+    elif blocked == "identity":
+        backend.question_pane_witness.side_effect = ["old", "new"]
+        state["screen"] = "Ready for input"  # Negative reads need the same ownership fence.
+    elif blocked == "fenced":
+        state["pending"] = True
+    else:
+        state["row"]["provider"] = "codex"
+    assert service.probe_active_question("e5f6a0a6") is None
+    backend.send_question_input_exact.assert_not_called()
+    monitor.notify_input_sent.assert_not_called()
+
+
 @pytest.mark.parametrize("option", [1, 2, 3, 4])
 def test_answer_selects_exact_option_and_fences_duplicate(rig, option):
     state, backend, monitor = rig

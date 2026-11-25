@@ -99,6 +99,15 @@ STALE_PROCESSING_CONFIRM_TTL_S = 2 * STALE_PROCESSING_CAPTURE_INTERVAL_S
 
 # Exact-owned question probes fork tmux; bound both positive and negative reads.
 NATIVE_QUESTION_PROBE_INTERVAL_S = 3.0
+# Display grace only: a delayed probe cannot keep an old badge indefinitely.
+NATIVE_QUESTION_DISPLAY_TTL_S = 2 * NATIVE_QUESTION_PROBE_INTERVAL_S
+
+
+class _NativeQuestionDisplay(NamedTuple):
+    status: TerminalStatus
+    identity: tuple
+    checkpoint: str
+    observed_at: float
 
 
 class StatusMonitor:
@@ -256,6 +265,9 @@ class StatusMonitor:
         # Separate from applied status/checkpoints: a live question may block a
         # stale ready latch, but a passive viewport cannot certify task pickup.
         self._native_question_checks: Dict[str, Tuple[int, float, Optional[bool]]] = {}
+        # API-only grace while the blocker is pending/stale. Never read by
+        # get_status/status_observation or persisted as execution evidence.
+        self._native_question_display: Dict[str, _NativeQuestionDisplay] = {}
 
     def _checkpoint(self, terminal_id: str, status: TerminalStatus, source: str) -> bool:
         if self._checkpointed.get(terminal_id) == (status, source):
@@ -287,8 +299,35 @@ class StatusMonitor:
     def display_status(self, terminal_id: str, observed: TerminalStatus) -> TerminalStatus:
         """API projection only; never called by execution/delivery waiters."""
         with self._lock:
+            if observed != TerminalStatus.UNKNOWN:
+                return observed
+            transient = self._native_question_display.get(terminal_id)
+            if transient is not None:
+                check = self._native_question_checks.get(terminal_id)
+                applied = self._last_status.get(terminal_id)
+                diagnostic = self._monitoring.get(terminal_id, {})
+                pending = bool(check and (
+                    check[0] != self._capture_generation.get(terminal_id, 0)
+                    or check[2] is None
+                ))
+                try:
+                    row = terminal_status_store.context(terminal_id)
+                    if (
+                        pending and applied in (TerminalStatus.IDLE, TerminalStatus.COMPLETED)
+                        and diagnostic.get("state") not in {"unavailable", "not_found"}
+                        and time.monotonic() - transient.observed_at < NATIVE_QUESTION_DISPLAY_TTL_S
+                        and row and terminal_status_store.identity(row) == transient.identity
+                        and terminal_status_store.recoverable(row)
+                        and not terminal_status_store.input_pending(row)
+                        and row["status_checkpoint"] == transient.checkpoint
+                        and terminal_status_store.read(row)
+                    ):
+                        return transient.status
+                except Exception:
+                    pass
+                self._native_question_display.pop(terminal_id, None)
             restored = self._display_status.get(terminal_id)
-            if observed != TerminalStatus.UNKNOWN or restored is None:
+            if restored is None:
                 return observed
             try:
                 row = terminal_status_store.context(terminal_id)
@@ -308,6 +347,7 @@ class StatusMonitor:
         with self._lock:
             self._snapshot_candidate.pop(terminal_id, None)
             self._display_status.pop(terminal_id, None)
+            self._native_question_display.pop(terminal_id, None)
             self._monitoring[terminal_id] = {"state": state, "reason": reason}
 
     def monitoring_diagnostic(self, terminal_id: str) -> dict:
@@ -614,6 +654,7 @@ class StatusMonitor:
         self._last_status[terminal_id] = detected
         if detected != TerminalStatus.UNKNOWN:
             self._display_status.pop(terminal_id, None)
+            self._native_question_display.pop(terminal_id, None)
             if persist:
                 self._checkpoint(terminal_id, detected, "live_output")
         # Earned now, from whatever output has landed so far (see
@@ -1190,6 +1231,7 @@ class StatusMonitor:
                 self._display_status.pop(terminal_id, None)
                 self._checkpointed.pop(terminal_id, None)
                 self._native_question_checks.pop(terminal_id, None)
+                self._native_question_display.pop(terminal_id, None)
                 self._checkpoint(terminal_id, TerminalStatus.UNKNOWN, "input_pending")
                 self._allow_processing_revert[terminal_id] = True
                 # A new turn invalidates every pane/runtime verdict sampled before
@@ -1297,6 +1339,7 @@ class StatusMonitor:
             self._display_status.pop(terminal_id, None)
             self._checkpointed.pop(terminal_id, None)
             self._native_question_checks.pop(terminal_id, None)
+            self._native_question_display.pop(terminal_id, None)
             self._buffers.pop(terminal_id, None)
             self._buffer_epochs.pop(terminal_id, None)
             self._last_status.pop(terminal_id, None)
@@ -1339,6 +1382,7 @@ class StatusMonitor:
                 self._display_status.pop(terminal_id, None)
                 self._checkpointed.pop(terminal_id, None)
                 self._native_question_checks.pop(terminal_id, None)
+                self._native_question_display.pop(terminal_id, None)
                 self._checkpoint(terminal_id, TerminalStatus.UNKNOWN, "input_pending")
                 self._buffers[terminal_id] = ""
                 self._last_status.pop(terminal_id, None)
@@ -1402,8 +1446,17 @@ class StatusMonitor:
             # generation-zero reuse while this unlocked pane read is in flight.
             entry = (generation, now, None)
             self._native_question_checks[terminal_id] = entry
+        # Pin durable identity/checkpoint before the unlocked observation. A
+        # lifecycle/input change must not seed grace for a replacement terminal.
         try:
-            active = provider.has_active_native_question() is True
+            row = terminal_status_store.context(terminal_id)
+        except Exception:
+            row = None
+        verified = False
+        try:
+            verdict = provider.has_active_native_question()
+            verified = verdict is True or verdict is False
+            active = verdict is True
         except Exception:
             logger.debug("Could not probe native question for %s", terminal_id, exc_info=True)
             active = False
@@ -1419,7 +1472,24 @@ class StatusMonitor:
                     if current in (TerminalStatus.IDLE, TerminalStatus.COMPLETED)
                     else current
                 )
-            self._native_question_checks[terminal_id] = (generation, now, active)
+            self._native_question_checks[terminal_id] = (
+                generation, now, active if verified else None
+            )
+            self._native_question_display.pop(terminal_id, None)
+            try:
+                if (verified and row and terminal_status_store.recoverable(row)
+                        and not terminal_status_store.input_pending(row)
+                        and terminal_status_store.read(row)
+                        and terminal_status_store.context(terminal_id) == row):
+                    self._native_question_display[terminal_id] = _NativeQuestionDisplay(
+                        TerminalStatus.WAITING_USER_ANSWER if active else cached,
+                        terminal_status_store.identity(row), row["status_checkpoint"],
+                        time.monotonic(),
+                    )
+            except Exception:
+                pass  # No valid durable context means no display-only fallback.
+            if not verified:
+                return TerminalStatus.UNKNOWN
             return TerminalStatus.WAITING_USER_ANSWER if active else None
 
     def get_status(self, terminal_id: str) -> TerminalStatus:

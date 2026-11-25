@@ -1351,12 +1351,13 @@ class ClaudeCodeProvider(BaseProvider):
     status_recheck_uses_screen = True
     supports_native_question_probe = True
 
-    def has_active_native_question(self) -> bool:
+    def has_active_native_question(self) -> Optional[bool]:
         # Lazy import: user_question shares the status monitor and terminal
-        # lifecycle service. A snapshot can block readiness, never prove work.
-        from cli_agent_orchestrator.services.user_question import has_active_question
+        # lifecycle service. None means ownership/capture unavailable, not an
+        # observed absence of a question; it cannot renew display-only grace.
+        from cli_agent_orchestrator.services.user_question import probe_active_question
 
-        return has_active_question(self.terminal_id)
+        return probe_active_question(self.terminal_id)
 
     def probe_processing_from_screen(self, screen_lines: List[str]) -> bool:
         """Observe live work without invoking dispatch-derived status fallbacks.

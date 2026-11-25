@@ -30,7 +30,7 @@ class QuestionConflict(ValueError):
     """No input is safe for this revision. Refresh or use the terminal."""
 
 
-def _capture(terminal_id):
+def _observe(terminal_id):
     row = store.context(terminal_id)
     if row is None:
         raise LookupError("Terminal not found")
@@ -45,11 +45,19 @@ def _capture(terminal_id):
     target = backend.resolve_workspace_target(terminal_id, row["tmux_session"])
     witness = backend.question_pane_witness(target)
     screen = backend.observe_terminal_exact(target)
+    if backend.question_pane_witness(target) != witness or store.context(terminal_id) != row:
+        raise QuestionConflict("Terminal changed. Refresh the question.")
+    return backend, row, target, witness, screen
+
+
+def _capture(terminal_id):
+    observed = _observe(terminal_id)
+    if observed is None:
+        return None
+    backend, row, target, witness, screen = observed
     question = parse_question(screen)
     if question is None or question.custom_text or question.selected > question.custom_number:
         return None
-    if backend.question_pane_witness(target) != witness or store.context(terminal_id) != row:
-        raise QuestionConflict("Terminal changed. Refresh the question.")
     payload = json.dumps(
         [
             store.identity(row),
@@ -66,12 +74,21 @@ def _capture(terminal_id):
     return backend, row, target, witness, question, revision
 
 
+def probe_active_question(terminal_id: str) -> bool | None:
+    """True/False only for a verified live pane; None cannot refresh display grace."""
+    try:
+        observed = _observe(terminal_id)
+        if observed is None:
+            return None
+        question = parse_question(observed[-1])
+        return bool(question and not question.custom_text and question.selected <= question.custom_number)
+    except Exception:
+        return None
+
+
 def has_active_question(terminal_id: str) -> bool:
     """Read-only ready-state blocker using the same ownership/input fences as UI."""
-    try:
-        return _capture(terminal_id) is not None
-    except Exception:
-        return False
+    return probe_active_question(terminal_id) is True
 
 
 def get_question(terminal_id: str) -> dict:

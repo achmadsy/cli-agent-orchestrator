@@ -291,9 +291,9 @@ class BaseProvider(ABC):
     # Providers opt in only with an exact-owned, read-only live question probe.
     supports_native_question_probe: bool = False
 
-    def has_active_native_question(self) -> bool:
-        """Observe a live question without input or provider state mutations."""
-        return False
+    def has_active_native_question(self) -> Optional[bool]:
+        """Observe an owned pane: True/False if verified, None if unavailable."""
+        return None
 
     # Opt-in for the mid-burst PROCESSING probe (StatusMonitor._midburst_processing_probe).
     # Set True ONLY alongside a probe_processing_from_screen() override that is
