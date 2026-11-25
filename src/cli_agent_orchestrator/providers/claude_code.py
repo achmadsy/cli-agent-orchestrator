@@ -257,6 +257,30 @@ NEW_TUI_SPINNER_PATTERN = r"[✶✢✽✻✳·*][^\n]*ing…"
 # ("* Remember to deploy…") or the version footer ("· latest: … update…")
 # sitting directly above the box from being misread as a live spinner.
 NEW_TUI_BOX_SPINNER_PATTERN = re.compile(r"^[ \t]*[✶✢✽✻✳·*][ \t]+\w*ing\b.*…")
+# Native retry chrome is still an active turn, not a completed response. Its
+# first word is "API", so the gerund-first spinner detector cannot recognize it.
+API_RETRY_PATTERN = re.compile(
+    r"^[ \t\xa0]*[✶✢✽✻✳·*][ \t\xa0]+API error[ \t]*·[ \t]*retrying\b"
+    r"[^\n]*\battempt[ \t]+\d+/\d+",
+    re.IGNORECASE,
+)
+
+
+def _has_active_api_retry(lines: List[str]) -> bool:
+    """Recognize recent retry chrome, never a stale banner above a later answer."""
+    bottom = [line.rstrip() for line in lines if line.strip()][-20:]
+    for index in range(len(bottom) - 1, -1, -1):
+        line = bottom[index]
+        if API_RETRY_PATTERN.search(line):
+            return True
+        if (
+            EXTRACTION_RESPONSE_PATTERN.search(line)
+            or re.search(GET_STATUS_COMPLETION_PATTERN, line)
+            or NEW_TUI_BOX_SPINNER_PATTERN.search(line)
+        ):
+            return False
+    return False
+
 
 # Response-line API error banner. Anchored to line start + the exact
 # "API Error" literal; a Markdown quote of it inside a bullet/fence never
@@ -1211,6 +1235,9 @@ class ClaudeCodeProvider(BaseProvider):
                 if has_option_markers and not sep_after_plan and not response_after_options:
                     return TerminalStatus.WAITING_USER_ANSWER
 
+        if _has_active_api_retry(lines):
+            return TerminalStatus.PROCESSING
+
         # New Claude Code TUI PROCESSING: the input prompt is BOXED between two
         # separators, and the live spinner renders on the line DIRECTLY ABOVE the
         # box's top border — where the structural "spinner-before-separator" walk
@@ -1392,6 +1419,9 @@ class ClaudeCodeProvider(BaseProvider):
             and not re.search(MODEL_UPGRADE_PROMPT_PATTERN, joined)
         ):
             return TerminalStatus.WAITING_USER_ANSWER
+
+        if _has_active_api_retry(bottom):
+            return TerminalStatus.PROCESSING
 
         # Background task still running (GH #392): "✻ Waiting for N dynamic
         # workflow(s)…" has no spinner ellipsis, so the spinner check above

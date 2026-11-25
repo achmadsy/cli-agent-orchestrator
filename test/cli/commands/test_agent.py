@@ -191,7 +191,18 @@ class TestHandoff:
             "model": "fable-5",
             "use_worktree": True,
             "wait": True,
+            "auto_delete": False,
         }
+
+    @patch("cli_agent_orchestrator.cli.commands.agent._handoff_impl")
+    def test_auto_delete_is_explicit_opt_in(self, mock_impl, runner):
+        async def fake(*args, **kwargs):
+            return HandoffResult(success=True, message="ok", output="done", terminal_id="w1")
+
+        mock_impl.side_effect = fake
+        result = runner.invoke(agent, ["handoff", "developer", "task", "--auto-delete"])
+        assert result.exit_code == 0, result.output
+        assert mock_impl.call_args.kwargs["auto_delete"] is True
 
     def test_handoff_exposes_no_idempotency_key_flag(self, runner):
         """`--idempotency-key` was REMOVED from this surface (review on PR #634).

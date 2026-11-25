@@ -37,6 +37,36 @@ Run `cao-shared-mcp --check` for metadata/tool-surface proof only. Add
 contract for cross-node project memory. This check never recalls, stores or
 forgets production memories and never triggers indexing.
 
+## Handoff worker retention
+
+`handoff` and `cao agent handoff` retain their worker terminals and worktrees by
+**default**, including after completion. Inspect/reuse the terminal or explicitly
+call `delete_terminal` when its work and files are no longer needed.
+
+- MCP: `auto_delete=true` opts into deletion after a successful completed result
+  reaches the handoff client. CLI: `cao agent handoff developer "task" --auto-delete`.
+- Timeout, error, malformed results, or a disconnected wait never trigger handoff
+  cleanup, even with auto-delete selected. A lost connection can leave work running;
+  inspect the existing worker rather than blindly submitting the task again.
+- `--auto-delete` cannot be combined with `--no-wait`.
+- The policy also applies to `target_host` workers. A retained worker can occupy a
+  node's only terminal slot; capacity pressure is not permission to destroy its work.
+- Deleting a worktree-backed terminal discards its checkout's working-tree files.
+  Commit and merge/push anything that must survive before selecting deletion.
+
+The backend also suppresses server-side teardown for durable handoff requests
+(`job_id`), including requests from an already-running older MCP process. New
+MCP options and client-side cleanup policy require the MCP process to reload;
+deployment does not restart live harnesses. In particular, an older CLI's
+client-side deletion or an older remote client's failure cleanup is not rewritten
+by replacing the backend package. Workflow run-step calls without a handoff job
+keep their explicit teardown setting.
+
+The task's `timeout` is separate from the harness's MCP connection/idle timeout.
+This retention policy prevents connection loss from authorizing deletion; it does
+not disable or extend the harness timeout. Workflow-engine teardown settings are
+separate and are unchanged.
+
 ## Harness configuration
 
 The transactional helper is

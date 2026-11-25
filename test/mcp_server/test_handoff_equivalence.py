@@ -7,9 +7,9 @@ shared run_agent_step substrate:
   - the handoff path: ``_handoff_impl`` -> ``POST /terminals/run-step`` ->
     ``run_agent_step(...)`` (the MCP client's six-call loop collapsed to one).
 
-Both must produce the same ordered terminal-layer calls (create -> readiness
-wait -> send_input -> completion poll -> get_output LAST -> delete). No latency
-assertion (Q7=A): equivalence is proven functionally, not by timing.
+Both use the same execution substrate (create -> readiness -> send -> wait ->
+extract). Their lifecycle policies differ: the engine's explicit teardown stays
+unchanged; handoff now retains its worker by default. No latency assertion.
 
 Completion is a ``status_monitor.get_status`` poll (issue #409a: a post-input
 IDLE is a valid completion signal alongside COMPLETED), NOT a second
@@ -111,9 +111,8 @@ class TestEngineHandoffEquivalence:
         # Extraction is in LAST mode (provider extract_last_message path).
         assert ("get_output", "abc12345", OutputMode.LAST) in rec.calls
 
-    def test_handoff_path_drives_identical_sequence(self):
-        """_handoff_impl over the endpoint must converge on the SAME substrate
-        sequence as the engine's direct call (BR-8)."""
+    def test_handoff_path_uses_substrate_but_retains_worker(self):
+        """The endpoint executes the step without implicitly deleting its worker."""
         from fastapi.testclient import TestClient
 
         from cli_agent_orchestrator.api.main import app
@@ -162,11 +161,10 @@ class TestEngineHandoffEquivalence:
             "send_input",
             "poll",
             "get_output",
-            "delete",
         ]
 
     def test_both_paths_match(self):
-        """Direct comparison: engine and handoff sequences are identical."""
+        """Execution matches; only the engine's requested teardown deletes a worker."""
         engine = _run_recorded(lambda: run_agent_step("kiro_cli", "developer", "do the task"))
 
         from fastapi.testclient import TestClient
@@ -204,7 +202,7 @@ class TestEngineHandoffEquivalence:
             for p in reversed(patches):
                 p.stop()
 
-        assert engine.kinds() == handoff.kinds()
+        assert engine.kinds() == handoff.kinds() + ["delete"]
         # Beyond call *kinds* (true by construction since both call the same
         # run_agent_step), assert the actual ARGS match: the prompt sent to the
         # worker is identical across paths. Identical kinds alone could not catch

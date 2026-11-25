@@ -5253,6 +5253,11 @@ async def run_step(
     a ``job_id`` behave exactly as before (no persistence overhead).
     """
     job_id = body.job_id  # None when the caller omits it (backward-compatible)
+    # Durable handoffs from already-running MCP clients may still send the old
+    # teardown=True default. Never destroy their only live copy server-side:
+    # explicit success cleanup belongs to the updated client after receipt.
+    # Workflow run-step calls without a handoff job retain their teardown policy.
+    effective_teardown = body.teardown and job_id is None
 
     # BR-31: for a script-tier run-step call, record the live terminal into the
     # shared ScriptRunRecord's step_states as soon as it exists, so U4's orphan sweep
@@ -5565,7 +5570,7 @@ async def run_step(
             prompt=body.prompt,
             session_name=body.session_name,
             reuse_terminal_id=body.reuse_terminal_id,
-            teardown=body.teardown,
+            teardown=effective_teardown,
             timeout=body.timeout,
             # BR-10: the ALREADY-RESOLVED directory rides the existing parameter, so
             # ``run_agent_step``'s own ``working_directory is None and caller_id is
@@ -5607,7 +5612,7 @@ async def run_step(
         _schedule_elastic_terminal_ended(
             background_tasks,
             result.terminal_id,
-            teardown=body.teardown,
+            teardown=effective_teardown,
             reuse_terminal_id=body.reuse_terminal_id,
         )
 

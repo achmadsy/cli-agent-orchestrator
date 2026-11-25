@@ -388,7 +388,7 @@ class TestAssignRemoteErrorSurface:
 
 
 class TestHandoffRemoteFailureCleanup:
-    """MF2a: a failed remote step must not leave the worker pod's only slot occupied."""
+    """Failed remote work is retained even when it occupies the node's only slot."""
 
     @staticmethod
     def _run_step_error(status_code, kind, tid):
@@ -400,21 +400,19 @@ class TestHandoffRemoteFailureCleanup:
     @patch(f"{_SRV}._get_cleanup_nudge", return_value="")
     @patch(f"{_SRV}._resolve_remote_provider", return_value="mock_cli")
     @patch(f"{_SRV}.requests")
-    def test_remote_worker_error_triggers_cleanup_delete(self, mock_requests, _prov, _nudge):
+    def test_remote_worker_error_retains_worker(self, mock_requests, _prov, _nudge):
         mock_requests.post.return_value = self._run_step_error(502, "error", "beef0003")
         mock_requests.delete.return_value = _response(200)
         result = asyncio.run(_handoff_impl("developer", "Task", target_host="cao-worker-0"))
         assert result.success is False
         assert "worker errored" in result.message
-        assert "cleaned up" in result.message
-        mock_requests.delete.assert_called_once()
-        args, _ = mock_requests.delete.call_args
-        assert args[0] == "http://cao-worker-0:9889/terminals/beef0003"
+        assert "retained" in result.message
+        mock_requests.delete.assert_not_called()
 
     @patch(f"{_SRV}._get_cleanup_nudge", return_value="")
     @patch(f"{_SRV}._resolve_remote_provider", return_value="mock_cli")
     @patch(f"{_SRV}.requests")
-    def test_remote_timeout_kind_maps_and_cleans_up(self, mock_requests, _prov, _nudge):
+    def test_remote_timeout_kind_maps_and_retains_worker(self, mock_requests, _prov, _nudge):
         mock_requests.post.return_value = self._run_step_error(504, "timeout", "beef0004")
         mock_requests.delete.return_value = _response(200)
         result = asyncio.run(
@@ -423,7 +421,8 @@ class TestHandoffRemoteFailureCleanup:
         assert result.success is False
         assert "timed out after 42 seconds" in result.message
         assert result.terminal_id == "beef0004"
-        mock_requests.delete.assert_called_once()
+        assert "retained" in result.message
+        mock_requests.delete.assert_not_called()
 
     @patch(f"{_SRV}._get_cleanup_nudge", return_value="")
     @patch(f"{_SRV}._resolve_remote_provider", return_value="mock_cli")
@@ -438,9 +437,9 @@ class TestHandoffRemoteFailureCleanup:
         mock_post.return_value = self._run_step_error(502, "error", "beef0005")
         result = asyncio.run(_handoff_impl("developer", "Task", target_host="cao-worker-0"))
         assert result.success is False
-        assert "terminal beef0005 lives on cao-worker-0" in result.message
-        assert "DELETE http://cao-worker-0:9889/terminals/beef0005" in result.message
+        assert "Worker beef0005 on cao-worker-0 retained" in result.message
         assert "delete_terminal('beef0005', target_host='cao-worker-0')" in result.message
+        mock_delete.assert_not_called()
 
     @patch(f"{_SRV}._get_cleanup_nudge", return_value="")
     @patch(f"{_SRV}._resolve_handoff_provider")

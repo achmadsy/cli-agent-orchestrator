@@ -64,8 +64,10 @@ cao agent handoff <profile> "<task>" --working-directory '<abs path>' [--timeout
 ```
 
 This creates a worker, sends the task, blocks until the worker finishes,
-prints its output, and deletes the worker. It works outside CAO by creating a
-fresh session. The worker's terminal ID goes to stderr as soon as the worker
+prints its output, and retains the worker for inspection/reuse. Explicit
+`--auto-delete` deletes only after a successful result is received; timeout/error
+never deletes it. It works outside CAO by creating a fresh session. The worker's
+terminal ID goes to stderr as soon as the worker
 exists, so an interrupted handoff still leaves you a handle. Exit codes: 0
 done, 1 failed or timed out, 130 interrupted.
 
@@ -107,8 +109,9 @@ same task.
 
 ## How delegation behaves
 
-- A handoff worker is deleted on success, so looking it up afterwards returns
-  not-found. That is expected.
+- A handoff worker is retained by default, even after success. Delete explicitly
+  only when its work is no longer needed; `--auto-delete` is a success-only opt-in
+  and cannot be combined with `--no-wait`. A lost connection never triggers cleanup.
 - An assigned worker keeps running until it is deleted, and reports back
   through the inbox.
 - Inbox messages are delivered only when the target is `idle` or `completed`.

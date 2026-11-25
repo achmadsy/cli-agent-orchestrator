@@ -34,6 +34,27 @@ def _body(**overrides):
 
 
 class TestRunStepDurability:
+    @pytest.mark.parametrize("job_id", [None, "cafe1234" * 4])
+    @pytest.mark.parametrize("teardown", [False, True])
+    def test_legacy_handoff_retained_without_changing_workflow_teardown(
+        self, client, job_id, teardown
+    ):
+        result = AgentStepResult(
+            terminal_id="abc12345", last_message="all done", status=TerminalStatus.COMPLETED
+        )
+        with (
+            patch(_RUN_STEP, new=AsyncMock(return_value=result)) as run,
+            patch(_UPSERT),
+            patch("cli_agent_orchestrator.api.main._schedule_elastic_terminal_ended") as ended,
+        ):
+            response = client.post(
+                TERMINALS_RUN_STEP_ROUTE, json=_body(job_id=job_id, teardown=teardown)
+            )
+        assert response.status_code == 200
+        expected = teardown and job_id is None
+        assert run.await_args.kwargs["teardown"] is expected
+        assert ended.call_args.kwargs["teardown"] is expected
+
     def test_success_upserts_running_and_passes_job_id_through(self, client):
         """Happy path: handler writes 'running' at request start and forwards
         job_id into run_agent_step, which persists 'completed' itself BEFORE

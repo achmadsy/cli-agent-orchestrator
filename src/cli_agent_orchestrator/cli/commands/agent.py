@@ -181,6 +181,12 @@ def assign_cmd(
     default=False,
     help="Return once the worker exists; don't wait for it.",
 )
+@click.option(
+    "--auto-delete",
+    is_flag=True,
+    default=False,
+    help="Delete the worker only after receiving a successful result (default: retain).",
+)
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit the result as JSON.")
 def handoff_cmd(
     agent_profile,
@@ -192,14 +198,16 @@ def handoff_cmd(
     provider,
     use_worktree,
     no_wait,
+    auto_delete,
     as_json,
 ):
     """Hand off a task to a worker and wait for it.
 
     Creates an AGENT_PROFILE worker, sends it MESSAGE, prints its output,
-    and deletes the worker on success. Works outside a CAO terminal, but run
-    it inside one so the worker inherits that terminal's session and tool
-    restrictions.
+    and retains the worker for inspection/reuse. --auto-delete opts into deletion
+    only after a successful result is received; timeout/error never deletes it.
+    Works outside a CAO terminal, but run it inside one so the worker inherits
+    that terminal's session and tool restrictions.
 
     The worker's terminal_id is printed to stderr as soon as it exists.
     --no-wait returns once MESSAGE is sent and leaves the worker running;
@@ -242,6 +250,7 @@ def handoff_cmd(
             "use_worktree": use_worktree,
             "on_terminal_id": _report_terminal_id,
             "wait": not no_wait,
+            "auto_delete": auto_delete,
         }
         if provider is not None:
             kwargs["provider"] = provider

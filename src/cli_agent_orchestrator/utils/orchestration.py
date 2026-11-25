@@ -363,29 +363,6 @@ def _resolve_remote_provider(base_url: str, agent_profile: str) -> str:
     return DEFAULT_PROVIDER
 
 
-def _cleanup_remote_terminal(base_url: str, terminal_id: str) -> bool:
-    """Best-effort DELETE of a terminal on a REMOTE node.
-
-    Used when a remote handoff step fails/times out: ``run_agent_step`` only
-    tears the worker terminal down on SUCCESS, and on a CAO_MAX_TERMINALS=1
-    worker pod a leftover terminal occupies the pod's only slot — permanently,
-    since the supervisor's local delete cannot reach it. A 404 counts as
-    cleaned (already gone). Never raises; returns False so the caller can put
-    the manual cleanup route in its failure message.
-    """
-    try:
-        response = requests.delete(
-            f"{base_url}/terminals/{terminal_id}",
-            timeout=(REMOTE_CONNECT_TIMEOUT, _mcp_timeout()),
-        )
-        if response.status_code == 404:
-            return True
-        return response.status_code < 400
-    except requests.RequestException as exc:
-        logger.warning("Cleanup of remote terminal %s at %s failed: %s", terminal_id, base_url, exc)
-        return False
-
-
 def _resolve_child_allowed_tools(
     parent_allowed_tools: Optional[list], child_profile_name: str
 ) -> Optional[str]:
@@ -1256,31 +1233,31 @@ async def _run_step_and_build_result(
         else:
             msg = f"Handoff failed: {structured_detail}"
         resolved_tid = tid or known_terminal_id
-        if target_host and resolved_tid:
-            # A failed/timed-out step leaves its terminal ALIVE server-side
-            # (run_agent_step only tears down on success). Locally the
-            # supervisor can delete_terminal it; remotely that terminal
-            # occupies a max=1 worker pod's ONLY slot and the local delete
-            # cannot reach it — so clean it up here, best-effort.
-            if _cleanup_remote_terminal(base_url, resolved_tid):
-                msg += f" (remote terminal {resolved_tid} on {target_host} cleaned up)"
-            else:
+        if resolved_tid:
+            placement = f" on {target_host}" if target_host else ""
+            msg += f". Worker {resolved_tid}{placement} retained for inspection/recovery."
+            if target_host:
                 msg += (
-                    f". Cleanup of remote terminal {resolved_tid} failed — it still "
-                    f"occupies a slot on {target_host}; terminal {resolved_tid} lives "
-                    f"on {target_host}; DELETE {base_url}/terminals/{resolved_tid} "
-                    f"(or delete_terminal('{resolved_tid}', target_host='{target_host}'))."
+                    " It still occupies a worker slot; delete it only when no longer needed "
+                    f"with delete_terminal('{resolved_tid}', target_host='{target_host}')."
                 )
         return HandoffResult(success=False, message=msg, output=None, terminal_id=resolved_tid)
 
     data = response.json()
     terminal_id = data.get("terminal_id", known_terminal_id)
-    # A 200 must carry last_message; surface a malformed body as a failure
-    # rather than silently returning success-with-None.
-    if "last_message" not in data:
+    # A 200 must carry text, not merely a key with null/structured content.
+    # An uncertain result must never authorize optional success cleanup.
+    if not isinstance(data.get("last_message"), str):
         return HandoffResult(
             success=False,
             message="Handoff failed: malformed run-step response (no last_message)",
+            output=None,
+            terminal_id=terminal_id,
+        )
+    if data.get("status") != "completed":
+        return HandoffResult(
+            success=False,
+            message="Handoff failed: run-step response did not confirm completion; worker retained.",
             output=None,
             terminal_id=terminal_id,
         )
@@ -1298,6 +1275,39 @@ async def _run_step_and_build_result(
 
 
 # Implementation functions
+def _finish_handoff(
+    result: HandoffResult, auto_delete: bool, target_host: Optional[str] = None
+) -> HandoffResult:
+    """Retain workers unless success cleanup was explicitly requested.
+
+    Run-step always receives teardown=False. Cleanup belongs AFTER a successful
+    response, so a lost connection or failed extraction cannot destroy the worker.
+    """
+    if not result.success or not result.terminal_id:
+        return result
+    terminal_id = result.terminal_id
+    if not isinstance(result.output, str) or not result.output.strip():
+        result.success = False
+        result.message = "Handoff did not return a non-empty result; worker retained for inspection."
+        return result
+    placement = f" on {target_host}" if target_host else ""
+    if not auto_delete:
+        result.message += f". Worker {terminal_id}{placement} retained; delete only when no longer needed."
+        return result
+    cleanup = (
+        _delete_terminal_impl(terminal_id, target_host=target_host)
+        if target_host
+        else _delete_terminal_impl(terminal_id)
+    )
+    if cleanup.get("success"):
+        result.message += f". Worker {terminal_id}{placement} deleted (auto_delete=true)."
+    else:
+        result.message += (
+            f". Worker {terminal_id}{placement} cleanup not confirmed; inspect before retrying cleanup."
+        )
+    return result
+
+
 async def _handoff_impl(
     agent_profile: str,
     message: str,
@@ -1312,6 +1322,7 @@ async def _handoff_impl(
     target_host: Optional[str] = None,
     provider: Optional[str] = None,
     provider_profile: Optional[str] = None,
+    auto_delete: bool = False,
 ) -> HandoffResult:
     """Implementation of handoff logic.
 
@@ -1320,9 +1331,10 @@ async def _handoff_impl(
     poll-ready -> input -> poll-complete -> output -> exit/delete) are
     collapsed into ONE call to the combined server-side ``POST
     /terminals/run-step`` endpoint, whose handler runs the shared
-    ``run_agent_step`` substrate. Observable behavior is preserved (BR-8): same
-    HandoffResult shape + success/failure semantics, same codex CAO_TERMINAL_ID
-    fast-fail, same timeout contract, terminal auto-torn-down on success.
+    ``run_agent_step`` substrate. Workers are retained by default. Both call
+    shapes send teardown=False; only explicit auto_delete=True permits cleanup
+    after the caller receives a successful completed response. Failed, timed-out,
+    disconnected and uncertain handoffs never delete the worker.
 
     Codex prompt-shaping (the [CAO Handoff] banner) stays CALLER-SIDE here: it
     depends on the CALLING PROCESS's ``CAO_TERMINAL_ID`` env var (the MCP
@@ -1334,8 +1346,7 @@ async def _handoff_impl(
     regardless of which entry point (MCP tool or CLI command) calls this.
 
     ``on_terminal_id`` / ``wait`` (review on PR #634, issue #616): the MCP
-    ``handoff`` tool calls this with neither set, taking the single-call path
-    below exactly as written above -- BEHAVIOR UNCHANGED, still BR-8.
+    ``handoff`` tool calls this with neither set, taking the single-call path.
     ``cao agent handoff`` passes ``on_terminal_id`` so an operator who kills a
     blocking handoff has a real terminal_id to recover with (``cao agent
     status``/``result``/``cancel``) instead of blind-retrying into a second
@@ -1375,12 +1386,9 @@ async def _handoff_impl(
     no callback needed), and ``working_directory`` is interpreted on the
     remote filesystem. ``use_worktree`` is rejected together with
     ``target_host`` (same rule as assign — see the target_host field
-    description). A failed/timed-out remote step leaves its terminal alive
-    server-side, which on a CAO_MAX_TERMINALS=1 worker pod occupies the pod's
-    only slot — so remote failures trigger a best-effort DELETE of that
-    terminal here, and the failure message carries the manual cleanup route
-    when even that fails. Omitting ``target_host`` preserves local behavior
-    byte-for-byte.
+    description). A retained remote terminal can occupy the only slot on a
+    CAO_MAX_TERMINALS=1 node. This is reported with an explicit manual cleanup
+    route; capacity pressure never authorizes deleting failed or timed-out work.
 
     ``target_host`` is ALSO rejected together with the three CLI-only inputs
     above (``on_terminal_id``, ``wait=False``, ``idempotency_key``), and that
@@ -1405,6 +1413,14 @@ async def _handoff_impl(
             terminal_id=None,
             job_id=None,
             pending=False,
+        )
+
+    if auto_delete and not wait:
+        return HandoffResult(
+            success=False,
+            message="Handoff failed: auto_delete requires waiting for successful completion; omit auto_delete with --no-wait.",
+            output=None,
+            terminal_id=None,
         )
 
     start_time = time.time()
@@ -1502,12 +1518,10 @@ async def _handoff_impl(
             )
 
         if on_terminal_id is None and wait:
-            # Default path: ONE combined call -- create -> ready-wait -> input ->
-            # complete-wait -> extract -> teardown, all server-side via
-            # run_agent_step. session_name places the worker in the supervisor's
-            # session; caller_id/allowed_tools preserve #284 callback routing
-            # and tool inheritance. Byte-for-byte the original single-seam
-            # behavior (BR-8) -- this is what the MCP tool always takes.
+            # Default path: create -> ready-wait -> input -> complete-wait ->
+            # extract server-side. Retain the terminal even if the response is
+            # lost; optional success cleanup happens only after it returns here.
+            # session_name/caller_id/allowed_tools preserve routing/inheritance.
             shaped_message = _shape_handoff_message(provider, message)
             # Minted HERE, before the POST, so the key exists on the client even
             # if the response never arrives (issue #447). The server records the
@@ -1522,7 +1536,7 @@ async def _handoff_impl(
                 "provider": provider,
                 "agent": agent_profile,
                 "prompt": shaped_message,
-                "teardown": True,
+                "teardown": False,
                 "timeout": float(timeout),
                 "use_worktree": use_worktree,
                 "job_id": job_id,
@@ -1541,7 +1555,7 @@ async def _handoff_impl(
                 payload["engine"] = engine
             if model and model.strip():
                 payload["model"] = model
-            return await _run_step_and_build_result(
+            result = await _run_step_and_build_result(
                 payload,
                 agent_profile,
                 provider,
@@ -1550,6 +1564,7 @@ async def _handoff_impl(
                 base_url=base_url,
                 target_host=target_host,
             )
+            return _finish_handoff(result, auto_delete, target_host)
 
         # Early-terminal-id path: create SYNCHRONOUSLY first (waits out
         # provider-ready server-side, same wait the default path's own create
@@ -1616,15 +1631,8 @@ async def _handoff_impl(
             "agent": agent_profile,
             "prompt": shaped_message,
             "reuse_terminal_id": terminal_id,
-            # False is the honest value here, not just the safe one:
-            # run_agent_step's own teardown call is gated on
-            # `teardown and created_here`, and created_here is False for ANY
-            # reuse_terminal_id call -- the server literally cannot act on
-            # this field once we're reusing, regardless of what we send.
-            # Tearing down is therefore this function's own job on success,
-            # below (review on commit 3952889 -- the prior version
-            # sent True here and never tore anything down, leaking a
-            # terminal on every successful wait=True handoff).
+            # Reused terminals are caller-owned. Like the fresh-create path,
+            # retain server-side; only explicit success cleanup may delete here.
             "teardown": False,
             "timeout": float(timeout),
         }
@@ -1638,22 +1646,7 @@ async def _handoff_impl(
         result = await _run_step_and_build_result(
             payload, agent_profile, provider, timeout, start_time
         )
-        if result.success:
-            # Best-effort, mirroring run_agent_step's own teardown philosophy
-            # (services/agent_step.py: "never let cleanup mask" a settled
-            # step): a cleanup failure must not turn this already-successful
-            # handoff into a reported failure. Only on success -- a failed,
-            # errored, or timed-out wait leaves the terminal alive on purpose,
-            # so the operator can inspect/recover it via status/result/cancel,
-            # which is the entire point of surfacing terminal_id early.
-            cleanup = _delete_terminal_impl(terminal_id)
-            if not cleanup.get("success"):
-                logger.warning(
-                    "handoff: post-success teardown of terminal %s failed: %s",
-                    terminal_id,
-                    cleanup.get("message"),
-                )
-        return result
+        return _finish_handoff(result, auto_delete)
 
     except Exception as e:
         # Surface terminal_id when known. With the single-call design the server

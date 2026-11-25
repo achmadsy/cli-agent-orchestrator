@@ -265,6 +265,13 @@ _target_host_field_desc = (
     "for the default local placement (behavior unchanged)."
 )
 
+_handoff_auto_delete_desc = (
+    "Default false: retain the worker and its worktree after the handoff. Set true only "
+    "when deletion is explicitly wanted after a successful result is received. "
+    "Timeout, error, lost connection or uncertain results never authorize cleanup. "
+    "Deleting a worktree discards uncommitted files."
+)
+
 _model_field_desc = (
     "Optional model override for the worker agent (e.g. a concrete model name/id "
     "accepted by the resolved provider's own --model flag). Takes precedence over "
@@ -322,12 +329,13 @@ if ENABLE_WORKING_DIRECTORY:
                 "created on its own branch from the target repo's current HEAD. At "
                 "teardown, the checkout's working-tree contents are always discarded, but "
                 "the branch is only deleted if it has no unmerged commits -- commit AND "
-                "merge/push results before finishing if you need them kept. Requires the "
+                "merge/push results before deleting the terminal if you need them kept. Requires the "
                 "resolved working directory (explicit or inherited) to be inside a git "
                 "repository."
             ),
         ),
         target_host: Optional[str] = Field(default=None, description=_target_host_field_desc),
+        auto_delete: bool = Field(default=False, description=_handoff_auto_delete_desc),
     ) -> HandoffResult:
         """Hand off a task to another agent via CAO terminal and wait for completion.
 
@@ -343,7 +351,7 @@ if ENABLE_WORKING_DIRECTORY:
         3. Send the message to the terminal
         4. Monitor until completion
         5. Return the agent's response
-        6. Clean up the terminal with /exit
+        6. Retain the worker for inspection/reuse (auto_delete=true opts into success cleanup)
 
         ## Working Directory
 
@@ -362,12 +370,10 @@ if ENABLE_WORKING_DIRECTORY:
         - Set use_worktree=true to give this handoff its own git worktree instead of
           sharing the supervisor's (or working_directory's) checkout -- closes the
           "parallel agents editing the same branch/files" race.
-        - The worktree is created from the resolved directory's repo, on its own
-          branch, and torn down when the handoff's terminal is torn down (success or
-          failure): the checkout's working-tree contents are always discarded, but the
-          branch is only deleted if it has no unmerged commits. Commit AND merge/push
-          any results you need kept before the handoff completes -- an uncommitted or
-          unmerged result is not preserved.
+        - The worktree is retained with the worker by default. Explicit terminal
+          deletion (including auto_delete=true after success) discards its working-tree
+          contents; the branch is only deleted if it has no unmerged commits. Commit
+          AND merge/push results you need kept before deleting the terminal.
         - Requires the resolved working directory to actually be inside a git
           repository; otherwise the handoff fails with a clear error.
 
@@ -385,6 +391,7 @@ if ENABLE_WORKING_DIRECTORY:
             model: Optional model override (not honored by every provider)
             use_worktree: If true, isolate this handoff in its own git worktree
             target_host: Optional remote CAO node to run the worker on
+            auto_delete: Opt in to deletion only after a successful result is received
 
         Returns:
             HandoffResult with success status, message, and agent output
@@ -402,6 +409,7 @@ if ENABLE_WORKING_DIRECTORY:
             kwargs["provider"] = provider
         if provider_profile is not None:
             kwargs["provider_profile"] = provider_profile
+        kwargs["auto_delete"] = auto_delete is True
         return await _handoff_impl(
             agent_profile, message, timeout, working_directory, **kwargs
         )
@@ -448,11 +456,12 @@ else:
                 "created on its own branch from the target repo's current HEAD. At "
                 "teardown, the checkout's working-tree contents are always discarded, but "
                 "the branch is only deleted if it has no unmerged commits -- commit AND "
-                "merge/push results before finishing if you need them kept. Requires the "
+                "merge/push results before deleting the terminal if you need them kept. Requires the "
                 "supervisor's current directory to be inside a git repository."
             ),
         ),
         target_host: Optional[str] = Field(default=None, description=_target_host_field_desc),
+        auto_delete: bool = Field(default=False, description=_handoff_auto_delete_desc),
     ) -> HandoffResult:
         """Hand off a task to another agent via CAO terminal and wait for completion.
 
@@ -467,7 +476,7 @@ else:
         2. Send the message to the terminal (starts in supervisor's current directory)
         3. Monitor until completion
         4. Return the agent's response
-        5. Clean up the terminal with /exit
+        5. Retain the worker for inspection/reuse (auto_delete=true opts into success cleanup)
 
         ## Model
 
@@ -480,10 +489,10 @@ else:
         - Set use_worktree=true to give this handoff its own git worktree instead of
           sharing the supervisor's checkout -- closes the "parallel agents editing the
           same branch/files" race.
-        - Torn down when the handoff's terminal is torn down: the checkout's
-          working-tree contents are always discarded, but the branch is only deleted if
-          it has no unmerged commits. Commit AND merge/push any results you need kept
-          before the handoff completes.
+        - Retained with the worker by default. Explicit terminal deletion (including
+          auto_delete=true after success) discards the checkout's working-tree contents;
+          the branch is only deleted if it has no unmerged commits. Commit AND merge/push
+          results you need kept before deleting the terminal.
         - Requires the supervisor's current directory to be inside a git repository.
 
         ## Requirements
@@ -498,6 +507,7 @@ else:
             model: Optional model override (not honored by every provider)
             use_worktree: If true, isolate this handoff in its own git worktree
             target_host: Optional remote CAO node to run the worker on
+            auto_delete: Opt in to deletion only after a successful result is received
 
         Returns:
             HandoffResult with success status, message, and agent output
@@ -515,6 +525,7 @@ else:
             kwargs["provider"] = provider
         if provider_profile is not None:
             kwargs["provider_profile"] = provider_profile
+        kwargs["auto_delete"] = auto_delete is True
         return await _handoff_impl(agent_profile, message, timeout, None, **kwargs)
 
 
@@ -1067,11 +1078,11 @@ def delete_terminal(
     their results or no longer need them. This kills the tmux window and
     removes the terminal record.
 
-    Handoff terminals are automatically cleaned up on success — you only need
-    to call this for assign terminals, or for a REMOTE terminal a failed
-    handoff/assign left behind on a target_host node (on CAO_MAX_TERMINALS=1
-    worker pods a leftover terminal — including one stuck in ERROR — occupies
-    the pod's only slot until deleted).
+    Handoff and assign terminals are retained by default. Delete only when
+    their work and files are no longer needed; timeout/error is not permission
+    to delete. Handoff's auto_delete=true is an explicit success-only opt-in.
+    For remote terminals pass their target_host. A retained terminal can occupy
+    the only slot on a CAO_MAX_TERMINALS=1 node until explicitly deleted.
 
     Args:
         terminal_id: The terminal ID to delete
